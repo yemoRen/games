@@ -14,7 +14,6 @@ import {
   extract,
   fight,
   mulberry32,
-  rollEncounter,
   search,
   DANGER_ZONES,
   getZone,
@@ -54,7 +53,7 @@ export default function SortiePage() {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
     search(s, rngRef.current);
-    const enemy = rollEncounter(s, rngRef.current);
+    const enemy = s.encounter?.enemy;
     if (enemy) fight(s, enemy, rngRef.current);
     sync();
   };

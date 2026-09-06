@@ -60,14 +60,30 @@ import {
 import {
   createRun,
   search,
-  rollEncounter,
   rollRescue,
-  fight,
   extract,
   getZone,
   DANGER_ZONES,
   addCarriedLoot,
+  resolveEncounter,
+  lootCorpse,
+  advanceBranch,
+  goToExtract,
+  leaveExtract,
+  dropCarried,
+  moveToSecure,
+  takeFromSecure,
+  bankSecureIntoBanked,
+  timeLeft,
+  fmtClock,
+  zoneSearchLeft,
+  RUN_TIME_LIMIT_SEC,
+  MAX_ZONE_SEARCHES,
+  SECURE_BOX_SLOTS,
+  FIGHT_AMMO_COST,
+  MAP_BRANCH_COUNT,
   type ExtractionRunState,
+  type EncounterAction,
 } from '@shared/engine/extraction';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
 import { loadGame, saveGame, clearSave } from '@shared/engine/survival';
@@ -166,6 +182,7 @@ const DANGER_LABEL: Record<number, string> = {
   3: '危3·凶险',
   4: '危4·高危',
   5: '危5·死地',
+  6: '危6·禁区',
 };
 
 function attrBars(attrs: Attributes) {
@@ -992,6 +1009,9 @@ function SortiePanel(props: {
     if (!prof) return;
     // 撤离成功才入库；阵亡/失败不入库（extract 内部已按 phase 处理）
     if (s.phase === 'searching' || s.phase === 'combat') extract(s);
+    // 死亡/超时结算：战局背包清零，但安全箱 100% 保留（搜打撤保底设计）
+    if (s.phase === 'dead' || s.phase === 'timeout') bankSecureIntoBanked(s);
+    const failed = s.phase === 'dead' || s.phase === 'timeout';
     setState((prev) => {
       let next = bankLoot(prev, s.bankedLoot);
       if (s.bankedNpc) next = addRecruit(next, s.bankedNpc);
@@ -999,17 +1019,17 @@ function SortiePanel(props: {
         survivorId: prof.id,
         survivorName: prof.name,
         zoneName: s.zone.name,
-        outcome: s.phase === 'dead' ? 'death' : 'success',
+        outcome: failed ? 'death' : 'success',
         bankedItems: s.bankedLoot.reduce((a, b) => a + (b.qty ?? 1), 0),
         bankedValue: s.bankedLoot.reduce((a, b) => a + b.value * (b.qty ?? 1), 0),
-        enemyFaced: s.log.find((l) => l.startsWith('⚔'))?.match(/【(.+?)】/)?.[1],
+        enemyFaced: s.log.find((l) => l.includes('⚔'))?.match(/【(.+?)】/)?.[1],
         rescued: !!s.bankedNpc,
         finalHp: s.condition.resources.hp.current,
         maxHp: s.condition.resources.hp.max ?? 0,
       });
-      // 撤离失败 / 阵亡：战局背包（carriedLoot）已由 extract 拦下不入库；
+      // 撤离失败 / 阵亡 / 超时：战局背包（carriedLoot）已由 extract 拦下不入库；
       // 身上常驻穿戴的装备还要按概率被搜刮者夺走。
-      if (s.phase === 'dead') {
+      if (failed) {
         after = applyFailureGearLoss(after, prof.id, rngRef.current).state;
       }
       return after;
@@ -1030,7 +1050,13 @@ function SortiePanel(props: {
       const headStart = Math.round(persistMax * (loadout.bonus.startHpRatio ?? 0));
       startHp = Math.min(status.currentHp + headStart, persistMax);
     }
-    const r = createRun(loadout, zone, startHp);
+    // 护甲耐久 / 弹药由穿戴装备推算：护甲阶级→耐久，武器阶级→携弹量
+    const eq = state.equipped[active.id] ?? {};
+    const armorGear = eq.armor ? state.gear.find((g) => g.id === eq.armor) : undefined;
+    const armorMax = armorGear ? 40 + (armorGear.tier ?? 0) * 30 : 0;
+    const weaponGear = eq.weapon ? state.gear.find((g) => g.id === eq.weapon) : undefined;
+    const startAmmo = 24 + (weaponGear ? (weaponGear.tier ?? 0) * 8 : 0);
+    const r = createRun(loadout, zone, startHp, { current: armorMax, max: armorMax }, startAmmo);
     runRef.current = r;
     const s = seed.trim();
     rngRef.current = s ? seededRng(s) : (Math.random as RNG);
@@ -1038,29 +1064,109 @@ function SortiePanel(props: {
   };
 
   const makeBonusLoot = (): ExtractionRunState['carriedLoot'][number] => {
-    const zone = getZone(zoneId);
-    // 瞭望塔额外掉落：直接产出一件带阶级词缀的装备（阶级随区域危险度提升）
+    // 瞭望塔额外掉落：按当前所在区域危险度产出一件带阶级词缀的装备
+    const zone = runRef.current?.zone ?? getZone(zoneId);
     return rollGearDrop(rngRef.current, zone.dangerLevel, 0.25);
   };
 
   const doSearch = () => {
     const s = runRef.current;
-    if (!s || s.phase !== 'searching') return;
+    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract) return;
     const lootLuck = active
       ? buildSortieLoadout(state, active.id)?.bonus.lootLuck ?? 0
       : 0;
     search(s, rngRef.current, lootLuck);
-    // 救援事件：按概率带回幸存者
-    if (active) {
-      rollRescue(s, rngRef.current, () => generateSurvivor(rngRef.current));
+    if (s.phase !== 'searching') {
+      sync();
+      return;
     }
-    const enemy = rollEncounter(s, rngRef.current);
-    if (enemy) fight(s, enemy, rngRef.current);
-    // 瞭望塔：搜刮运势额外掉落（词条/装备/避难所聚合）
-    if (chance(rngRef.current, lootLuck)) {
-      addCarriedLoot(s, makeBonusLoot());
-      s.log.push('【系统】瞭望塔侦察生效，额外发现一批物资。');
+    if (!s.encounter) {
+      // 救援事件：按概率带回幸存者（仅在未遭遇敌人的平静搜索中触发）
+      if (active) {
+        rollRescue(s, rngRef.current, () => generateSurvivor(rngRef.current));
+      }
+      // 瞭望塔：搜刮运势额外掉落（词条/装备/避难所聚合）
+      if (chance(rngRef.current, lootLuck)) {
+        addCarriedLoot(s, makeBonusLoot());
+        s.log.push(`[${fmtClock(s.elapsedSec)}] 【系统】瞭望塔侦察生效，额外发现一批物资。`);
+      }
     }
+    sync();
+  };
+
+  /** 遭遇抉择：开战 / 潜行 / 投掷物脱离 / 突围撤离点 */
+  const doEncounter = (action: EncounterAction) => {
+    const s = runRef.current;
+    if (!s || !s.encounter || s.phase !== 'searching') return;
+    if (action === 'throw') {
+      // 投掷物脱离：消耗基地库存的烟雾弹/闪光弹（无库存则不可用）
+      if ((state.throwables?.smoke ?? 0) <= 0 && (state.throwables?.flash ?? 0) <= 0) return;
+    }
+    resolveEncounter(s, action, rngRef.current);
+    if (action === 'throw') {
+      // 扣库存：优先烟雾弹，其次闪光弹
+      const used = (state.throwables?.smoke ?? 0) > 0 ? 'smoke' : 'flash';
+      setState((prev) => ({
+        ...prev,
+        throwables: { ...prev.throwables, [used]: Math.max(0, (prev.throwables?.[used] ?? 0) - 1) },
+      }));
+      // 日志补一条消耗记录
+      const rs = runRef.current;
+      if (rs) {
+        const name = used === 'smoke' ? '烟雾弹' : '闪光弹';
+        rs.log.push(`[${fmtClock(rs.elapsedSec)}] 消耗【${name}】×1（基地库存同步扣减）。`);
+      }
+    }
+    sync();
+  };
+
+  const doLootCorpse = () => {
+    const s = runRef.current;
+    if (!s || !s.corpse || s.phase !== 'searching') return;
+    lootCorpse(s, rngRef.current);
+    sync();
+  };
+
+  /** 深入到本大地图的下一个分支区域（搜完 3 次后推进路线，第 10 区为霸主） */
+  const doAdvanceBranch = () => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract) return;
+    advanceBranch(s);
+    sync();
+  };
+
+  const doGoExtract = () => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract) return;
+    goToExtract(s);
+    sync();
+  };
+
+  const doLeaveExtract = () => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching' || !s.atExtract) return;
+    leaveExtract(s);
+    sync();
+  };
+
+  const doDropCarried = (index: number) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    dropCarried(s, index);
+    sync();
+  };
+
+  const doToSecure = (index: number) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    moveToSecure(s, index);
+    sync();
+  };
+
+  const doFromSecure = (slot: number) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    takeFromSecure(s, slot);
     sync();
   };
 
@@ -1134,9 +1240,19 @@ function SortiePanel(props: {
   const equippedMed = quickMedId ? MEDICINES.find((m) => m.id === quickMedId) : undefined;
   const availableMeds =
     quickMedId && equippedMed && (state.medicines[quickMedId] ?? 0) > 0 ? [equippedMed] : [];
-  const isOver = run?.phase === 'dead' || run?.phase === 'extracted';
+  const isOver = run?.phase === 'dead' || run?.phase === 'extracted' || run?.phase === 'timeout';
+  const failed = run?.phase === 'dead' || run?.phase === 'timeout';
+  /** ⚔ 摘要行下标 → 战斗回放（日志行内展开用） */
+  const battleByLogIndex = new Map((run?.battles ?? []).map((b) => [b.logIndex, b]));
   const hpPct = hp && (hp.max ?? 0) > 0 ? Math.max(0, (hp.current / (hp.max ?? 0)) * 100) : 0;
   const hpColor = hpPct > 50 ? 'bg-emerald-500' : hpPct > 25 ? 'bg-amber-500' : 'bg-rose-600';
+  // 对局状态栏派生值
+  const left = run ? timeLeft(run) : 0;
+  const urgent = left > 0 && left <= RUN_TIME_LIMIT_SEC * 0.2;
+  const searchLeft = run ? zoneSearchLeft(run) : 0;
+  const usedSearches = run ? run.zoneSearches[run.zone.id] ?? 0 : 0;
+  const secureUsed = run ? run.secureBox.filter((x) => x !== null).length : 0;
+  const throwableStock = (state.throwables?.smoke ?? 0) + (state.throwables?.flash ?? 0);
 
   const sortieBonus = active ? buildSortieLoadout(state, active.id)?.bonus : undefined;
   const activeStatus = active ? state.survivorStatus[active.id] : undefined;
@@ -1220,125 +1336,228 @@ function SortiePanel(props: {
 
       {run && (
         <>
+          {/* ① 对局状态栏（常驻：时间 / 位置 / 撤离点 / 安全箱 + 生命护甲弹药负重） */}
           <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="text-sm text-zinc-400">
-                  幸存者：<span className="text-zinc-100">{run.survivor.name}</span>
-                </div>
-                <div className="mt-0.5 text-sm text-zinc-400">
-                  区域：<span className="text-zinc-100">{run.zone.name}</span>
-                  <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-amber-300">
-                    {DANGER_LABEL[run.zone.dangerLevel] ?? `危${run.zone.dangerLevel}`}
-                  </span>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-xs text-zinc-500">携带估值</div>
-                <div className="text-lg font-semibold text-emerald-400">
-                  {carriedValue} <span className="text-xs text-zinc-500">废土币</span>
-                </div>
-              </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+              <span className="text-zinc-400">
+                ⏱ 对局剩余{' '}
+                <span className={`font-mono text-sm font-semibold ${urgent ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  {fmtClock(left)}
+                </span>
+                <span className="text-zinc-600"> / {fmtClock(RUN_TIME_LIMIT_SEC)}</span>
+              </span>
+              <span className="text-zinc-400">
+                📍 <span className="text-zinc-100">{run.zone.name}</span>
+                <span className="ml-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-amber-300">
+                  {DANGER_LABEL[run.zone.dangerLevel] ?? `危${run.zone.dangerLevel}`}
+                </span>
+                <span className="ml-1 text-zinc-500">
+                  搜刮 {usedSearches}/{MAX_ZONE_SEARCHES}
+                </span>
+              </span>
+              <span className="text-zinc-400">
+                🚁 撤离点：
+                <span className={run.atExtract ? 'text-emerald-300' : 'text-sky-300'}>
+                  {run.atExtract ? '已抵达' : '已开启'}
+                </span>
+              </span>
+              <span className="text-zinc-400">
+                🛡 安全箱：<span className="text-amber-300">{secureUsed}/{SECURE_BOX_SLOTS}</span>
+              </span>
+              <span className="ml-auto text-zinc-400">
+                携带估值 <span className="font-semibold text-emerald-400">{carriedValue}</span> 废土币
+              </span>
             </div>
-            <div className="mt-3">
-              <div className="mb-1 flex justify-between text-xs text-zinc-500">
-                <span>生命</span>
-                <span>
-                  {hp?.current ?? 0} / {hp?.max ?? 0}
+            <div className="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+              <div>
+                <div className="mb-1 flex justify-between text-zinc-500">
+                  <span>❤ 生命</span>
+                  <span className="text-zinc-200">{hp?.current ?? 0} / {hp?.max ?? 0}</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded bg-zinc-800">
+                  <div className={`h-full ${hpColor} transition-all`} style={{ width: `${hpPct}%` }} />
+                </div>
+              </div>
+              <div className="flex items-end justify-between text-zinc-500">
+                <span>🛡 护甲耐久</span>
+                <span className="text-zinc-200">{run.armor.current} / {run.armor.max}</span>
+              </div>
+              <div className="flex items-end justify-between text-zinc-500">
+                <span>🔫 弹药</span>
+                <span className={run.ammo >= FIGHT_AMMO_COST ? 'text-zinc-200' : 'text-rose-400'}>
+                  {run.ammo} 发
                 </span>
               </div>
-              <div className="h-3 overflow-hidden rounded bg-zinc-800">
-                <div className={`h-full ${hpColor} transition-all`} style={{ width: `${hpPct}%` }} />
+              <div className="flex items-end justify-between text-zinc-500">
+                <span>🎒 负重</span>
+                <span className="text-zinc-200">{carried.length} / {RAID_PACK_CAPACITY} 格</span>
               </div>
             </div>
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
-            <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-              <h2 className="mb-2 text-sm font-medium text-zinc-300">行动记录</h2>
-              <div className="max-h-[340px] space-y-1 overflow-y-auto pr-1 font-mono text-[13px] leading-relaxed">
-                {run.log.map((line, i) => (
-                  <p
-                    key={i}
-                    className={
-                      line.startsWith('⚔')
-                        ? 'text-rose-300'
-                        : line.startsWith('✔')
-                          ? 'text-emerald-300'
-                          : line.startsWith('【系统】')
-                            ? 'text-sky-300'
-                            : 'text-zinc-400'
-                    }
-                  >
-                    {line}
-                  </p>
-                ))}
+          {/* ② 场景叙事区（当前场景文本，区别于底部滚动日志） */}
+          <div className="rounded-lg border border-sky-900/50 bg-zinc-950/70 p-4">
+            <div className="mb-2 text-[11px] uppercase tracking-wider text-sky-500/70">— 场景 —</div>
+            <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-sky-100/90">
+              {run.scene}
+            </pre>
+          </div>
+
+          {/* ③ 操作按钮组：遭遇抉择 / 撤离点抉择 / 常规行动（三态互斥） */}
+          {run.encounter ? (
+            <div className="rounded-lg border border-rose-800 bg-rose-950/20 p-4">
+              <h2 className="mb-1 text-sm font-semibold text-rose-300">⚠️ 遭遇敌人 —— 必须做出抉择</h2>
+              <div className="mb-3 text-xs text-zinc-400">
+                【{run.encounter.enemy.name}】
+                {run.encounter.enemy.threatNote ? ` · ${run.encounter.enemy.threatNote}` : ''}
+                {run.encounter.enemy.affixes && run.encounter.enemy.affixes.length > 0 && (
+                  <span className="ml-2">
+                    {run.encounter.enemy.affixes.map((a, i) => (
+                      <span key={i} className="mr-1 rounded px-1" style={{ color: a.color }}>
+                        {a.label}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  onClick={(e) => { doEncounter('fight'); e.currentTarget.blur(); }}
+                  className="rounded-lg bg-rose-700 px-4 py-3 text-sm font-medium text-white hover:bg-rose-600"
+                >
+                  ⚔ 主动开战
+                  {run.ammo < FIGHT_AMMO_COST && (
+                    <span className="ml-1 text-[11px] text-rose-200">（弹药不足·被迫肉搏）</span>
+                  )}
+                </button>
+                <button
+                  onClick={(e) => { doEncounter('sneak'); e.currentTarget.blur(); }}
+                  className="rounded-lg border border-zinc-600 px-4 py-3 text-sm text-zinc-200 hover:bg-zinc-800"
+                >
+                  🌫 潜行绕行
+                  <span className="ml-1 text-[11px] text-zinc-500">（耗时，可能暴露）</span>
+                </button>
+                <button
+                  onClick={(e) => { doEncounter('throw'); e.currentTarget.blur(); }}
+                  disabled={throwableStock <= 0}
+                  className="rounded-lg border border-sky-700 bg-sky-900/30 px-4 py-3 text-sm text-sky-200 hover:bg-sky-800/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-600"
+                >
+                  💣 投掷物脱离
+                  <span className="ml-1 text-[11px] opacity-70">
+                    （烟雾弹/闪光弹 库存×{throwableStock}）
+                  </span>
+                </button>
+                <button
+                  onClick={(e) => { doEncounter('extract'); e.currentTarget.blur(); }}
+                  className="rounded-lg border border-amber-700 bg-amber-900/30 px-4 py-3 text-sm text-amber-200 hover:bg-amber-800/40"
+                >
+                  🚁 向撤离点突围
+                  <span className="ml-1 text-[11px] opacity-70">（放弃搜刮）</span>
+                </button>
               </div>
             </div>
-            <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-              <h2 className="mb-2 flex items-center justify-between text-sm font-medium text-zinc-300">
-                <span>🎒 战局背包</span>
-                <span className="text-xs text-zinc-500">
-                  {carried.length} / {RAID_PACK_CAPACITY} 格
-                </span>
-              </h2>
-              <p className="mb-2 text-[11px] text-amber-500/80">
-                本局临时搜刮物资：撤离成功才会存入基地，阵亡 / 撤离失败将全部清零。
+          ) : run.atExtract && !isOver ? (
+            <div className="rounded-lg border border-sky-800 bg-sky-950/20 p-4">
+              <h2 className="mb-1 text-sm font-semibold text-sky-300">🚁 撤离信号区</h2>
+              <p className="mb-3 text-xs text-zinc-400">
+                救援直升机正在接近——确认撤离将结算本局；继续搜刮则放弃本次机会，贪心者自负风险。
               </p>
-              <div className="mb-2 flex flex-wrap items-center gap-1 text-[11px] text-zinc-500">
-                <span>阶级：</span>
-                {RARITY_LEGEND.map((r) => (
-                  <span key={r.label} className="font-medium" style={{ color: r.color }}>
-                    {r.label}
-                  </span>
-                ))}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  onClick={(e) => { doExtract(); e.currentTarget.blur(); }}
+                  className="rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500"
+                >
+                  ✔ 确认撤离（估值 {carriedValue} 废土币）
+                </button>
+                <button
+                  onClick={(e) => { doLeaveExtract(); e.currentTarget.blur(); }}
+                  className="rounded-lg border border-zinc-600 px-4 py-3 text-sm text-zinc-200 hover:bg-zinc-800"
+                >
+                  ↩ 返回继续搜刮
+                </button>
               </div>
-              {carried.length === 0 ? (
-                <p className="text-sm text-zinc-600">尚未搜到任何物资。</p>
-              ) : (
-                <ul className="max-h-[320px] space-y-1 overflow-y-auto pr-1 text-sm">
-                  {carried.map((it, i) => {
-                    const color = it.tier != null ? tierColor(it.tier) : '#a1a1aa';
-                    const qty = it.qty ?? 1;
+            </div>
+          ) : !isOver ? (
+            <div className="space-y-3">
+              {run.corpse && (
+                <button
+                  onClick={(e) => { doLootCorpse(); e.currentTarget.blur(); }}
+                  className="w-full rounded-lg border border-amber-800 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200 hover:bg-amber-900/40"
+                >
+                  🩸 搜刮【{run.corpse.enemyName}】的尸体
+                  <span className="ml-1 text-[11px] opacity-70">（战斗胜利后的额外战利品）</span>
+                </button>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={(e) => { doSearch(); e.currentTarget.blur(); }}
+                  disabled={searchLeft <= 0}
+                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+                >
+                  🛰 搜索当前区域
+                  <span className="ml-1 text-xs opacity-80">
+                    （剩 {searchLeft}/{MAX_ZONE_SEARCHES} 次）
+                  </span>
+                </button>
+                <button
+                  onClick={(e) => { doGoExtract(); e.currentTarget.blur(); }}
+                  className="flex-1 rounded-lg bg-sky-700 px-4 py-3 font-medium text-white hover:bg-sky-600"
+                >
+                  🏃 前往撤离点
+                </button>
+              </div>
+              {searchLeft <= 0 && (
+                <p className="text-center text-xs text-amber-500">
+                  此地已被搜刮干净，请前往下一区域。
+                </p>
+              )}
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-[11px] uppercase tracking-wider text-zinc-500">
+                  <span>本图路线：{run.map.name}（共 {MAP_BRANCH_COUNT} 区，越深入越危险）</span>
+                  <span className="text-amber-400/80">第 {run.branchIndex + 1}/{MAP_BRANCH_COUNT} 区</span>
+                </div>
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {run.map.branches?.map((b, i) => {
+                    const isBoss = i === MAP_BRANCH_COUNT - 1;
+                    const cur = i === run.branchIndex;
+                    const past = i < run.branchIndex;
                     return (
-                      <li key={`${it.id}-${i}`} className="border-b border-zinc-800/60 py-1">
-                        <div className="flex items-center justify-between">
-                          <span className="flex items-center gap-2">
-                            {it.tier != null && (
-                              <span
-                                className="rounded px-1.5 py-0.5 text-xs font-medium"
-                                style={{ color, border: `1px solid ${color}` }}
-                              >
-                                {it.rarityName}
-                              </span>
-                            )}
-                            <span style={{ color: it.tier != null ? color : undefined }} className={it.tier != null ? 'font-medium' : 'text-zinc-300'}>
-                              {it.name}
-                              {qty > 1 && <span className="ml-1 text-emerald-400">×{qty}</span>}
-                            </span>
-                          </span>
-                          <span className="text-emerald-400">{it.value * qty}</span>
-                        </div>
-                        {it.affixes && it.affixes.length > 0 && (
-                          <div className="mt-0.5 flex flex-wrap gap-1">
-                            {it.affixes.map((a, j) => (
-                              <span key={j} className="rounded px-1 text-[11px]" style={{ color: a.color }}>
-                                {a.text}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </li>
+                      <span
+                        key={b.id}
+                        title={b.flavor}
+                        className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                          cur
+                            ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
+                            : past
+                              ? 'border-zinc-800 text-zinc-600'
+                              : 'border-zinc-700 text-zinc-400'
+                        }`}
+                      >
+                        {i + 1}. {b.name}
+                        {isBoss && <span className="ml-0.5">👑</span>}
+                      </span>
                     );
                   })}
-                </ul>
-              )}
-              <p className="mt-3 border-t border-zinc-800 pt-2 text-xs text-zinc-500">
-                已入库：<span className="text-emerald-400">{bankedValue}</span> 废土币（{bankedQty} 件）
-              </p>
+                </div>
+                <button
+                  onClick={(e) => { doAdvanceBranch(); e.currentTarget.blur(); }}
+                  disabled={run.branchIndex >= MAP_BRANCH_COUNT - 1}
+                  className="w-full rounded-lg border border-sky-700 bg-sky-900/30 px-4 py-2.5 text-sm text-sky-200 hover:bg-sky-800/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-600"
+                >
+                  🧭 深入下一区域
+                  <span className="ml-1 text-[11px] opacity-70">
+                    {run.branchIndex >= MAP_BRANCH_COUNT - 1
+                      ? '（已位于霸主领地）'
+                      : run.map.branches?.[run.branchIndex + 1]
+                        ? `（下一站：${run.map.branches[run.branchIndex + 1].name}，消耗时间并提升风险）`
+                        : ''}
+                  </span>
+                </button>
+              </div>
             </div>
-          </div>
+          ) : null}
 
+          {/* 💊 快捷医疗（仅限快捷·医疗槽装备的药品） */}
           {!isOver && availableMeds.length > 0 ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
               <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
@@ -1369,40 +1588,203 @@ function SortiePanel(props: {
                 })}
               </div>
             </div>
-          ) : !isOver ? (
-            <div className="rounded-lg border border-dashed border-zinc-700 bg-zinc-900/40 p-3 text-center text-xs text-zinc-500">
-              💊 未装备快捷·医疗槽药品。请先在「角色 → 装备栏」把一种药物放入快捷·医疗槽，出击途中才能使用。
-            </div>
           ) : null}
 
-          {!isOver ? (
-            <div className="flex gap-3">
-              <button
-                onClick={(e) => { doSearch(); e.currentTarget.blur(); }}
-                className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500"
-              >
-                🛰 搜刮一轮
-              </button>
-              <button
-                onClick={(e) => { doExtract(); e.currentTarget.blur(); }}
-                className="flex-1 rounded-lg bg-sky-700 px-4 py-3 font-medium text-white hover:bg-sky-600"
-              >
-                🏃 立即撤离
-              </button>
+          {/* ④ 本局临时背包 + 安全箱（与基地背包完全隔离） */}
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+            <h2 className="mb-2 flex items-center justify-between text-sm font-medium text-zinc-300">
+              <span>🎒 本局临时背包</span>
+              <span className="text-xs text-zinc-500">
+                {carried.length} / {RAID_PACK_CAPACITY} 格 · 估值 {carriedValue}
+              </span>
+            </h2>
+            <p className="mb-2 text-[11px] text-amber-500/80">
+              本局搜刮的战利品：撤离成功才入库，阵亡 / 超时将全部清零；安全箱内物资 100% 保留。穿戴装备不在本局背包内。
+            </p>
+            <div className="mb-2 flex flex-wrap items-center gap-1 text-[11px] text-zinc-500">
+              <span>阶级：</span>
+              {RARITY_LEGEND.map((r) => (
+                <span key={r.label} className="font-medium" style={{ color: r.color }}>
+                  {r.label}
+                </span>
+              ))}
             </div>
-          ) : (
+            {carried.length === 0 ? (
+              <p className="text-sm text-zinc-600">尚未搜到任何物资。</p>
+            ) : (
+              <ul className="max-h-[320px] space-y-1 overflow-y-auto pr-1 text-sm">
+                {carried.map((it, i) => {
+                  const color = it.tier != null ? tierColor(it.tier) : '#a1a1aa';
+                  const qty = it.qty ?? 1;
+                  return (
+                    <li key={`${it.id}-${i}`} className="border-b border-zinc-800/60 py-1">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-2">
+                          {it.tier != null && (
+                            <span
+                              className="rounded px-1.5 py-0.5 text-xs font-medium"
+                              style={{ color, border: `1px solid ${color}` }}
+                            >
+                              {it.rarityName}
+                            </span>
+                          )}
+                          <span style={{ color: it.tier != null ? color : undefined }} className={it.tier != null ? 'font-medium' : 'text-zinc-300'}>
+                            {it.name}
+                            {qty > 1 && <span className="ml-1 text-emerald-400">×{qty}</span>}
+                          </span>
+                        </span>
+                        <span className="text-emerald-400">{it.value * qty}</span>
+                      </div>
+                      {it.affixes && it.affixes.length > 0 && (
+                        <div className="mt-0.5 flex flex-wrap gap-1">
+                          {it.affixes.map((a, j) => (
+                            <span key={j} className="rounded px-1 text-[11px]" style={{ color: a.color }}>
+                              {a.text}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {!isOver && (
+                        <div className="mt-1 flex gap-1">
+                          <button
+                            onClick={() => doToSecure(i)}
+                            disabled={secureUsed >= SECURE_BOX_SLOTS}
+                            className="rounded border border-amber-700/60 px-1.5 py-0.5 text-[10px] text-amber-300 hover:bg-amber-900/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
+                          >
+                            🛡 移入安全箱
+                          </button>
+                          <button
+                            onClick={() => doDropCarried(i)}
+                            className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-rose-600 hover:text-rose-300"
+                          >
+                            🗑 丢弃
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {/* 安全箱（阵亡 100% 保留） */}
+            <div className="mt-3 rounded border border-amber-900/50 bg-amber-950/10 p-2">
+              <div className="mb-1.5 flex items-center justify-between text-[11px] text-amber-400/90">
+                <span>🛡 安全箱（阵亡也保留的保底格）</span>
+                <span>{secureUsed} / {SECURE_BOX_SLOTS}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {run.secureBox.map((slotItem, si) =>
+                  slotItem ? (
+                    <button
+                      key={si}
+                      onClick={() => doFromSecure(si)}
+                      disabled={isOver}
+                      className="truncate rounded border border-amber-800/60 bg-zinc-950/60 px-1.5 py-1 text-left text-[11px] text-amber-200 hover:bg-amber-900/30 disabled:cursor-default"
+                      title="点击取回战局背包"
+                    >
+                      {slotItem.name}
+                      {(slotItem.qty ?? 1) > 1 && `×${slotItem.qty}`}
+                      <span className="ml-1 text-zinc-500">（取回）</span>
+                    </button>
+                  ) : (
+                    <div key={si} className="rounded border border-dashed border-zinc-800 px-1.5 py-1 text-[11px] text-zinc-600">
+                      空格位
+                    </div>
+                  ),
+                )}
+              </div>
+            </div>
+            <p className="mt-3 border-t border-zinc-800 pt-2 text-xs text-zinc-500">
+              已入库：<span className="text-emerald-400">{bankedValue}</span> 废土币（{bankedQty} 件）
+            </p>
+          </div>
+
+          {/* ⑤ 系统消息日志（带对局时间戳） */}
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+            <h2 className="mb-2 text-sm font-medium text-zinc-300">系统消息日志</h2>
+            <div className="max-h-[300px] space-y-1 overflow-y-auto pr-1 font-mono text-[13px] leading-relaxed">
+              {run.log.map((line, i) => {
+                const m = line.match(/^\[(\d{2}:\d{2})\]\s*/);
+                const body = m ? line.slice(m[0].length) : line;
+                const tone =
+                  body.startsWith('⚔') || body.startsWith('⚠') || body.startsWith('⏰')
+                    ? 'text-rose-300'
+                    : body.startsWith('✔') || body.startsWith('🚁') || body.startsWith('❗')
+                      ? 'text-emerald-300'
+                      : body.startsWith('【系统】') || body.startsWith('【生存系统】')
+                        ? 'text-sky-300'
+                        : 'text-zinc-400';
+                const battle = battleByLogIndex.get(i);
+                return (
+                  <div key={i}>
+                    <p className={tone}>
+                      {m && <span className="mr-1 text-zinc-600">[{m[1]}]</span>}
+                      {body}
+                    </p>
+                    {battle && (
+                      <details className="my-1 rounded border border-rose-900/60 bg-rose-950/10 px-2 py-1">
+                        <summary className="cursor-pointer select-none text-[11px] text-rose-300/90 hover:text-rose-200">
+                          📊 展开战斗回放（{battle.rounds.length} 回合 · 输出 {battle.dmgDealt} / 承伤 {battle.dmgTaken}
+                          {battle.win ? ' · 胜利' : ' · 战败'})
+                        </summary>
+                        <div className="mt-1.5 space-y-1.5">
+                          {/* 六维属性交互点评 */}
+                          {battle.attrNotes.length > 0 && (
+                            <div className="rounded bg-zinc-900/70 p-1.5">
+                              <div className="mb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
+                                六维属性与战斗
+                              </div>
+                              {battle.attrNotes.map((n, ni) => (
+                                <p key={ni} className="text-[11px] text-sky-300/90">
+                                  ◈ {n}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          {/* 逐回合交互 + 掉血 */}
+                          {battle.rounds.map((r) => (
+                            <div key={r.round} className="rounded bg-zinc-900/50 p-1.5">
+                              <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                                <span>第 {r.round} 回合</span>
+                                <span className="font-mono">
+                                  ❤ 你 {r.hpSelf} ｜ 敌 {r.hpEnemy}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-300">{r.text}</p>
+                            </div>
+                          ))}
+                          {/* 一段战斗描写 */}
+                          <p className="rounded border-l-2 border-rose-700/60 bg-zinc-900/60 p-1.5 text-[11px] italic leading-relaxed text-zinc-300">
+                            {battle.narrative}
+                          </p>
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {isOver && (
             <div
               className={`rounded-lg border p-5 ${
-                run.phase === 'extracted' ? 'border-emerald-700 bg-emerald-900/30' : 'border-rose-800 bg-rose-900/30'
+                failed ? 'border-rose-800 bg-rose-900/30' : 'border-emerald-700 bg-emerald-900/30'
               }`}
             >
-              <h2 className={`mb-1 text-lg font-semibold ${run.phase === 'extracted' ? 'text-emerald-300' : 'text-rose-300'}`}>
-                {run.phase === 'extracted' ? '✔ 撤离成功' : '✘ 撤离失败·幸存者濒死'}
+              <h2 className={`mb-1 text-lg font-semibold ${failed ? 'text-rose-300' : 'text-emerald-300'}`}>
+                {run.phase === 'extracted'
+                  ? '✔ 撤离成功'
+                  : run.phase === 'timeout'
+                    ? '⏰ 时间耗尽 · 未能撤离'
+                    : '✘ 撤离失败 · 幸存者濒死'}
               </h2>
               <p className="mb-3 text-sm text-zinc-300">
                 {run.phase === 'extracted'
                   ? `物资已安全入库，估值 ${bankedValue} 废土币（已折算进基地货币）。`
-                  : `未撤离的 ${carriedValue} 废土币物资已遗失；${active?.name ?? '出击者'} 重伤濒死，需在战团中用货币或医疗品救治，否则将离世。`}
+                  : run.phase === 'timeout'
+                    ? `对局时间耗尽，救援未能抵达。未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中救治。`
+                    : `未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中用货币或医疗品救治，否则将离世。`}
               </p>
               <div className="flex gap-3">
                 <button
@@ -1415,7 +1797,7 @@ function SortiePanel(props: {
                   onClick={() => {
                     // 兜底：若 effect 尚未写回归档（极端时序），先补写再退出
                     const s = runRef.current;
-                    if (s && (s.phase === 'dead' || s.phase === 'extracted') && !writtenRef.current) {
+                    if (s && (s.phase === 'dead' || s.phase === 'extracted' || s.phase === 'timeout') && !writtenRef.current) {
                       persistRunResult();
                     }
                     reset();

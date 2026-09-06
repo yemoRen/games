@@ -9,7 +9,7 @@
 import { mulberry32 } from '@shared/engine/survival/rng';
 import { newGame, buildLoadout, acceptRecruit, applySortieResult, applyMedicineToSurvivor, buyMedicine } from '@shared/engine/survival/state';
 import { recoverAll, regenPerMinute, timeToFullSeconds } from '@shared/engine/survival/recovery';
-import { createRun, search, rollEncounter, rollRescue, fight, extract, sumValue } from '@shared/engine/extraction';
+import { createRun, search, rollRescue, fight, extract, sumValue } from '@shared/engine/extraction';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
 import { DANGER_ZONES } from '@shared/engine/extraction/content';
 
@@ -36,7 +36,7 @@ const npc = rollRescue(run, localRng, () => generateSurvivor(rng));
 console.log(`[3] 救援触发：${npc?.name ?? '无'}（${npc?.tierName}）`);
 
 // 战斗
-const enemy = rollEncounter(run, localRng);
+const enemy = run.encounter?.enemy;
 if (enemy) fight(run, enemy, localRng);
 console.log(`[4] 战后 HP=${run.condition.resources.hp.current}/${run.condition.resources.hp.max}`);
 

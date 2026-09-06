@@ -35,6 +35,40 @@ export type ExtractionPhase =
   | 'dead' // 阵亡
   | 'timeout'; // 超时封锁
 
+// ===== 对局常量（搜-打-撤核心循环的节奏锚点） =====
+
+/** 对局总时长（秒）：时间耗尽未撤离 → 直接判定阵亡（40 分钟，足够推完 10 分支抵达霸主） */
+export const RUN_TIME_LIMIT_SEC = 40 * 60;
+/** 同一区域最多搜索次数，搜完必须转移（防止原地无限刷物资） */
+export const MAX_ZONE_SEARCHES = 3;
+/** 安全箱格子数：安全箱内物品即使阵亡也不会丢失（搜打撤保底设计） */
+export const SECURE_BOX_SLOTS = 2;
+
+/** 行动时间消耗（秒）——「时间就是风险」：每一次搜索、移动都在逼近封锁 */
+export const ACTION_COST = {
+  search: 30, // 搜索当前区域
+  move: 45, // 前往下一区域
+  sneak: 35, // 潜行绕行
+  throwEscape: 20, // 投掷物脱离
+  fight: 60, // 一场交战
+  corpseLoot: 15, // 搜刮敌方尸体
+  travel: 60, // 奔赴撤离点 / 突围
+  leaveExtract: 15, // 放弃撤离返回搜刮
+} as const;
+
+/** 单场交战消耗的弹药；弹药不足则被迫近身肉搏（先挨一刀） */
+export const FIGHT_AMMO_COST = 5;
+
+/** 当前未决策的遭遇：强制玩家抉择（搜打撤的灵魂） */
+export interface RunEncounter {
+  enemy: EnemyArchetype;
+  /** 遭遇叙事文本 */
+  intro: string;
+}
+
+/** 遭遇抉择动作 */
+export type EncounterAction = 'fight' | 'sneak' | 'throw' | 'extract';
+
 export type LootKind = 'material' | 'consumable' | 'gear' | 'currency';
 
 export interface LootItem {
@@ -78,6 +112,20 @@ export interface DangerZone {
   enemies: EnemyArchetype[];
   /** 撤离时限（秒，演示用） */
   extractTimeSec: number;
+  /** 大地图分支区域（v1.0.2）：选择大地图后按分支推进，最后一区为霸主 */
+  branches?: ZoneBranch[];
+  /** 本图霸主（第 MAP_BRANCH_COUNT 区强制遭遇） */
+  bossEnemy?: EnemyArchetype;
+}
+
+/** 每张大地图的分支区域数量（最后一区为霸主巢穴） */
+export const MAP_BRANCH_COUNT = 10;
+
+export interface ZoneBranch {
+  /** 全局唯一：`${mapId}-${index}` */
+  id: string;
+  name: string;
+  flavor: string;
 }
 
 export interface SurvivorLoadout {
@@ -92,6 +140,10 @@ export interface SurvivorLoadout {
 export interface ExtractionRunState {
   survivor: SurvivorLoadout;
   zone: DangerZone;
+  /** 当前大地图（branchIndex 推进的容器；zone 为其派生分支） */
+  map: DangerZone;
+  /** 当前分支区域序号（0 起；MAP_BRANCH_COUNT-1 为霸主区） */
+  branchIndex: number;
   /** 单次出击 survival 状态（复用 condition） */
   condition: CultivatorCondition;
   /** 已搜刮、尚未撤离的物资（死亡/超时即遗失） */
@@ -104,10 +156,65 @@ export interface ExtractionRunState {
   bankedNpc?: import('@shared/engine/survival/chargen').SurvivorProfile;
   phase: ExtractionPhase;
   searchCount: number;
-  /** 叙事日志 */
+  /** 叙事日志（带 [mm:ss] 对局时间戳） */
   log: string[];
   /** 是否已救援过（防止单次出击多次救援） */
   rescuedThisRun: boolean;
+  // ===== v1.0.1 出击玩法扩展 =====
+  /** 已消耗的对局时间（秒）；RUN_TIME_LIMIT_SEC - elapsedSec 为剩余时间 */
+  elapsedSec: number;
+  /** 弹药余量：每场交战消耗 FIGHT_AMMO_COST，弹药可通过对局内搜刮补给 */
+  ammo: number;
+  /** 护甲耐久：交战后按承伤比例吸收损耗，归零后失去保护 */
+  armor: { current: number; max: number };
+  /** 当前未决策的遭遇（有值时 UI 切换为抉择面板） */
+  encounter?: RunEncounter;
+  /** 各区域已搜索次数（key = zone.id，上限 MAX_ZONE_SEARCHES） */
+  zoneSearches: Record<string, number>;
+  /** 安全箱（SECURE_BOX_SLOTS 格）：阵亡也 100% 保留 */
+  secureBox: (LootItem | null)[];
+  /** 是否已抵达撤离点（抵达后二选一：确认撤离 / 继续搜刮） */
+  atExtract: boolean;
+  /** 当前场景叙事（多行文本，区别于底部滚动日志） */
+  scene: string;
+  /** 战斗胜利后可搜刮的敌方尸体（搜刮一次后清除） */
+  corpse?: { enemyName: string };
+  /** 战斗回放记录（每场一场，对应 log 中 ⚔ 行；供 UI 展开） */
+  battles: BattleReplayEntry[];
+}
+
+// ===== 战斗回放（v1.0.2） =====
+
+/** 单回合战斗摘要 */
+export interface BattleRoundEntry {
+  round: number;
+  /** 本回合逐条交互文本（命中/暴击/闪避/护盾吸收） */
+  text: string;
+  /** 回合结束时己方生命 */
+  hpSelf: number;
+  /** 回合结束时敌方生命 */
+  hpEnemy: number;
+}
+
+/** 一场战斗的完整回放：对应 run.log 中的一条 ⚔ 摘要行（logIndex 定位） */
+export interface BattleReplayEntry {
+  /** 对应 run.log 的下标（⚔ 摘要行） */
+  logIndex: number;
+  enemyName: string;
+  /** 敌方词缀标签（逗号连接） */
+  affixes: string;
+  turns: number;
+  win: boolean;
+  boss: boolean;
+  rounds: BattleRoundEntry[];
+  /** 一段战斗文字描写 */
+  narrative: string;
+  /** 六维属性交互点评（如「敏捷 16 : 4 —— 你总能抢先出手……」） */
+  attrNotes: string[];
+  /** 己方总输出 */
+  dmgDealt: number;
+  /** 己方总承伤 */
+  dmgTaken: number;
 }
 
 export type ExtractOutcome = 'success' | 'death' | 'timeout';

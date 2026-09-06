@@ -23,7 +23,6 @@ import {
 import {
   createRun,
   search,
-  rollEncounter,
   fight,
   extract,
   getZone,
@@ -55,7 +54,7 @@ function runSortie(state: SurvivalGameState, zoneId: string, seed: number) {
   const rng = seededRng(seed);
   for (let i = 0; i < 4 && run.phase === 'searching'; i++) {
     search(run, rng);
-    const enemy = rollEncounter(run, rng);
+    const enemy = run.encounter?.enemy;
     if (enemy) fight(run, enemy, rng);
   }
   if (run.phase === 'searching') extract(run);

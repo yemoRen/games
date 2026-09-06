@@ -46,7 +46,7 @@ import {
 } from '@shared/engine/survival/economy';
 import { INJURY_LABEL, regenPerMinute, timeToFullSeconds } from '@shared/engine/survival/recovery';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
-import { createRun, search, rollEncounter, rollRescue, fight, extract, mulberry32, sumValue } from '@shared/engine/extraction';
+import { createRun, search, rollRescue, fight, extract, mulberry32, sumValue } from '@shared/engine/extraction';
 import { DANGER_ZONES } from '@shared/engine/extraction/content';
 
 type Mutate = (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
@@ -420,7 +420,7 @@ export const ViewWandering: React.FC<ViewProps> = ({ state, mutate, rng }) => {
     const run = createRun(loadout, zone);
     search(run, localRng);
     rollRescue(run, localRng, () => generateSurvivor(rng));
-    const enemy = rollEncounter(run, localRng);
+    const enemy = run.encounter?.enemy;
     if (enemy) fight(run, enemy, localRng);
     search(run, localRng);
     extract(run);
@@ -478,7 +478,7 @@ export const ViewMirage: React.FC<ViewProps> = ({ state, mutate, rng }) => {
     const run = createRun(loadout, zone);
     search(run, localRng);
     search(run, localRng);
-    const enemy = rollEncounter(run, localRng);
+    const enemy = run.encounter?.enemy;
     if (enemy) fight(run, enemy, localRng);
     rollRescue(run, localRng, () => generateSurvivor(rng));
     extract(run);
