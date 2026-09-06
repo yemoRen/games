@@ -53,6 +53,15 @@ export interface SurvivorProfile {
   recruitValue?: number;
   /** 是否为玩家注册代号生成的主角（不可遣散） */
   isProtagonist?: boolean;
+  // ===== 等级 / 经验（v1.0.2，旧存档缺省视为 Lv.1 / 0） =====
+  /** 当前等级 */
+  level?: number;
+  /** 当前经验值（升到 xpNeededForLevel(level) 即升级） */
+  xp?: number;
+  /** 待分配的自由六维属性点（每级 +3） */
+  freePoints?: number;
+  /** 升级触发的词条三选一候选（选定后清空） */
+  pendingTraitPick?: SurvivorTrait[];
 }
 
 const ATTR_LABEL: Record<keyof Attributes, string> = {
@@ -404,6 +413,39 @@ function traitById(id: string): SurvivorTrait {
 }
 
 export const PROTAGONIST_BASE_ATTR = 15;
+
+// ===== 升级词条三选一（系统流设定） =====
+
+/** 词条品质抽取权重（白/绿常见，紫稀有，橙红极稀有——当前池仅到紫，高档位预留给未来新词条） */
+const TRAIT_PICK_WEIGHT: Record<string, number> = {
+  white: 8,
+  green: 6,
+  blue: 3.5,
+  purple: 1.5,
+  yellow: 0.8,
+  orange: 0.3,
+  red: 0.1,
+};
+
+/**
+ * 生成升级词条候选（三选一）：
+ *  - 排除角色已拥有的词条 id；
+ *  - 按品质权重随机（绿 > 蓝 > 紫），品质越稀有权重越低；
+ *  - 候选之间不重复；池不足时返回实际可提供的数量。
+ */
+export function rollTraitCandidates(rng: RNG, excludeIds: string[] = [], count = 3): SurvivorTrait[] {
+  const remaining = TRAIT_POOL.filter((t) => !excludeIds.includes(t.id));
+  const picked: SurvivorTrait[] = [];
+  while (picked.length < count && remaining.length > 0) {
+    const t = weightedPick(
+      rng,
+      remaining.map((x) => ({ value: x, weight: TRAIT_PICK_WEIGHT[x.quality] ?? 1 })),
+    );
+    picked.push(t);
+    remaining.splice(remaining.indexOf(t), 1);
+  }
+  return picked;
+}
 
 export function makeProtagonist(name: string): SurvivorProfile {
   const attributes = emptyAttributes();

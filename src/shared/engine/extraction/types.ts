@@ -181,6 +181,8 @@ export interface ExtractionRunState {
   corpse?: { enemyName: string };
   /** 战斗回放记录（每场一场，对应 log 中 ⚔ 行；供 UI 展开） */
   battles: BattleReplayEntry[];
+  /** 本次出击累计击杀经验（撤离成功才结算入角色） */
+  xpGained: number;
 }
 
 // ===== 战斗回放（v1.0.2） =====

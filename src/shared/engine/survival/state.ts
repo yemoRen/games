@@ -6,7 +6,16 @@
  */
 import type { Attributes } from '@shared/types/cultivator';
 import type { LootItem, CombatBonus } from '@shared/engine/extraction';
-import { generateSurvivor, aggregateTraitCombat, makeProtagonist, type SurvivorProfile } from './chargen';
+import {
+  generateSurvivor,
+  aggregateTraitCombat,
+  makeProtagonist,
+  computePower,
+  tierFromPower,
+  rollTraitCandidates,
+  ALL_ATTR_KEYS,
+  type SurvivorProfile,
+} from './chargen';
 import {
   type GearItem,
   type MaterialItem,
@@ -302,16 +311,7 @@ export function recruitSurvivor(
   };
 }
 
-/** 副本掉落的「药剂类」战利品 → 直接进医疗背包（而非折算材料/币） */
-const LOOT_MEDICINE_MAP: Record<string, MedicineId> = {
-  meds: 'bandage',
-  serum: 'serum',
-  medkit: 'medkit',
-  stim: 'stim',
-  nutrient: 'nutrient',
-  nanogel: 'nanogel',
-};
-
+/** 副本掉落的「药剂类」战利品 → 直接进医疗背包（而非折算材料/币）；映射表定义见文件尾部导出 */
 /** 副本掉落的「投掷物」战利品 → 进投掷物库存（快捷·投掷槽来源） */
 const LOOT_THROWABLE_MAP: Record<string, ThrowableId> = {
   grenade: 'grenade',
@@ -980,6 +980,8 @@ export interface SortieResultInput {
   /** 该幸存者此次出击的最终 HP / maxHp（battle-v5 实际值） */
   finalHp: number;
   maxHp: number;
+  /** 本次出击战斗获得的经验（撤离成功才结算入账） */
+  xpGained?: number;
 }
 
 export function applySortieResult(state: SurvivalGameState, input: SortieResultInput, now: number = Date.now()): SurvivalGameState {
@@ -1007,12 +1009,172 @@ export function applySortieResult(state: SurvivalGameState, input: SortieResultI
     enemyFaced: input.enemyFaced,
     rescued: input.rescued,
   };
-  return {
+  let next: SurvivalGameState = {
     ...state,
     survivorStatus: { ...state.survivorStatus, [input.survivorId]: nextStatus },
     sortieHistory: [logEntry, ...state.sortieHistory].slice(0, 100),
   };
+  // 经验结算：撤离成功才入账（阵亡/超时的经验作废——搜打撤的残酷法则）
+  if (input.outcome === 'success' && (input.xpGained ?? 0) > 0) {
+    next = grantSortieXp(next, input.survivorId, input.xpGained ?? 0);
+  }
+  return next;
 }
+
+// ===== 等级 / 经验 / 自由属性点 / 升级词条三选一（系统流） =====
+
+/** 每次升级获得的自由六维属性点 */
+export const FREE_POINTS_PER_LEVEL = 3;
+
+/** 升到下一级所需经验：100 × 1.35^(level-1)，逐级递增 */
+export function xpNeededForLevel(level: number): number {
+  return Math.round(100 * Math.pow(1.35, Math.max(0, level - 1)));
+}
+
+/**
+ * 发放经验并结算升级（可连升多级）：
+ *  - 每升 1 级：+3 自由属性点、状态补满；
+ *  - 若当前无待选词条，生成「三选一」词条候选（按品质概率加权）。
+ */
+export function grantSortieXp(state: SurvivalGameState, survivorId: string, xp: number): SurvivalGameState {
+  if (xp <= 0) return state;
+  const idx = state.survivors.findIndex((s) => s.id === survivorId);
+  if (idx < 0) return state;
+  const p: SurvivorProfile = { ...state.survivors[idx] };
+  p.level = p.level ?? 1;
+  p.xp = (p.xp ?? 0) + xp;
+  let levels = 0;
+  while (p.xp >= xpNeededForLevel(p.level ?? 1)) {
+    p.xp = (p.xp ?? 0) - xpNeededForLevel(p.level ?? 1);
+    p.level = (p.level ?? 1) + 1;
+    levels += 1;
+    p.freePoints = (p.freePoints ?? 0) + FREE_POINTS_PER_LEVEL;
+  }
+  const survivors = [...state.survivors];
+  survivors[idx] = p;
+  if (levels === 0) {
+    return { ...state, survivors };
+  }
+  // 升级：补满状态（生命拉满到 maxHp）
+  const status = state.survivorStatus[survivorId];
+  const survivorStatus = status
+    ? { ...state.survivorStatus, [survivorId]: { ...status, currentHp: status.maxHp } }
+    : state.survivorStatus;
+  // 词条三选一（系统提示）：已有待选则不覆盖（多级连升共用一次选择，点数照常累计）
+  if (!p.pendingTraitPick || p.pendingTraitPick.length === 0) {
+    p.pendingTraitPick = rollTraitCandidates(Math.random, p.traits.map((t) => t.id), 3);
+  }
+  return {
+    ...state,
+    survivors,
+    survivorStatus,
+    log: [
+      `【系统】${p.name} 升至 Lv.${p.level}！状态已补满，获得 ${levels * FREE_POINTS_PER_LEVEL} 点自由属性点与词条强化三选一。`,
+      ...state.log,
+    ].slice(0, 50),
+  };
+}
+
+/** 分配 1 点自由属性点（六维任选），并重算战力/段位 */
+export function allocateFreePoint(
+  state: SurvivalGameState,
+  survivorId: string,
+  attr: keyof Attributes,
+): SurvivalGameState {
+  const idx = state.survivors.findIndex((s) => s.id === survivorId);
+  if (idx < 0) return state;
+  const p = { ...state.survivors[idx] };
+  if ((p.freePoints ?? 0) <= 0) return state;
+  p.freePoints = (p.freePoints ?? 0) - 1;
+  p.attributes = { ...p.attributes, [attr]: (p.attributes[attr] ?? 0) + 1 };
+  p.power = computePower(p.attributes);
+  const { tier, name: tierName } = tierFromPower(p.power);
+  p.tier = tier;
+  p.tierName = tierName;
+  const survivors = [...state.survivors];
+  survivors[idx] = p;
+  return { ...state, survivors };
+}
+
+/** 升级词条三选一：选定候选 → 词条入库 + 属性增量叠加 + 重算战力段位 */
+export function chooseTraitPick(
+  state: SurvivalGameState,
+  survivorId: string,
+  candidateIndex: number,
+): SurvivalGameState {
+  const idx = state.survivors.findIndex((s) => s.id === survivorId);
+  if (idx < 0) return state;
+  const p = { ...state.survivors[idx] };
+  const cands = p.pendingTraitPick;
+  const trait = cands?.[candidateIndex];
+  if (!trait) return state;
+  p.traits = [...p.traits, trait];
+  const attributes = { ...p.attributes };
+  for (const k of ALL_ATTR_KEYS) {
+    const delta = trait.modifiers[k];
+    if (delta) attributes[k] += delta;
+  }
+  p.attributes = attributes;
+  p.power = computePower(attributes);
+  const { tier, name: tierName } = tierFromPower(p.power);
+  p.tier = tier;
+  p.tierName = tierName;
+  p.pendingTraitPick = undefined;
+  const survivors = [...state.survivors];
+  survivors[idx] = p;
+  return {
+    ...state,
+    survivors,
+    log: [`【系统】${p.name} 觉醒词条「${trait.name}」！`, ...state.log].slice(0, 50),
+  };
+}
+
+// ===== 装备回收 / 装备库辅助 =====
+
+/**
+ * 批量回收装备：按物品自身价值折算废土币。
+ * 防呆：被任意角色穿戴中的装备会被整体拒绝（须先卸下）。
+ */
+export function recycleGear(state: SurvivalGameState, gearIds: string[]): SurvivalGameState {
+  const ids = new Set(gearIds);
+  if (ids.size === 0) return state;
+  const equippedIds = new Set(
+    Object.values(state.equipped).flatMap((slots) =>
+      Object.values(slots).filter((x): x is string => typeof x === 'string'),
+    ),
+  );
+  const targets = state.gear.filter((g) => ids.has(g.id));
+  if (targets.length === 0) return state;
+  if (targets.some((g) => equippedIds.has(g.id))) return state; // 有穿戴中的装备混入，整体拒绝
+  const refund = targets.reduce((a, g) => a + g.value, 0);
+  return {
+    ...state,
+    gear: state.gear.filter((g) => !ids.has(g.id)),
+    coins: state.coins + refund,
+    log: [`【回收】${targets.length} 件装备折算 ${refund} 废土币。`, ...state.log].slice(0, 50),
+  };
+}
+
+/** 单角色六维装备加成（角色面板括号显示用） */
+export function gearAttrBonus(state: SurvivalGameState, survivorId: string): Partial<Attributes> {
+  const out: Partial<Attributes> = {};
+  for (const g of equippedGearList(state, survivorId)) {
+    for (const k of Object.keys(g.modifiers) as (keyof Attributes)[]) {
+      out[k] = (out[k] ?? 0) + (g.modifiers[k] ?? 0);
+    }
+  }
+  return out;
+}
+
+/** 副本掉落的「药剂类」战利品 → 直接进医疗背包（而非折算材料/币） */
+export const LOOT_MEDICINE_MAP: Record<string, MedicineId> = {
+  meds: 'bandage',
+  serum: 'serum',
+  medkit: 'medkit',
+  stim: 'stim',
+  nutrient: 'nutrient',
+  nanogel: 'nanogel',
+};
 
 // ===== 任务 / 悬赏（轻量版） =====
 

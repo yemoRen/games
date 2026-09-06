@@ -317,6 +317,7 @@ export function createRun(
     secureBox: Array.from({ length: SECURE_BOX_SLOTS }, () => null),
     atExtract: false,
     battles: [],
+    xpGained: 0,
     scene: [
       '【生存系统】任务简报：',
       `目标区域【${startZone.name}】—— ${startZone.flavor}`,
@@ -795,6 +796,12 @@ export function fight(
     plog(state, '🛡 护甲耐久耗尽，已失去防护！');
   }
   state.corpse = { enemyName: enemy.name };
+  // 击杀经验：与敌人强度/区域危险度挂钩（撤离成功才结算入角色）
+  const xpGain = Math.round(
+    (12 + state.zone.dangerLevel * 8) * (enemy.boss ? 3 : 1) * (0.8 + rng() * 0.4),
+  );
+  state.xpGained += xpGain;
+  plog(state, `📈 击败【${enemy.name}】获得经验 +${xpGain}（撤离成功后结算）。`);
   // 霸主击杀奖励：额外掉落一件高阶装备
   if (enemy.boss) {
     plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理。`);
@@ -816,6 +823,20 @@ export function fight(
   );
   // 交战消耗对局时间（放在末尾：胜利后仍可能因时间耗尽而 timeout）
   spendTime(state, ACTION_COST.fight + Math.floor(rng() * 20));
+}
+
+/**
+ * 从战局背包消耗一件道具（qty-1 或整格移除）。
+ * 供 UI 实现「副本内使用搜到的回复类道具」；返回被消耗的物品。
+ */
+export function consumeCarriedItem(state: ExtractionRunState, index: number): LootItem | null {
+  if (state.phase !== 'searching') return null;
+  const it = state.carriedLoot[index];
+  if (!it) return null;
+  const q = it.qty ?? 1;
+  if (q <= 1) state.carriedLoot.splice(index, 1);
+  else it.qty = q - 1;
+  return it;
 }
 
 /** 搜刮敌方尸体：战斗胜利后的额外战利品机会 */

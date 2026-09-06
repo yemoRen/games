@@ -56,6 +56,13 @@ import {
   QUICK_SLOTS,
   THROWABLES,
   RAID_PACK_CAPACITY,
+  GEAR_SLOT_LABEL,
+  LOOT_MEDICINE_MAP,
+  xpNeededForLevel,
+  allocateFreePoint,
+  chooseTraitPick,
+  recycleGear,
+  gearAttrBonus,
 } from '@shared/engine/survival';
 import {
   createRun,
@@ -67,6 +74,7 @@ import {
   addCarriedLoot,
   resolveEncounter,
   lootCorpse,
+  consumeCarriedItem,
   advanceBranch,
   goToExtract,
   leaveExtract,
@@ -185,24 +193,30 @@ const DANGER_LABEL: Record<number, string> = {
   6: '危6·禁区',
 };
 
-function attrBars(attrs: Attributes) {
+function attrBars(attrs: Attributes, bonus?: Partial<Attributes>) {
   const max = Math.max(20, ...Object.values(attrs));
   return (
     <div className="grid grid-cols-3 gap-x-3 gap-y-1.5 text-[12px]">
-      {(Object.keys(attrs) as (keyof Attributes)[]).map((k) => (
-        <div key={k}>
-          <div className="flex justify-between text-zinc-400">
-            <span>{attrLabel(k)}</span>
-            <span className="text-zinc-200">{attrs[k]}</span>
+      {(Object.keys(attrs) as (keyof Attributes)[]).map((k) => {
+        const b = bonus?.[k] ?? 0;
+        return (
+          <div key={k}>
+            <div className="flex justify-between text-zinc-400">
+              <span>{attrLabel(k)}</span>
+              <span className="text-zinc-200">
+                {attrs[k]}
+                {b !== 0 && <span className="text-emerald-400">(+{b})</span>}
+              </span>
+            </div>
+            <div className="mt-0.5 h-1.5 overflow-hidden rounded bg-zinc-800">
+              <div
+                className="h-full bg-emerald-500/70"
+                style={{ width: `${Math.min(100, (attrs[k] / max) * 100)}%` }}
+              />
+            </div>
           </div>
-          <div className="mt-0.5 h-1.5 overflow-hidden rounded bg-zinc-800">
-            <div
-              className="h-full bg-emerald-500/70"
-              style={{ width: `${Math.min(100, (attrs[k] / max) * 100)}%` }}
-            />
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -532,7 +546,81 @@ function CharacterPanel(props: {
                 </div>
               )}
 
-              <div className="mt-3">{attrBars(s.attributes)}</div>
+              <div className="mt-3">{attrBars(s.attributes, gearAttrBonus(state, s.id))}</div>
+
+              {/* 等级 / 经验 / 自由属性点 / 升级词条三选一（系统流） */}
+              {(() => {
+                const lvl = s.level ?? 1;
+                const xp = s.xp ?? 0;
+                const need = xpNeededForLevel(lvl);
+                const fp = s.freePoints ?? 0;
+                const cands = s.pendingTraitPick ?? [];
+                return (
+                  <div className="mt-2 rounded border border-sky-900/50 bg-zinc-950/50 p-2">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-sky-300">
+                        Lv.{lvl}
+                        <span className="ml-2 text-zinc-500">经验 {xp} / {need}</span>
+                      </span>
+                      {fp > 0 && (
+                        <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-300">
+                          ⬆ 自由属性点 ×{fp}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded bg-zinc-800">
+                      <div className="h-full bg-sky-500/70" style={{ width: `${Math.min(100, (xp / need) * 100)}%` }} />
+                    </div>
+                    {fp > 0 && (
+                      <div className="mt-2">
+                        <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点（每点 +1）：</div>
+                        <div className="flex flex-wrap gap-1">
+                          {(Object.keys(s.attributes) as (keyof Attributes)[]).map((k) => (
+                            <button
+                              key={k}
+                              onClick={() => mutate((st2) => allocateFreePoint(st2, s.id, k))}
+                              className="rounded border border-amber-700/60 px-1.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
+                            >
+                              {attrLabel(k)} +1
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {cands.length > 0 && (
+                      <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
+                        <div className="text-[11px] text-purple-300">
+                          🔗【系统】检测到宿主等级提升……请选择词条强化（三选一）：
+                        </div>
+                        <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+                          {cands.map((t, i) => (
+                            <button
+                              key={`${t.id}-${i}`}
+                              onClick={() => mutate((st2) => chooseTraitPick(st2, s.id, i))}
+                              className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
+                              style={{ borderColor: affixColor(t.quality) }}
+                            >
+                              <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
+                                {affixLabel(t.quality)}·{t.name}
+                              </div>
+                              <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
+                              <div className="mt-0.5 text-[10px] text-emerald-300">
+                                {(Object.keys(t.modifiers) as (keyof Attributes)[])
+                                  .filter((k) => (t.modifiers[k] ?? 0) !== 0)
+                                  .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
+                                  .join(' ')}
+                                {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
+                                {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
+                                {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="mt-3 flex flex-wrap items-center gap-1.5">
                 {s.traits.map((t) => (
@@ -633,7 +721,20 @@ function InventoryPanel(props: {
   const { state, mutate, rng } = props;
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId) ?? null;
   const matPage = usePagination(state.materials, 12);
-  const gearPage = usePagination(state.gear, 6);
+  // 装备库：已被任意角色穿戴的装备不予显示（穿戴独立性，卸下后回归）；支持分类筛选 + 批量回收
+  const [gearCat, setGearCat] = useState<'all' | GearSlot>('all');
+  const [recycleSel, setRecycleSel] = useState<Record<string, boolean>>({});
+  const [confirmRecycle, setConfirmRecycle] = useState(false);
+  const equippedGearIds = new Set(
+    Object.values(state.equipped).flatMap((slots) =>
+      Object.values(slots).filter((x): x is string => typeof x === 'string'),
+    ),
+  );
+  const ownedGear = state.gear.filter((g) => !equippedGearIds.has(g.id));
+  const filteredGear = gearCat === 'all' ? ownedGear : ownedGear.filter((g) => g.slot === gearCat);
+  const gearPage = usePagination(filteredGear, 6);
+  const selectedGear = ownedGear.filter((g) => recycleSel[g.id]);
+  const refundTotal = selectedGear.reduce((a, g) => a + g.value, 0);
 
   return (
     <section className="space-y-4">
@@ -797,73 +898,135 @@ function InventoryPanel(props: {
         )}
       </div>
 
-      {/* 装备库 */}
+      {/* 装备库（已穿戴的不显示；分类筛选 + 多选批量回收，两步确认防误触） */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-xs uppercase tracking-wider text-zinc-500">装备库</h3>
           <span className="text-[11px] text-zinc-500">当前出击：{active?.name ?? '无'}</span>
         </div>
+        <p className="mb-2 text-[11px] text-zinc-600">
+          已被角色穿戴的装备不在此显示（穿戴独立），卸下后回归装备库。回收金额 = 装备自身价值。
+        </p>
+        {/* 分类筛选 */}
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {GEAR_CATS.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => { setGearCat(c.key); setConfirmRecycle(false); }}
+              className={`rounded border px-2 py-0.5 text-[11px] transition ${
+                gearCat === c.key
+                  ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
+                  : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
         {state.gear.length === 0 ? (
           <p className="text-sm text-zinc-600">尚未获得任何装备。</p>
+        ) : filteredGear.length === 0 ? (
+          <p className="text-sm text-zinc-600">该分类下暂无可显示的装备。</p>
         ) : (
           <>
             <ul className="space-y-2">
               {gearPage.slice.map((g) => {
-                const onActive = active && (state.equipped[active.id] ?? {})[g.slot] === g.id;
-              return (
-                <li key={g.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      {/* 装备名按阶级着色，不再一律白色 */}
-                      <span
-                        className="text-sm"
-                        style={{ color: g.tierColor ?? tierColor(g.tier ?? 0) }}
-                      >
-                        {g.name}
-                      </span>
-                      <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-400">
-                        {g.rarityName ?? g.rarity}·{slotLabel(g.slot)}
-                      </span>
-                    </div>
-                    {active && (
-                      onActive ? (
+                const checked = !!recycleSel[g.id];
+                return (
+                  <li
+                    key={g.id}
+                    className={`rounded border p-3 transition ${
+                      checked ? 'border-rose-700/60 bg-rose-950/10' : 'border-zinc-800 bg-zinc-950/50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {/* 多选框（批量回收用） */}
                         <button
-                          onClick={() => mutate((s) => unequipGear(s, active.id, g.slot))}
-                          className="rounded bg-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-600"
+                          onClick={() => { setRecycleSel((s0) => ({ ...s0, [g.id]: !s0[g.id] })); setConfirmRecycle(false); }}
+                          title="勾选以加入批量回收"
+                          className={`h-4 w-4 shrink-0 rounded border text-[10px] leading-none transition ${
+                            checked
+                              ? 'border-rose-500 bg-rose-600 text-white'
+                              : 'border-zinc-600 text-transparent hover:border-zinc-400'
+                          }`}
                         >
-                          卸下
+                          ✓
                         </button>
-                      ) : (
+                        <span className="text-sm" style={{ color: g.tierColor ?? tierColor(g.tier ?? 0) }}>
+                          {g.name}
+                        </span>
+                        <span className="ml-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-400">
+                          {g.rarityName ?? g.rarity}·{GEAR_SLOT_LABEL[g.slot]}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-zinc-500">⛁{g.value}</span>
+                      </div>
+                      {active && (
                         <button
                           onClick={() => mutate((s) => equipGear(s, active.id, g.id))}
-                          className="rounded bg-emerald-700 px-2 py-1 text-xs text-white hover:bg-emerald-600"
+                          className="shrink-0 rounded bg-emerald-700 px-2 py-1 text-xs text-white hover:bg-emerald-600"
                         >
                           装备
                         </button>
-                      )
-                    )}
-                  </div>
-                  <div className="mt-1 text-[11px] text-zinc-500">{g.affixes.join('、')}</div>
-                  <div className="mt-0.5 flex flex-wrap gap-1.5">
-                    {(Object.keys(g.modifiers) as (keyof Attributes)[])
-                      .filter((k) => (g.modifiers[k] ?? 0) !== 0)
-                      .map((k) => (
-                        <span key={k} className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[11px] text-emerald-300">
-                          {attrLabel(k)}+{g.modifiers[k]}
-                        </span>
-                      ))}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          <Pager
-            page={gearPage.page}
-            pageCount={gearPage.pageCount}
-            total={state.gear.length}
-            onPrev={() => gearPage.setPage(gearPage.page - 1)}
-            onNext={() => gearPage.setPage(gearPage.page + 1)}
-          />
+                      )}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-500">{g.affixes.join('、')}</div>
+                    <div className="mt-0.5 flex flex-wrap gap-1.5">
+                      {(Object.keys(g.modifiers) as (keyof Attributes)[])
+                        .filter((k) => (g.modifiers[k] ?? 0) !== 0)
+                        .map((k) => (
+                          <span key={k} className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[11px] text-emerald-300">
+                            {attrLabel(k)}+{g.modifiers[k]}
+                          </span>
+                        ))}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <Pager
+              page={gearPage.page}
+              pageCount={gearPage.pageCount}
+              total={filteredGear.length}
+              onPrev={() => gearPage.setPage(gearPage.page - 1)}
+              onNext={() => gearPage.setPage(gearPage.page + 1)}
+            />
+            {/* 批量回收（两步确认防误触） */}
+            {selectedGear.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded border border-amber-800/60 bg-amber-950/20 p-2 text-xs">
+                <span className="text-amber-200">
+                  已选 {selectedGear.length} 件 · 回收可得 ⛁{refundTotal}
+                </span>
+                {!confirmRecycle ? (
+                  <button
+                    onClick={() => setConfirmRecycle(true)}
+                    className="rounded bg-rose-700 px-3 py-1 font-medium text-white hover:bg-rose-600"
+                  >
+                    ♻ 回收选中
+                  </button>
+                ) : (
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-rose-300">⚠ 再次确认：回收后装备永久消失！</span>
+                    <button
+                      onClick={() => {
+                        mutate((s) => recycleGear(s, selectedGear.map((g) => g.id)));
+                        setRecycleSel({});
+                        setConfirmRecycle(false);
+                      }}
+                      className="rounded bg-rose-700 px-3 py-1 font-medium text-white hover:bg-rose-600"
+                    >
+                      确认回收
+                    </button>
+                    <button
+                      onClick={() => setConfirmRecycle(false)}
+                      className="rounded border border-zinc-600 px-2 py-1 text-zinc-300 hover:bg-zinc-800"
+                    >
+                      取消
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -871,9 +1034,11 @@ function InventoryPanel(props: {
   );
 }
 
-function slotLabel(slot: GearSlot): string {
-  return slot === 'weapon' ? '武器' : slot === 'armor' ? '护甲' : '配件';
-}
+/** 装备库分类（全部 + 6 主槽位） */
+const GEAR_CATS: Array<{ key: 'all' | GearSlot; label: string }> = [
+  { key: 'all', label: '全部' },
+  ...(Object.keys(GEAR_SLOT_LABEL) as GearSlot[]).map((k) => ({ key: k, label: GEAR_SLOT_LABEL[k] })),
+];
 
 // ===== 基地 =====
 function BasePanel(props: {
@@ -1026,6 +1191,8 @@ function SortiePanel(props: {
         rescued: !!s.bankedNpc,
         finalHp: s.condition.resources.hp.current,
         maxHp: s.condition.resources.hp.max ?? 0,
+        // 经验结算：仅撤离成功入账（applySortieResult 内部也会按 outcome 把关）
+        xpGained: failed ? 0 : s.xpGained,
       });
       // 撤离失败 / 阵亡 / 超时：战局背包（carriedLoot）已由 extract 拦下不入库；
       // 身上常驻穿戴的装备还要按概率被搜刮者夺走。
@@ -1167,6 +1334,28 @@ function SortiePanel(props: {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
     takeFromSecure(s, slot);
+    sync();
+  };
+
+  /** 副本内使用搜到的回复类道具（绷带/急救包/血清等）：立即回血，消耗战局背包中的 1 件 */
+  const applyCarriedMed = (index: number) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    const it = s.carriedLoot[index];
+    if (!it) return;
+    const medId = LOOT_MEDICINE_MAP[it.id];
+    const med = medId ? MEDICINES.find((m) => m.id === medId) : undefined;
+    if (!med) return;
+    const maxHp = s.condition.resources.hp.max ?? 0;
+    const cur = s.condition.resources.hp.current;
+    if (cur >= maxHp) return;
+    const heal = Math.round(med.healPct * maxHp) + med.healFlat;
+    const consumed = consumeCarriedItem(s, index);
+    if (!consumed) return;
+    s.condition.resources.hp.current = Math.min(maxHp, cur + heal);
+    s.log.push(
+      `[${fmtClock(s.elapsedSec)}] 💊 使用战利品【${it.name}】，恢复 ${heal} 点生命（${s.condition.resources.hp.current}/${maxHp}）。`,
+    );
     sync();
   };
 
@@ -1600,6 +1789,7 @@ function SortiePanel(props: {
             </h2>
             <p className="mb-2 text-[11px] text-amber-500/80">
               本局搜刮的战利品：撤离成功才入库，阵亡 / 超时将全部清零；安全箱内物资 100% 保留。穿戴装备不在本局背包内。
+              回复类物资（绷带/急救包/血清等）可就地「💊 使用」，没用完的撤离成功后自动带回基地医疗背包。
             </p>
             <div className="mb-2 flex flex-wrap items-center gap-1 text-[11px] text-zinc-500">
               <span>阶级：</span>
@@ -1646,6 +1836,16 @@ function SortiePanel(props: {
                       )}
                       {!isOver && (
                         <div className="mt-1 flex gap-1">
+                          {LOOT_MEDICINE_MAP[it.id] && (
+                            <button
+                              onClick={() => applyCarriedMed(i)}
+                              disabled={(hp?.current ?? 0) >= (hp?.max ?? 0)}
+                              className="rounded border border-emerald-700/60 px-1.5 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-900/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
+                              title="在本局内立即使用，恢复生命"
+                            >
+                              💊 使用
+                            </button>
+                          )}
                           <button
                             onClick={() => doToSecure(i)}
                             disabled={secureUsed >= SECURE_BOX_SLOTS}
