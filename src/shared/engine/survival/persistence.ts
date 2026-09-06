@@ -1,0 +1,64 @@
+/*
+ * persistence.ts — 浏览器端存档（localStorage）。
+ * 服务端/Node 环境（如 demo、测试）无 localStorage，做好守卫，回退为空。
+ *
+ * 存档按「当前登录账号」隔离：每个账号拥有独立存档槽位，
+ * 不同账号/密码对应不同的游戏进度。未登录时不读写（由玩法页登录门禁保证）。
+ */
+import type { SurvivalGameState } from './state';
+import { getCurrentUser } from './account';
+
+const SAVE_PREFIX = 'wqqs-survival-save-v1:';
+
+function slotKey(name: string): string {
+  return `${SAVE_PREFIX}${name}`;
+}
+
+function getStorage(): Storage | null {
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage;
+  } catch {
+    /* 某些环境访问 localStorage 会抛错 */
+  }
+  return null;
+}
+
+export function hasSave(): boolean {
+  const s = getStorage();
+  const name = getCurrentUser();
+  if (!s || !name) return false;
+  return s.getItem(slotKey(name)) != null;
+}
+
+export function loadGame(): SurvivalGameState | null {
+  const s = getStorage();
+  const name = getCurrentUser();
+  if (!s || !name) return null;
+  const raw = s.getItem(slotKey(name));
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw) as SurvivalGameState;
+    if (data && data.version && Array.isArray(data.survivors)) return data;
+  } catch {
+    /* 损坏存档直接忽略 */
+  }
+  return null;
+}
+
+export function saveGame(state: SurvivalGameState): void {
+  const s = getStorage();
+  const name = getCurrentUser();
+  if (!s || !name) return;
+  try {
+    s.setItem(slotKey(name), JSON.stringify(state));
+  } catch {
+    /* 配额溢出等忽略 */
+  }
+}
+
+export function clearSave(): void {
+  const s = getStorage();
+  const name = getCurrentUser();
+  if (!s || !name) return;
+  s.removeItem(slotKey(name));
+}
