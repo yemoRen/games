@@ -1,153 +1,101 @@
-# 万界道友
+# 全民求生・系统搜打撤
 
 <p align="center">
-  <img src="public/assets/daoyou_logo.webp" alt="万界道友 Logo" width="200" />
+  <strong>末世 LitRPG · 文字放置「搜打撤」生存游戏</strong>
 </p>
 
-<p align="center">
-  <strong>一款 AIGC 驱动、高自由度文字体验、修仙世界观的开源游戏项目。</strong>
-</p>
-
-> 本仓库当前实现为 `Hono + React SPA`。这里的说明以现有代码为准，已不再适用于旧版 Next.js 架构。
+> 本项目是开源游戏《万界道友》的**末世换皮独立版本**：复用其底层引擎（Hono + React + battle-v5 战斗），将修仙放置主题改写为「末世废土 + 系统搜打撤」玩法。本仓库已与上游解耦为独立落地页与独立存档。
 
 ---
 
-## 项目愿景
+## 项目简介
 
-**《万界道友》** 旨在打造一套"修仙宇宙的开源骨架"。它不仅是一个可以直接游玩的文字修仙游戏，更是一套高度结构化、AIGC 友好的底层架构。我们希望通过**高自由度的输入 + AIGC 反馈**，结合**严格的数值与战斗模型**，让创作者能够在此基础上快速搭建属于自己的修仙世界。
+《全民求生・系统搜打撤》把原游戏的「闭关修炼 → 突破 → 秘境产出」循环，改写为高潮汐落、高风险高回报的 **搜（搜刮）→ 打（战斗）→ 撤（撤离结算）** 循环：
 
-- **玩法层面**：鼓励玩家通过文字描述塑造角色，AI 实时生成反馈，带来"千人千面"的体验。
-- **系统层面**：保持系统的稳定、正交与可组合性，确保数值平衡与逻辑自洽。
-- **表现层面**：坚持"文字即界面"，采用水墨意境 UI，适配移动端体验。
+- 在系统指引下进入危险区域搜刮物资、与丧尸/掠夺者交战；
+- 抵达撤离点成功撤离 → 本局战利品入库；
+- 撤离失败 / 阵亡 → 本局携带物资全部遗失，出击成员返回战团进入**濒死**状态，需用货币或医疗品救治，久治不愈则离世。
 
-## 核心特色
+游戏为**纯文字 + 数据驱动**呈现，无美术资源依赖，适配桌面与移动端浏览器。
 
-- 🤖 **AIGC 深度集成**：角色背景、战斗播报、奇遇故事、物品描述全流程 AI 生成，每一次体验都独一无二。当前统一使用 DeepSeek。
-- ⚔️ **深度战斗引擎**：基于时间轴的回合制战斗，支持神通、法宝、状态效果（Buff/Debuff）、五行克制、伤害管道等复杂机制。
-- ☯️ **严谨修仙体系**：完整的境界（炼气至渡劫）、灵根（金木水火土风雷冰）、功法、命格、炼丹炼器系统。
-- 📱 **水墨风 UI**：基于 `Ink` 组件库（21 个组件）打造的纯文字 UI，简洁优雅，沉浸感强。
-- 🛠️ **开发者友好**：清晰的分层架构（Engine/Service/API），TypeScript 全栈开发，易于扩展与二创。
+## 核心玩法
 
-## 🌌 万界
-
-「万界」收录基于本仓库开源部署、由不同维护者运营的《万界道友》服务器。各界可能拥有不同的玩法、设定与社区生态，欢迎选择感兴趣的世界游历。
-
-| 界名 | 特色 | 网站入口 | 源代码 | 维护者 |
-| --- | --- | --- | --- | --- |
-| 万界道友 | 官方维护，提供原版玩法与最新功能体验 | [进入此界](https://client.daoyou.org) | [ChurchTao/Daoyou](https://github.com/ChurchTao/Daoyou) | [ChurchTao](https://github.com/ChurchTao) |
-| 云梦界 | 扩展暗巷黑市、拍卖行与灵田等玩法，侧重玩家交互、经济系统和长期养成 | [进入此界](https://yzdoc.cn/game) | [sclzboywow/daoyou](https://github.com/sclzboywow/daoyou) | [sclzboywow](https://github.com/sclzboywow) |
-
-### 加入万界
-
-如果你运营着基于本项目部署的服务器，可以通过[「万界」收录申请](https://github.com/ChurchTao/Daoyou/issues/new?template=submit-world.yml)提交界名、特色、网站入口及源代码地址。申请需满足以下条件：
-
-- 界名由 2–5 个汉字组成，不得冒充官方或与已收录界名混淆。
-- 当前部署版本的完整源代码必须公开可访问，并保留本项目署名及许可证声明。
-- 网站入口必须公开可访问，并明确说明特色玩法、维护者和涉及的付费、广告或用户数据收集情况。
-- 不得包含违法、欺诈、恶意收集用户信息或明显侵权的内容。
-- 长期无法访问、停止公开源代码或违反上述规则的服务器可能被移出名录。
-
-> 「万界」仅提供社区服务器索引，收录不代表官方对其安全性、可用性、内容或运营行为作出背书。请勿在不同服务器间复用密码，并自行判断账号、数据及付费风险。
-
-## 🖼 游戏画面
-
-<p align="center">
-  <img src="https://page-r2.daoyou.org/index/Xnip2026-02-02_18-45-05.png" alt="游戏主界面" width="260" />
-  <img src="https://page-r2.daoyou.org/index/Xnip2026-02-02_18-50-45.png" alt="主界面下方信息" width="260" />
-  <img src="https://page-r2.daoyou.org/index/Xnip2026-02-02_19-03-00.png" alt="修仙界大地图" width="260" />
-</p>
-
-<p align="center">
-  <img src="https://page-r2.daoyou.org/index/Xnip2026-02-02_19-01-06.png" alt="造物仙炉" width="260" />
-  <img src="https://page-r2.daoyou.org/index/Xnip2026-02-02_19-01-32.png" alt="藏经阁" width="260" />
-  <img src="https://page-r2.daoyou.org/index/Xnip2026-02-02_19-02-21.png" alt="云游坊市" width="260" />
-</p>
+- **主角生成**：注册「幸存者档案」时，以玩家代号生成一名**全属性 15、紫色（epic）品质**的主角，直接入列战团。
+- **战团成员（N/10）**：战团上限 **10 人**。副本中带回的幸存者不会自动入团，需先进入「幸存者花名册」用货币招募。
+- **幸存者花名册**：展示副本中发现的幸存者列表，含**属性面板 + 招募金额**（越强力越贵，按段位分 5 档 `[50, 200, 800, 3000, 10000]` 废土币）。
+- **招募 / 遣散**：招募后正式入列战团；战团满员无法招募，需**遣散**现有成员（返还 **1/3** 招募价值）或由成员死亡腾出名额。主角不可遣散。
+- **出击 - 撤离**：复用 `battle-v5` 引擎跑真实战斗；撤离成功物资入库（废土币 + 材料 + 带阶级词缀的装备），阵亡/撤离失败仅丢失未撤离物资。
+- **濒死与救治**：撤离失败成员返回战团进入濒死（约 5% 血量 + 10 分钟救治倒计时 + 流血/骨折/惊惧等伤势），可用 **100 废土币**或任意医疗品救治；超时未治则自动离世、移出战团。
+- **末世行止**：仿原「万界行止」的菜单系统，含医疗中心、废土市场、探险札记、任务中心、英雄榜等模块。
 
 ## 技术概览
 
-- 服务端：`Hono 4` + `Bun`
-- 前端：`React 19` + `React Router 7` + `Vite 8`
+- 服务端：`Hono` + `Bun`
+- 前端：`React 19` + `React Router 7` + `Vite`
 - 样式：`Tailwind CSS 4`
-- 数据库：`PostgreSQL` + `Drizzle ORM`
-- 缓存 / 分布式协调：`Redis`
-- 消息与实时广播：`NATS JetStream` + `NATS Core`
-- 认证：`Better Auth`
-- AI 能力：`AI SDK` + `DeepSeek`
+- 战斗引擎：`battle-v5`（时间轴回合制，技能/词条/Buff 全配置驱动）
+- 持久化：末世模式当前为**浏览器 `localStorage` 存档**（按账号隔离），不依赖服务端数据库即可游玩；底层框架同时保留 PostgreSQL / Drizzle / Redis / Better Auth 等能力供扩展。
+- AI 旁白：复用 `AI SDK` 能力做「末世生存系统」播报（需配置 LLM Provider）。
 
-## 仓库布局
+## 目录结构（末世模式相关）
 
 ```text
 .
-├── src/index.ts                 # Bun 后端入口，导出 Hono API 与 WebSocket 配置
-├── src/server/                  # Hono API、认证、服务层、数据库访问
-├── src/react-app/               # React SPA
-├── src/shared/                  # 共享引擎、配置、类型、契约
-├── drizzle/                     # 业务表 Drizzle migrations
-├── drizzle-auth/                # Better Auth Drizzle migrations
-├── scripts/                     # 部署脚本与生产/NATS Compose
-├── docker/Dockerfile.app        # Bun 主服务镜像
-└── vite.config.ts
+├── src/shared/engine/survival/   # 末世模式引擎（均为新增，未改原游戏逻辑）
+│   ├── chargen.ts                # 幸存者/主角随机生成（六维属性 + 词条 + 段位 + 稀有度）
+│   ├── state.ts                  # 持久化状态 + mutators（招募/遣散/入库/制造/出击装配）
+│   ├── recovery.ts               # HP/伤势/濒死/撤离后时间戳恢复
+│   ├── economy.ts                # 废土币、制造改装、避难所设施、战团声望
+│   ├── extraction/               # 出击-搜刮-战斗-撤离 状态机引擎
+│   └── combatAdapter.ts          # 幸存者/敌人接入 battle-v5
+├── src/react-app/routes/survival/
+│   ├── route.tsx                 # 独立落地页（/survival）
+│   ├── signup/route.tsx          # 建立幸存者档案（/survival/signup）
+│   ├── login/route.tsx           # 幸存者核验（/survival/login）
+│   ├── play/route.tsx            # 主玩法 Hub：战团/花名册/出击/医疗（/survival/play）
+│   └── menu/                     # 末世行止菜单（/survival/menu）
+├── docs/reskin-design-全民求生-系统搜打撤.md  # 完整换皮设计大纲
+└── src/shared/theme/survival.ts  # 主题层：名词映射 + 「系统」旁白文案
 ```
 
-## 本地开发与部署
+## 本地开发与运行
 
-环境要求、环境变量、数据库初始化、本地开发、构建、Docker、生产 cron 与部署脚本说明已整理到 [docs/development.md](docs/development.md)。
+环境要求：安装 [Bun](https://bun.sh)（≥ 1.x）。
 
-## 贡献指南
+```bash
+# 1. 安装依赖
+bun install
 
-欢迎道友们共建这个修仙世界！
+# 2. 启动开发服务器（前端 + API 并行）
+bun run dev
+# 浏览器打开 http://localhost:5173/
 
-1. Fork 本仓库。
-2. 创建特性分支 (`git checkout -b feature/NewFeature`)。
-3. 提交更改 (`git commit -m 'Add some NewFeature'`)。
-4. 推送到分支 (`git push origin feature/NewFeature`)。
-5. 提交 Pull Request。
+# 3. 进入末世模式落地页
+#    访问 /survival → 点击「建立幸存者档案」注册 → 以代号生成紫色主角
+```
 
-开发与部署的完整约定请参见 [本地开发与部署](#本地开发与部署)。
+其他常用命令：
 
-## 💬 交流群
+```bash
+bun run build      # 生产构建（client + server + battle-worker）
+bun run lint       # ESLint
+bun run check      # 类型检查（tsc -b）
+bun run test       # 运行 src/shared 下的纯引擎单测
+```
 
-欢迎加入《万界道友》QQ交流群，与其他道友共同探讨修仙大计:
+> 引擎整链验证（可选）：`bun run src/shared/engine/survival/demo.ts`
 
-- 1群: 1107586928
-- 2群: 308933047
+## 设计文档
 
-## 💖 赞助与鸣谢
+完整的换皮设计思路、概念映射总表（修仙 → 末世）、分阶段落地路线与已落地进度，见
+[`docs/reskin-design-全民求生-系统搜打撤.md`](docs/reskin-design-全民求生-系统搜打撤.md)。
 
-感谢每一位帮助《万界道友》持续维护与成长的道友。新的赞助统一通过 [爱发电](https://afdian.com/u/baef2b20501311f09da252540025c377) 进行；具体规则请见 [赞助说明](SPONSORING.md)，公开赞助人名单与历史鸣谢请见 [SPONSORS.md](SPONSORS.md)。
+## 开源协议与致谢
 
-<p align="center">
-  <a href="https://afdian.com/u/baef2b20501311f09da252540025c377">
-    <img src="sponsorkit/sponsors.svg" alt="爱发电赞助人名单" width="720" />
-  </a>
-</p>
-
-赞助名单不会展示支付信息或具体金额，赞助不会影响游戏数值、账号权益或项目决策权。
-
-## 🤝 致谢
-
-特别鸣谢以下贡献者：
-
-- [tpoisonooo](https://github.com/tpoisonooo)：在 [Issue #25](https://github.com/ChurchTao/Daoyou/issues/25) 中提供了宝贵的 LLM 优化思路与方法论，极大地提升了游戏的 AIGC 体验。
-
-## 开源协议
-
-本项目采用 [GNU General Public License v3.0](LICENSE) 协议开源。
-
-这意味着你可以自由地：
-
-- 共享：在任何媒介或格式下复制和分发材料
-- 改编：混合、转换和构建材料
-
-但必须遵守以下条款：
-
-- **署名**：必须提供适当的归属。
-- **相同方式共享**：如果你混合、转换或基于该材料进行构建，你必须在相同的协议下分发你的贡献。
-
-详情请查阅 [LICENSE](LICENSE) 文件。
-
----
+- 本换皮版本基于 [ChurchTao/Daoyou《万界道友》](https://github.com/ChurchTao/Daoyou) 开源代码改造，沿用其 **GNU General Public License v3.0** 协议（见 [`LICENSE`](LICENSE)）。
+- 引擎、战斗、账号与部署框架来自上游；末世主题层、搜打撤循环、幸存者/战团/濒死系统等玩法改造为本仓库新增内容。
+- 感谢上游社区与所有贡献者为本项目提供的底层架构。
 
 <p align="center">
-  愿你在万界中得一二知己，共证长生。
+  愿你在废土中搜得一线生机，平安撤离。
 </p>
