@@ -51,6 +51,8 @@ export interface LootItem {
   gear?: GearItem;
   /** 已结算词缀实例（彩色展示用） */
   affixes?: AppliedAffix[];
+  /** 堆叠数量：相同 id 的物品自动合并为一格，不额外占用背包格子 */
+  qty?: number;
 }
 
 export interface EnemyArchetype {

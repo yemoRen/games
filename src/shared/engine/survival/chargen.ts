@@ -8,6 +8,7 @@
  *  - 全程由 RNG 驱动，同种子可复现（便于测试与平衡）。
  */
 import type { Attributes } from '@shared/types/cultivator';
+import type { AffixTierKey } from './affixes';
 import {
   type RNG,
   emptyAttributes,
@@ -33,6 +34,8 @@ export interface SurvivorTrait {
     startHpRatio?: number;
   };
   tag: string;
+  /** 词条品质（决定着色，白<绿<蓝<紫<黄<橙<红） */
+  quality: AffixTierKey;
 }
 
 export interface SurvivorProfile {
@@ -100,6 +103,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '废墟中总能翻到好东西，搜刮收益更高。',
     modifiers: { speed: 2, spirit: 1 },
     combat: { lootLuck: 0.25 },
+    quality: 'green',
     tag: 'scavenger',
   },
   {
@@ -108,6 +112,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '皮糙肉厚，挨打更扛。',
     modifiers: { endurance: 4, vitality: 2 },
     combat: { hpBonus: 25 },
+    quality: 'blue',
     tag: 'tank',
   },
   {
@@ -116,6 +121,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '越是绝境越凶，暴击更狠。',
     modifiers: { strength: 4 },
     combat: { critBonus: 0.18 },
+    quality: 'purple',
     tag: 'damage',
   },
   {
@@ -124,6 +130,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '跑得快，先手与闪避占优。',
     modifiers: { speed: 4, vitality: 1 },
     combat: { startHpRatio: 0.15 },
+    quality: 'green',
     tag: 'agile',
   },
   {
@@ -132,6 +139,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '懂急救，状态更稳。',
     modifiers: { willpower: 3, vitality: 2 },
     combat: { hpBonus: 15 },
+    quality: 'blue',
     tag: 'support',
   },
   {
@@ -140,6 +148,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '眼力极佳，感知拉满。',
     modifiers: { spirit: 5, willpower: 1 },
     combat: { critBonus: 0.1 },
+    quality: 'blue',
     tag: 'ranged',
   },
   {
@@ -147,6 +156,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     name: '废土之子',
     description: '生于末世，根基扎实。',
     modifiers: { vitality: 3, endurance: 2, speed: 1 },
+    quality: 'green',
     tag: 'survivor',
   },
   {
@@ -155,6 +165,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '受过正规训练，攻防均衡。',
     modifiers: { strength: 3, endurance: 2, willpower: 2 },
     combat: { critBonus: 0.05 },
+    quality: 'green',
     tag: 'soldier',
   },
   {
@@ -163,6 +174,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '见啥都顺手牵羊。',
     modifiers: { spirit: 2, speed: 2 },
     combat: { lootLuck: 0.15 },
+    quality: 'green',
     tag: 'hoarder',
   },
   {
@@ -170,6 +182,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     name: '钢铁意志',
     description: '心志如铁，精神抗性高。',
     modifiers: { willpower: 5, spirit: 2 },
+    quality: 'purple',
     tag: 'mental',
   },
   {
@@ -178,6 +191,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '吃得多长得壮，气血厚。',
     modifiers: { vitality: 5 },
     combat: { hpBonus: 20 },
+    quality: 'blue',
     tag: 'tank',
   },
   {
@@ -186,6 +200,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '运气离谱，常有意料之喜。',
     modifiers: { spirit: 1, willpower: 1 },
     combat: { lootLuck: 0.2, critBonus: 0.05 },
+    quality: 'purple',
     tag: 'luck',
   },
   {
@@ -194,6 +209,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     description: '少言寡语，隐蔽性强。',
     modifiers: { speed: 2, willpower: 2 },
     combat: { lootLuck: 0.08 },
+    quality: 'green',
     tag: 'stealth',
   },
   {
@@ -201,6 +217,7 @@ const TRAIT_POOL: SurvivorTrait[] = [
     name: '天生领袖',
     description: '气场强大，队伍核心。',
     modifiers: { willpower: 3, strength: 2 },
+    quality: 'blue',
     tag: 'leader',
   },
 ];
@@ -218,47 +235,40 @@ const ORIGINS = [
   '沿海船坞',
 ];
 
-const NAME_PREFIX = [
-  '老',
-  '小',
-  '阿',
-  '大',
-  '疯',
-  '独眼',
-  '瘸腿',
-  '铁',
-  '冷',
-  '夜',
-  '瘦',
-  '胖',
+// 幸存者姓名：姓 + 名（1~2 字）随机组合，组合空间极大，几乎不会重复
+const SURNAMES = [
+  '王', '李', '张', '刘', '陈', '杨', '赵', '黄', '周', '吴',
+  '徐', '孙', '胡', '朱', '高', '林', '何', '郭', '马', '罗',
+  '梁', '宋', '郑', '谢', '韩', '唐', '冯', '于', '董', '萧',
+  '程', '曹', '袁', '邓', '许', '傅', '沈', '曾', '彭', '吕',
+  '苏', '卢', '蒋', '蔡', '贾', '丁', '魏', '薛', '叶', '阎',
+  '余', '潘', '杜', '戴', '夏', '钟', '汪', '田', '任', '姜',
+  '范', '方', '石', '姚', '谭', '廖', '邹', '熊', '金', '陆',
+  '郝', '孔', '白', '崔', '康', '毛', '邱', '秦', '江', '顾',
+  '侯', '邵', '孟', '龙', '万', '段', '钱', '汤', '尹', '黎',
 ];
-const NAME_CORE = [
-  '周',
-  '陈',
-  '林',
-  '赵',
-  '钱',
-  '孙',
-  '李',
-  '吴',
-  '郑',
-  '王',
-  '雷',
-  '岩',
-  '刀',
-  '枪',
-  '狼',
-  '鸦',
-  '狐',
-  '牛',
+const GIVEN_CHARS = [
+  '伟', '强', '磊', '军', '勇', '杰', '涛', '明', '超', '平',
+  '刚', '志', '建', '国', '海', '山', '峰', '飞', '鹏', '宇',
+  '辰', '浩', '轩', '睿', '昊', '泽', '然', '远', '航', '逸',
+  '朗', '凯', '瑞', '嘉', '鸿', '翔', '博', '斌', '辉', '耀',
+  '震', '虎', '岩', '松', '柏', '枫', '霖', '文', '武', '宁',
+  '康', '安', '乐', '福', '德', '才', '俊', '彦', '哲', '思',
+  '云', '川', '石', '铁', '锋', '钢', '龙', '狼', '鹰', '雷',
+  '炎', '寒', '漠', '霜', '岩', '峰', '岩', '虎', '山', '河',
 ];
-const NAME_SUFFIX = ['', '', '哥', '姐', '叔', '妹', '爷', '仔', '婆', '客'];
 
 function randomName(rng: RNG): string {
-  const p = pick(rng, NAME_PREFIX);
-  const c = pick(rng, NAME_CORE);
-  const s = pick(rng, NAME_SUFFIX);
-  return `${p}${c}${s}`;
+  const surname = pick(rng, SURNAMES);
+  // 1 字名或 2 字名各半，2 字名不重复取字
+  const len = randInt(rng, 1, 2);
+  const given: string[] = [];
+  let guard = 0;
+  while (given.length < len && guard++ < 20) {
+    const c = pick(rng, GIVEN_CHARS);
+    if (!given.includes(c)) given.push(c);
+  }
+  return surname + given.join('');
 }
 
 export function computePower(attributes: Attributes): number {
@@ -383,13 +393,29 @@ const PROTAGONIST_TRAIT: SurvivorTrait = {
   description: '避难所名册上的登记者，资质均衡，成长潜力全凭日后培养。',
   modifiers: {},
   tag: 'protagonist',
+  quality: 'purple',
 };
+
+/** 按 id 取词条池中的词条（用于给主角固定配置真实词条天赋） */
+function traitById(id: string): SurvivorTrait {
+  const t = TRAIT_POOL.find((x) => x.id === id);
+  if (!t) throw new Error(`未知词条: ${id}`);
+  return t;
+}
 
 export const PROTAGONIST_BASE_ATTR = 15;
 
 export function makeProtagonist(name: string): SurvivorProfile {
   const attributes = emptyAttributes();
   for (const k of ALL_ATTR_KEYS) attributes[k] = PROTAGONIST_BASE_ATTR;
+  // 主角固定配置两条真实词条天赋（若未设置则补齐），其属性增量叠加进基础属性
+  const traits = [PROTAGONIST_TRAIT, traitById('ex-soldier'), traitById('field-medic')];
+  for (const t of traits) {
+    for (const k of ALL_ATTR_KEYS) {
+      const delta = (t.modifiers as Record<string, number | undefined>)[k];
+      if (delta) attributes[k] += delta;
+    }
+  }
   const power = computePower(attributes);
   const { tier, name: tierName } = tierFromPower(power);
   return {
@@ -400,7 +426,7 @@ export function makeProtagonist(name: string): SurvivorProfile {
     // 紫（精英）品质，资质均衡固定，留待后续培养成长
     rarity: 'epic',
     attributes,
-    traits: [PROTAGONIST_TRAIT],
+    traits,
     power,
     tier,
     tierName,

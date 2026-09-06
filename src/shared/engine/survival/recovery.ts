@@ -57,8 +57,8 @@ export interface SurvivorStatus {
 /** 撤离失败后的濒死宽限期（分钟）：超时未救治则成员真正离世 */
 export const NEAR_DEATH_GRACE_MIN = 10;
 
-const BASE_REGEN_RATIO = 0.008; // 0.8% maxHp/min
-const VITALITY_PER_POINT = 0.4; // 每点体质 +0.4 HP/min
+const BASE_REGEN_RATIO = 0.04; // 4% maxHp/min（百分比回血，随角色血量放大，明显更快）
+const VITALITY_PER_POINT = 0.5; // 每点体质 +0.5 HP/min（百分比之外的固定补足）
 const MED_MULTIPLIER = 2;
 const MED_DURATION_MIN = 5;
 

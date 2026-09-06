@@ -11,8 +11,8 @@ import { useNavigate } from 'react-router';
 import type { Attributes } from '@shared/types/cultivator';
 import type {
   SurvivalGameState,
-  EquipSlots,
   GearSlot,
+  SurvivorTrait,
 } from '@shared/engine/survival';
 import {
   newGame,
@@ -22,6 +22,8 @@ import {
   dismissRecruit,
   equipGear,
   unequipGear,
+  applyFailureGearLoss,
+  setQuickSlot,
   craftGear,
   craftCost,
   canCraft,
@@ -43,11 +45,17 @@ import {
   treatNearDeathWithCoins,
   WARBAND_CAP,
   NEAR_DEATH_TREAT_COST,
+  applyMedicineToSurvivor,
   type RNG,
   seededRng,
   chance,
   applySortieResult,
   recoverAll as _recoverAll,
+  MEDICINES,
+  MAIN_EQUIP_SLOTS,
+  QUICK_SLOTS,
+  THROWABLES,
+  RAID_PACK_CAPACITY,
 } from '@shared/engine/survival';
 import {
   createRun,
@@ -58,18 +66,90 @@ import {
   extract,
   getZone,
   DANGER_ZONES,
+  addCarriedLoot,
   type ExtractionRunState,
 } from '@shared/engine/extraction';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
 import { loadGame, saveGame, clearSave } from '@shared/engine/survival';
-import { INJURY_LABEL } from '@shared/engine/survival/recovery';
+import { INJURY_LABEL, INJURY_DESC } from '@shared/engine/survival/recovery';
 import { getCurrentUser } from '@shared/engine/survival/account';
 import { MenuDrawer } from '../menu/MenuDrawer';
 import {
   rollGearDrop,
   tierColor,
   RARITY_LEGEND,
+  affixColor,
+  affixLabel,
 } from '@shared/engine/survival/affixes';
+
+/**
+ * 词条说明：点击展开小气泡（移动端友好），点击其他区域自动关闭，不遮挡屏幕。
+ * 取代原先鼠标 hover 才显示的 title 提示。
+ */
+function TraitBonusText({ trait }: { trait: SurvivorTrait }) {
+  const mods = (Object.keys(trait.modifiers) as (keyof Attributes)[])
+    .filter((k) => (trait.modifiers[k] ?? 0) !== 0)
+    .map((k) => `${attrLabel(k)} +${trait.modifiers[k]}`);
+  const combat: string[] = [];
+  if (trait.combat?.hpBonus) combat.push(`气血 +${trait.combat.hpBonus}`);
+  if (trait.combat?.critBonus) combat.push(`暴击 +${Math.round(trait.combat.critBonus * 100)}%`);
+  if (trait.combat?.lootLuck) combat.push(`搜刮 +${Math.round(trait.combat.lootLuck * 100)}%`);
+  if (trait.combat?.startHpRatio) combat.push(`初始血量 +${Math.round(trait.combat.startHpRatio * 100)}%`);
+  if (mods.length === 0 && combat.length === 0) return null;
+  return (
+    <div className="mt-1.5 space-y-1 border-t border-zinc-700 pt-1.5">
+      {mods.map((m) => (
+        <div key={m} className="text-emerald-300">{m}</div>
+      ))}
+      {combat.map((c) => (
+        <div key={c} className="text-sky-300">{c}</div>
+      ))}
+    </div>
+  );
+}
+
+function TraitChip({ trait }: { trait: SurvivorTrait }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+  const color = affixColor(trait.quality);
+  return (
+    <span ref={ref} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="rounded border px-2 py-0.5 text-[11px]"
+        style={{ color, borderColor: `${color}66`, backgroundColor: `${color}1a` }}
+      >
+        {trait.name}
+        <span className="ml-1 opacity-70" style={{ color }}>{affixLabel(trait.quality)}</span>
+      </button>
+      {open && (
+        <span
+          role="dialog"
+          onClick={(e) => e.stopPropagation()}
+          className="absolute left-0 top-full z-30 mt-1 w-60 rounded-lg border border-zinc-700 bg-zinc-900 p-2 text-[11px] leading-relaxed text-zinc-200 shadow-xl"
+        >
+          <div className="mb-1 flex items-center justify-between">
+            <span className="font-medium" style={{ color }}>{trait.name}</span>
+            <span className="rounded px-1 text-[10px]" style={{ color, border: `1px solid ${color}66` }}>
+              {affixLabel(trait.quality)}阶词条
+            </span>
+          </div>
+          <div className="text-zinc-400">{trait.description}</div>
+          <TraitBonusText trait={trait} />
+        </span>
+      )}
+    </span>
+  );
+}
 
 type Tab = 'character' | 'inventory' | 'base' | 'sortie';
 
@@ -118,9 +198,55 @@ function Coin({ n }: { n: number }) {
   );
 }
 
+/** 简单分页：返回当前页切片与翻页控制。items 数量变化时自动收束越界页码。 */
+function usePagination<T>(items: T[], pageSize: number) {
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const slice = items.slice(safePage * pageSize, safePage * pageSize + pageSize);
+  return { page: safePage, setPage, pageCount, slice };
+}
+
+function Pager({
+  page,
+  pageCount,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (pageCount <= 1) return null;
+  return (
+    <div className="mt-3 flex items-center justify-between text-[11px] text-zinc-500">
+      <button
+        onClick={onPrev}
+        disabled={page <= 0}
+        className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        ‹ 上一页
+      </button>
+      <span>
+        第 {page + 1}/{pageCount} 页 · 共 {total} 件
+      </span>
+      <button
+        onClick={onNext}
+        disabled={page >= pageCount - 1}
+        className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        下一页 ›
+      </button>
+    </div>
+  );
+}
+
 export default function SurvivalHub() {
   const [state, setState] = useState<SurvivalGameState>(() => {
-    const loaded = loadGame() ?? newGame(seededRng(Date.now()));
+    const loaded = loadGame() ?? newGame();
     return _recoverAll(loaded);
   });
   const [tab, setTab] = useState<Tab>('character');
@@ -177,16 +303,21 @@ export default function SurvivalHub() {
         </div>
       </header>
 
-      {/* 主内容 */}
+      {/* 主内容：四个面板常驻挂载，仅用 hidden 切换可见性——
+          这样切到「角色/背包/基地」再切回「出击」时，出击中的 run 状态不会因卸载而丢失 */}
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-4">
-        {tab === 'character' && (
+        <div className={tab === 'character' ? '' : 'hidden'}>
           <CharacterPanel state={state} mutate={mutate} rng={Math.random as RNG} />
-        )}
-        {tab === 'inventory' && <InventoryPanel state={state} mutate={mutate} rng={Math.random as RNG} />}
-        {tab === 'base' && <BasePanel state={state} mutate={mutate} rng={Math.random as RNG} />}
-        {tab === 'sortie' && (
+        </div>
+        <div className={tab === 'inventory' ? '' : 'hidden'}>
+          <InventoryPanel state={state} mutate={mutate} rng={Math.random as RNG} />
+        </div>
+        <div className={tab === 'base' ? '' : 'hidden'}>
+          <BasePanel state={state} mutate={mutate} />
+        </div>
+        <div className={tab === 'sortie' ? '' : 'hidden'}>
           <SortiePanel state={state} setState={setState} onExit={() => goToTab('character')} />
-        )}
+        </div>
       </main>
 
       {/* 底部常驻导航 */}
@@ -348,12 +479,39 @@ function CharacterPanel(props: {
               )}
 
               {st && st.injuries.length > 0 && !isDying && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {st.injuries.map((inj) => (
-                    <span key={inj} className="rounded bg-rose-900/40 px-1.5 py-0.5 text-[11px] text-rose-300">
-                      {INJURY_LABEL[inj]}
-                    </span>
-                  ))}
+                <div className="mt-2 space-y-2">
+                  <div className="text-[11px] text-rose-300/80">当前伤势（debuff）</div>
+                  {st.injuries.map((inj) => {
+                    const treatMeds = MEDICINES.filter(
+                      (m) => m.treats?.includes(inj) && (state.medicines[m.id] ?? 0) > 0,
+                    );
+                    return (
+                      <div key={inj} className="rounded border border-rose-800/50 bg-rose-950/20 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[12px] font-medium text-rose-300">⚠ {INJURY_LABEL[inj]}</span>
+                          <span className="text-[11px] text-rose-300/70">{INJURY_DESC[inj]}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
+                          {treatMeds.length > 0 ? (
+                            <>
+                              <span className="text-zinc-500">可用药物恢复：</span>
+                              {treatMeds.map((m) => (
+                                <button
+                                  key={m.id}
+                                  onClick={() => mutate((st2) => applyMedicineToSurvivor(st2, s.id, m.id))}
+                                  className="rounded border border-emerald-800 bg-emerald-900/40 px-1.5 py-0.5 text-emerald-200 hover:bg-emerald-800/60"
+                                >
+                                  用 {m.name} 治疗
+                                </button>
+                              ))}
+                            </>
+                          ) : (
+                            <span className="text-amber-400">无对应药物，请先采购或在「末世行止·医疗中心」救治。</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -361,13 +519,7 @@ function CharacterPanel(props: {
 
               <div className="mt-3 flex flex-wrap items-center gap-1.5">
                 {s.traits.map((t) => (
-                  <span
-                    key={t.id}
-                    title={t.description}
-                    className="rounded border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 text-[11px] text-zinc-300"
-                  >
-                    {t.name}
-                  </span>
+                  <TraitChip key={t.id} trait={t} />
                 ))}
                 {!s.isProtagonist && (
                   <button
@@ -443,13 +595,7 @@ function CharacterPanel(props: {
                 <div className="mt-3">{attrBars(r.attributes)}</div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {r.traits.map((t) => (
-                    <span
-                      key={t.id}
-                      title={t.description}
-                      className="rounded border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 text-[11px] text-zinc-300"
-                    >
-                      {t.name}
-                    </span>
+                    <TraitChip key={t.id} trait={t} />
                   ))}
                 </div>
               </div>
@@ -469,7 +615,8 @@ function InventoryPanel(props: {
 }) {
   const { state, mutate, rng } = props;
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId) ?? null;
-  const equipped = (active ? state.equipped[active.id] : undefined) ?? ({} as EquipSlots);
+  const matPage = usePagination(state.materials, 12);
+  const gearPage = usePagination(state.gear, 6);
 
   return (
     <section className="space-y-4">
@@ -481,16 +628,25 @@ function InventoryPanel(props: {
         {state.materials.length === 0 ? (
           <p className="text-sm text-zinc-600">暂无材料，出击搜刮或拆解战利品获取。</p>
         ) : (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {state.materials.map((m) => (
-              <div key={m.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-2">
-                <div className="text-sm text-zinc-200">{m.name}</div>
-                <div className="mt-0.5 text-[11px] text-zinc-500">
-                  {MATERIAL_LABEL[m.kind]} · x{m.quantity} · ⛁{m.value}
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {matPage.slice.map((m) => (
+                <div key={m.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-2">
+                  <div className="text-sm text-zinc-200">{m.name}</div>
+                  <div className="mt-0.5 text-[11px] text-zinc-500">
+                    {MATERIAL_LABEL[m.kind]} · x{m.quantity} · ⛁{m.value}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+            <Pager
+              page={matPage.page}
+              pageCount={matPage.pageCount}
+              total={state.materials.length}
+              onPrev={() => matPage.setPage(matPage.page - 1)}
+              onNext={() => matPage.setPage(matPage.page + 1)}
+            />
+          </>
         )}
       </div>
 
@@ -523,27 +679,133 @@ function InventoryPanel(props: {
         </div>
       </div>
 
-      {/* 装备库 + 当前装备 */}
+      {/* 装备栏：6 主槽（常驻穿戴）+ 3 快捷槽 */}
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-xs uppercase tracking-wider text-zinc-500">
+            装备栏 · {active?.name ?? '无成员'}
+          </h3>
+          <span className="text-[11px] text-zinc-500">6 主槽 + 3 快捷槽</span>
+        </div>
+        {!active ? (
+          <p className="text-sm text-zinc-600">暂无战团成员。</p>
+        ) : (
+          <>
+            {/* 6 个主装备槽 */}
+            <div className="grid grid-cols-3 gap-2">
+              {MAIN_EQUIP_SLOTS.map((slot) => {
+                const gid = (state.equipped[active.id] ?? {})[slot.key];
+                const g = gid ? state.gear.find((x) => x.id === gid) : undefined;
+                return (
+                  <div
+                    key={slot.key}
+                    className="rounded border border-zinc-800 bg-zinc-950/60 p-2"
+                  >
+                    <div className="text-[10px] text-zinc-500">
+                      {slot.icon} {slot.label}
+                    </div>
+                    {g ? (
+                      <>
+                        <div
+                          className="mt-0.5 truncate text-xs"
+                          style={{ color: g.tierColor ?? '#e4e4e7' }}
+                          title={g.name}
+                        >
+                          {g.name}
+                        </div>
+                        <div className="text-[10px] text-zinc-500">
+                          {g.rarityName ?? g.rarity}阶
+                        </div>
+                        <button
+                          onClick={() => mutate((s) => unequipGear(s, active.id, slot.key))}
+                          className="mt-1 w-full rounded bg-zinc-700 px-1 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-600"
+                        >
+                          卸下
+                        </button>
+                      </>
+                    ) : (
+                      <div className="mt-0.5 text-[11px] text-zinc-600">空</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 3 个快捷消耗槽 */}
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {QUICK_SLOTS.map((qs) => {
+                const cur = (state.equipped[active.id] ?? {})[qs.key];
+                const opts =
+                  qs.key === 'quickThrow'
+                    ? THROWABLES.filter((t) => (state.throwables?.[t.id] ?? 0) > 0).map((t) => ({
+                        id: t.id,
+                        name: `${t.name}×${state.throwables?.[t.id] ?? 0}`,
+                      }))
+                    : MEDICINES.filter((m) => (state.medicines[m.id] ?? 0) > 0).map((m) => ({
+                        id: m.id,
+                        name: `${m.name}×${state.medicines[m.id] ?? 0}`,
+                      }));
+                return (
+                  <div
+                    key={qs.key}
+                    className="rounded border border-zinc-800 bg-zinc-950/60 p-2"
+                  >
+                    <div className="text-[10px] text-zinc-500">
+                      {qs.icon} {qs.label}
+                    </div>
+                    <select
+                      value={cur ?? ''}
+                      onChange={(e) =>
+                        mutate((s) =>
+                          setQuickSlot(s, active.id, qs.key, e.target.value || undefined),
+                        )
+                      }
+                      className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200"
+                    >
+                      <option value="">—</option>
+                      {opts.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-[11px] text-zinc-600">
+              主槽装备常驻生效，撤离失败时有概率被夺走；快捷槽供战斗中一键使用。
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* 装备库 */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-xs uppercase tracking-wider text-zinc-500">装备库</h3>
-          <span className="text-[11px] text-zinc-500">
-            当前出击：{active?.name ?? '无'}
-          </span>
+          <span className="text-[11px] text-zinc-500">当前出击：{active?.name ?? '无'}</span>
         </div>
         {state.gear.length === 0 ? (
-          <p className="text-sm text-zinc-600">尚未制造任何装备。</p>
+          <p className="text-sm text-zinc-600">尚未获得任何装备。</p>
         ) : (
-          <ul className="space-y-2">
-            {state.gear.map((g) => {
-              const onActive = active && equipped[g.slot] === g.id;
+          <>
+            <ul className="space-y-2">
+              {gearPage.slice.map((g) => {
+                const onActive = active && (state.equipped[active.id] ?? {})[g.slot] === g.id;
               return (
                 <li key={g.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <span className="text-sm text-zinc-100">{g.name}</span>
+                      {/* 装备名按阶级着色，不再一律白色 */}
+                      <span
+                        className="text-sm"
+                        style={{ color: g.tierColor ?? tierColor(g.tier ?? 0) }}
+                      >
+                        {g.name}
+                      </span>
                       <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-400">
-                        {g.rarity}·{slotLabel(g.slot)}
+                        {g.rarityName ?? g.rarity}·{slotLabel(g.slot)}
                       </span>
                     </div>
                     {active && (
@@ -578,6 +840,14 @@ function InventoryPanel(props: {
               );
             })}
           </ul>
+          <Pager
+            page={gearPage.page}
+            pageCount={gearPage.pageCount}
+            total={state.gear.length}
+            onPrev={() => gearPage.setPage(gearPage.page - 1)}
+            onNext={() => gearPage.setPage(gearPage.page + 1)}
+          />
+          </>
         )}
       </div>
     </section>
@@ -592,9 +862,8 @@ function slotLabel(slot: GearSlot): string {
 function BasePanel(props: {
   state: SurvivalGameState;
   mutate: (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
-  rng: RNG;
 }) {
-  const { state, mutate, rng } = props;
+  const { state, mutate } = props;
   const bonuses = computeShelterBonuses(state.facilities, state.factionRep);
   return (
     <section className="space-y-4">
@@ -603,7 +872,7 @@ function BasePanel(props: {
         <button
           onClick={() => {
             clearSave();
-            mutate(() => newGame(rng));
+            mutate(() => newGame());
           }}
           className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
         >
@@ -726,18 +995,24 @@ function SortiePanel(props: {
     setState((prev) => {
       let next = bankLoot(prev, s.bankedLoot);
       if (s.bankedNpc) next = addRecruit(next, s.bankedNpc);
-      return applySortieResult(next, {
+      let after = applySortieResult(next, {
         survivorId: prof.id,
         survivorName: prof.name,
         zoneName: s.zone.name,
         outcome: s.phase === 'dead' ? 'death' : 'success',
-        bankedItems: s.bankedLoot.length,
-        bankedValue: s.bankedLoot.reduce((a, b) => a + b.value, 0),
+        bankedItems: s.bankedLoot.reduce((a, b) => a + (b.qty ?? 1), 0),
+        bankedValue: s.bankedLoot.reduce((a, b) => a + b.value * (b.qty ?? 1), 0),
         enemyFaced: s.log.find((l) => l.startsWith('⚔'))?.match(/【(.+?)】/)?.[1],
         rescued: !!s.bankedNpc,
         finalHp: s.condition.resources.hp.current,
         maxHp: s.condition.resources.hp.max ?? 0,
       });
+      // 撤离失败 / 阵亡：战局背包（carriedLoot）已由 extract 拦下不入库；
+      // 身上常驻穿戴的装备还要按概率被搜刮者夺走。
+      if (s.phase === 'dead') {
+        after = applyFailureGearLoss(after, prof.id, rngRef.current).state;
+      }
+      return after;
     });
   }, [setState]);
 
@@ -783,7 +1058,7 @@ function SortiePanel(props: {
     if (enemy) fight(s, enemy, rngRef.current);
     // 瞭望塔：搜刮运势额外掉落（词条/装备/避难所聚合）
     if (chance(rngRef.current, lootLuck)) {
-      s.carriedLoot.push(makeBonusLoot());
+      addCarriedLoot(s, makeBonusLoot());
       s.log.push('【系统】瞭望塔侦察生效，额外发现一批物资。');
     }
     sync();
@@ -796,6 +1071,30 @@ function SortiePanel(props: {
     sync();
     // 结算（入库物资 + 救援者入花名册 + 回写 HP/濒死）由 isOver 的 useEffect 统一写入，
     // 同时覆盖「撤离成功」与「阵亡/撤离失败」两种结局，避免阵亡时漏写导致血条仍满。
+  };
+
+  /** 出击途中使用药物恢复生命——只能使用已装备到「快捷·医疗槽」的药物 */
+  const takeMedicine = () => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching' || !active) return;
+    // 仅允许使用快捷·医疗槽里装备的药品；库存不足或无装备则忽略
+    const quickMedId = state.equipped[active.id]?.quickMed;
+    if (!quickMedId) return;
+    const spec = MEDICINES.find((m) => m.id === quickMedId);
+    if (!spec) return;
+    const have = state.medicines[quickMedId] ?? 0;
+    if (have <= 0) return;
+    const maxHp = s.condition.resources.hp.max ?? 0;
+    const heal = Math.round(spec.healPct * maxHp) + spec.healFlat;
+    const before = s.condition.resources.hp.current ?? 0;
+    s.condition.resources.hp.current = Math.min(maxHp, before + heal);
+    const gained = s.condition.resources.hp.current - before;
+    s.log.push(`💊 使用【${spec.name}】，恢复 ${gained} 生命（${s.condition.resources.hp.current}/${maxHp}）`);
+    sync();
+    setState((prev) => ({
+      ...prev,
+      medicines: { ...prev.medicines, [quickMedId]: Math.max(0, (prev.medicines[quickMedId] ?? 0) - 1) },
+    }));
   };
 
   const reset = () => {
@@ -826,9 +1125,15 @@ function SortiePanel(props: {
 
   const hp = run?.condition.resources.hp;
   const carried = run?.carriedLoot ?? [];
-  const carriedValue = carried.reduce((a, b) => a + b.value, 0);
+  const carriedValue = carried.reduce((a, b) => a + b.value * (b.qty ?? 1), 0);
   const banked = run?.bankedLoot ?? [];
-  const bankedValue = banked.reduce((a, b) => a + b.value, 0);
+  const bankedValue = banked.reduce((a, b) => a + b.value * (b.qty ?? 1), 0);
+  const bankedQty = banked.reduce((a, b) => a + (b.qty ?? 1), 0);
+  // 出击途中可使用的药物：仅限已装备到「快捷·医疗槽」的那种（且基地库存 > 0）
+  const quickMedId = active ? state.equipped[active.id]?.quickMed : undefined;
+  const equippedMed = quickMedId ? MEDICINES.find((m) => m.id === quickMedId) : undefined;
+  const availableMeds =
+    quickMedId && equippedMed && (state.medicines[quickMedId] ?? 0) > 0 ? [equippedMed] : [];
   const isOver = run?.phase === 'dead' || run?.phase === 'extracted';
   const hpPct = hp && (hp.max ?? 0) > 0 ? Math.max(0, (hp.current / (hp.max ?? 0)) * 100) : 0;
   const hpColor = hpPct > 50 ? 'bg-emerald-500' : hpPct > 25 ? 'bg-amber-500' : 'bg-rose-600';
@@ -972,9 +1277,14 @@ function SortiePanel(props: {
             </div>
             <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
               <h2 className="mb-2 flex items-center justify-between text-sm font-medium text-zinc-300">
-                <span>携带物资</span>
-                <span className="text-xs text-zinc-500">{carried.length} 件</span>
+                <span>🎒 战局背包</span>
+                <span className="text-xs text-zinc-500">
+                  {carried.length} / {RAID_PACK_CAPACITY} 格
+                </span>
               </h2>
+              <p className="mb-2 text-[11px] text-amber-500/80">
+                本局临时搜刮物资：撤离成功才会存入基地，阵亡 / 撤离失败将全部清零。
+              </p>
               <div className="mb-2 flex flex-wrap items-center gap-1 text-[11px] text-zinc-500">
                 <span>阶级：</span>
                 {RARITY_LEGEND.map((r) => (
@@ -986,9 +1296,10 @@ function SortiePanel(props: {
               {carried.length === 0 ? (
                 <p className="text-sm text-zinc-600">尚未搜到任何物资。</p>
               ) : (
-                <ul className="space-y-1 text-sm">
+                <ul className="max-h-[320px] space-y-1 overflow-y-auto pr-1 text-sm">
                   {carried.map((it, i) => {
                     const color = it.tier != null ? tierColor(it.tier) : '#a1a1aa';
+                    const qty = it.qty ?? 1;
                     return (
                       <li key={`${it.id}-${i}`} className="border-b border-zinc-800/60 py-1">
                         <div className="flex items-center justify-between">
@@ -1003,9 +1314,10 @@ function SortiePanel(props: {
                             )}
                             <span style={{ color: it.tier != null ? color : undefined }} className={it.tier != null ? 'font-medium' : 'text-zinc-300'}>
                               {it.name}
+                              {qty > 1 && <span className="ml-1 text-emerald-400">×{qty}</span>}
                             </span>
                           </span>
-                          <span className="text-emerald-400">{it.value}</span>
+                          <span className="text-emerald-400">{it.value * qty}</span>
                         </div>
                         {it.affixes && it.affixes.length > 0 && (
                           <div className="mt-0.5 flex flex-wrap gap-1">
@@ -1022,21 +1334,57 @@ function SortiePanel(props: {
                 </ul>
               )}
               <p className="mt-3 border-t border-zinc-800 pt-2 text-xs text-zinc-500">
-                已入库：<span className="text-emerald-400">{bankedValue}</span> 废土币（{banked.length} 件）
+                已入库：<span className="text-emerald-400">{bankedValue}</span> 废土币（{bankedQty} 件）
               </p>
             </div>
           </div>
 
+          {!isOver && availableMeds.length > 0 ? (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+              <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
+                💊 使用药物恢复
+                <span className="text-[11px] font-normal text-zinc-500">
+                  （仅限快捷·医疗槽已装备的药品，消耗基地库存）
+                </span>
+              </h2>
+              <div className="flex flex-wrap gap-2">
+                {availableMeds.map((m) => {
+                  const maxHp = run?.condition.resources.hp.max ?? 0;
+                  const heal = Math.round(m.healPct * maxHp) + m.healFlat;
+                  const cur = run?.condition.resources.hp.current ?? 0;
+                  const disabled = cur >= maxHp;
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={(e) => { takeMedicine(); e.currentTarget.blur(); }}
+                      disabled={disabled}
+                      className="rounded-lg border border-emerald-800 bg-emerald-900/40 px-3 py-2 text-xs text-emerald-200 hover:bg-emerald-800/60 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {m.name}
+                      <span className="ml-1 opacity-70">×{state.medicines[m.id]}</span>
+                      <span className="ml-1 text-emerald-400">+{heal}</span>
+                      {disabled && <span className="ml-1 text-zinc-500">（已满）</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : !isOver ? (
+            <div className="rounded-lg border border-dashed border-zinc-700 bg-zinc-900/40 p-3 text-center text-xs text-zinc-500">
+              💊 未装备快捷·医疗槽药品。请先在「角色 → 装备栏」把一种药物放入快捷·医疗槽，出击途中才能使用。
+            </div>
+          ) : null}
+
           {!isOver ? (
             <div className="flex gap-3">
               <button
-                onClick={doSearch}
+                onClick={(e) => { doSearch(); e.currentTarget.blur(); }}
                 className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500"
               >
                 🛰 搜刮一轮
               </button>
               <button
-                onClick={doExtract}
+                onClick={(e) => { doExtract(); e.currentTarget.blur(); }}
                 className="flex-1 rounded-lg bg-sky-700 px-4 py-3 font-medium text-white hover:bg-sky-600"
               >
                 🏃 立即撤离

@@ -5,5 +5,6 @@
 export * from './rng';
 export * from './chargen';
 export * from './economy';
+export * from './equipment';
 export * from './state';
 export * from './persistence';

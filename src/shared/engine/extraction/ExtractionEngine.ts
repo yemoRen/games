@@ -29,6 +29,7 @@ import {
   aggregateEnemyAffixes,
   rollGearDrop,
 } from '@shared/engine/survival/affixes';
+import { RAID_PACK_CAPACITY } from '@shared/engine/survival/equipment';
 import type {
   DangerZone,
   EnemyArchetype,
@@ -100,7 +101,36 @@ function freshCondition(maxHp: number, maxMp: number): CultivatorCondition {
 }
 
 function sumValue(items: LootItem[]): number {
-  return items.reduce((acc, it) => acc + it.value, 0);
+  return items.reduce((acc, it) => acc + it.value * (it.qty ?? 1), 0);
+}
+
+/** 单件战利品在战局背包中占一格的判定：相同 id 的物品自动堆叠（不额外占格） */
+function isSameStack(a: LootItem, b: LootItem): boolean {
+  return a.id === b.id;
+}
+
+/**
+ * 把一件战利品放入战局背包：相同 id 的物品自动堆叠（qty+1），不额外占用格子。
+ * 仅当背包「格子数」（不同 id 的堆叠数量）未满时才能放入。
+ * 装备掉落 id 唯一，因此每件装备独立占一格。
+ * 返回是否成功放入。
+ */
+export function addCarriedLoot(state: ExtractionRunState, item: LootItem): boolean {
+  if (state.phase !== 'searching') return false;
+  // 相同物品直接堆叠到已有格子：永远允许，且不占用新格子（容量只限制「不同物品种类数」）
+  const existing = state.carriedLoot.find((l) => isSameStack(l, item));
+  if (existing) {
+    existing.qty = (existing.qty ?? 1) + 1;
+    return true;
+  }
+  if (state.carriedLoot.length >= RAID_PACK_CAPACITY) return false;
+  state.carriedLoot.push({ ...item, qty: item.qty ?? 1 });
+  return true;
+}
+
+/** 战局背包现有堆叠总数量（用于展示） */
+export function carriedQty(state: ExtractionRunState): number {
+  return state.carriedLoot.reduce((acc, it) => acc + (it.qty ?? 1), 0);
 }
 
 /** 进入危险区域，建立一次出击（状态机从 idle → searching） */
@@ -138,19 +168,36 @@ export function search(state: ExtractionRunState, rng: () => number = Math.rando
   const extra = Math.floor(luck) + (rng() < luck % 1 ? 1 : 0);
   const picks = base + extra;
   for (let i = 0; i < picks; i++) {
-    const item = state.zone.lootTable[Math.floor(rng() * state.zone.lootTable.length)];
-    state.carriedLoot.push(item);
-    state.log.push(`${SYSTEM_LINES.search} 获得【${item.name}】(估值 ${item.value})`);
+    // 战局背包容量上限：装满了就带不走更多（撤离失败会全部清零，需要取舍）
+    if (state.carriedLoot.length >= RAID_PACK_CAPACITY) {
+      state.log.push(
+        `${SYSTEM_LINES.search} 战局背包已满 ${RAID_PACK_CAPACITY}/${RAID_PACK_CAPACITY}，无法带走更多。`,
+      );
+      break;
+    }
+    const raw = state.zone.lootTable[Math.floor(rng() * state.zone.lootTable.length)];
+    // 无阶级的 gear 类掉落（如「防弹背心」）统一转成带阶级的真装备：
+    // 保证颜色随阶级变化，且能作为装备入库而不是被折算成材料。
+    const item: LootItem =
+      raw.kind === 'gear' && !raw.gear
+        ? rollGearDrop(rng, state.zone.dangerLevel, luck * 0.2)
+        : raw;
+    addCarriedLoot(state, item);
+    const tierNote = item.rarityName
+      ? `(${item.rarityName}阶 · 估值 ${item.value})`
+      : `(估值 ${item.value})`;
+    state.log.push(`${SYSTEM_LINES.search} 获得【${item.name}】${tierNote}`);
   }
   // 装备掉落：危险度越高，越可能搜到带阶级词缀的装备（白-绿-蓝-紫-黄-橙-红）
   const gearChance = 0.25 + state.zone.dangerLevel * 0.04;
   if (rng() < gearChance) {
     const drop = rollGearDrop(rng, state.zone.dangerLevel, luck * 0.2);
-    state.carriedLoot.push(drop);
     const affixText = drop.affixes.map((a) => a.text).join('、');
-    state.log.push(
-      `${SYSTEM_LINES.search} 搜出【${drop.name}】(${drop.rarityName}阶，估值 ${drop.value})${affixText ? ` 词缀：${affixText}` : ''}`,
-    );
+    if (addCarriedLoot(state, drop)) {
+      state.log.push(
+        `${SYSTEM_LINES.search} 搜出【${drop.name}】(${drop.rarityName}阶，估值 ${drop.value})${affixText ? ` 词缀：${affixText}` : ''}`,
+      );
+    }
   }
   state.searchCount++;
 }

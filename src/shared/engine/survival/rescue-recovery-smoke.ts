@@ -18,7 +18,7 @@ function fmtHp(s: { currentHp: number; maxHp: number }) {
 }
 
 const rng = mulberry32(42);
-const initial = newGame(rng);
+const initial = newGame();
 const s0 = initial.survivors[0];
 const status0 = initial.survivorStatus[s0.id];
 console.log(`[1] 新游戏：${s0.name} (体质 ${s0.attributes.vitality}) HP=${fmtHp(status0)}`);

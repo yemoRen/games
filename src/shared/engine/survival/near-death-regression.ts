@@ -12,7 +12,7 @@ import { newGame, acceptRecruit, applySortieResult } from '@shared/engine/surviv
 import { generateSurvivor } from '@shared/engine/survival/chargen';
 
 const rng = mulberry32(123);
-const g = newGame(rng);
+const g = newGame();
 const hero = g.survivors[0];
 const fullHp = g.survivorStatus[hero.id].currentHp;
 console.log(`[前提] ${hero.name} 出击前 HP=${fullHp}`);

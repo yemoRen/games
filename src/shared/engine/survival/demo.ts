@@ -70,7 +70,7 @@ function runSortie(state: SurvivalGameState, zoneId: string, seed: number) {
 console.log('=== 全民求生・系统搜打撤 Demo（Phase 2 + 3）===\n');
 
 const rng = seededRng('seed-demo-2026');
-let state = newGame(rng);
+let state = newGame();
 console.log('初始幸存者：');
 printSurvivors(state);
 console.log(`  废土币：${state.coins} | 材料：${state.materials.map((m) => `${m.name}x${m.quantity}`).join(', ')}`);

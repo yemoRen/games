@@ -6,6 +6,7 @@
  * 不同账号/密码对应不同的游戏进度。未登录时不读写（由玩法页登录门禁保证）。
  */
 import type { SurvivalGameState } from './state';
+import { emptyGardenPlots } from './state';
 import { getCurrentUser } from './account';
 
 const SAVE_PREFIX = 'wqqs-survival-save-v1:';
@@ -38,7 +39,13 @@ export function loadGame(): SurvivalGameState | null {
   if (!raw) return null;
   try {
     const data = JSON.parse(raw) as SurvivalGameState;
-    if (data && data.version && Array.isArray(data.survivors)) return data;
+    if (data && data.version && Array.isArray(data.survivors)) {
+      // 旧存档补齐菜园地块，避免切页种植后丢失
+      if (!data.gardenPlots || data.gardenPlots.length === 0) {
+        data.gardenPlots = emptyGardenPlots();
+      }
+      return data;
+    }
   } catch {
     /* 损坏存档直接忽略 */
   }

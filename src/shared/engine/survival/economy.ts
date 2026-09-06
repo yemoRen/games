@@ -35,12 +35,21 @@ export interface MaterialItem {
   quantity: number;
 }
 
-export type GearSlot = 'weapon' | 'armor' | 'accessory';
+export type GearSlot =
+  | 'weapon' // 主武器（右手）
+  | 'offWeapon' // 副武器（左手）
+  | 'head' // 头部
+  | 'armor' // 躯干护甲
+  | 'legs' // 腿部
+  | 'accessory'; // 饰品 / 战术挂件
 
 export const GEAR_SLOT_LABEL: Record<GearSlot, string> = {
-  weapon: '武器',
-  armor: '护甲',
-  accessory: '配件',
+  weapon: '主武器',
+  offWeapon: '副武器',
+  head: '头部',
+  armor: '躯干护甲',
+  legs: '腿部',
+  accessory: '饰品',
 };
 
 export interface GearCombatBonus {

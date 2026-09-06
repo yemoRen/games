@@ -66,6 +66,16 @@ export function tierLabel(tier: number): string {
   return tierByTier(tier).label;
 }
 
+/** 按阶级 key 取配色（词条天赋着色用） */
+export function affixColor(key: AffixTierKey): string {
+  return AFFIX_TIERS.find((t) => t.key === key)?.color ?? '#cbd5e1';
+}
+
+/** 按阶级 key 取中文阶级名（词条天赋着色用） */
+export function affixLabel(key: AffixTierKey): string {
+  return AFFIX_TIERS.find((t) => t.key === key)?.label ?? '白';
+}
+
 /** UI 用的图例（白-绿-蓝-紫-黄-橙-红） */
 export const RARITY_LEGEND = AFFIX_TIERS.map((t) => ({ label: t.label, color: t.color }));
 
@@ -138,14 +148,20 @@ export const GEAR_AFFIXES: SurvivalAffix[] = [
 ];
 
 const GEAR_SLOT_NAMES: Record<GearSlot, string> = {
-  weapon: '武器',
+  weapon: '主武器',
+  offWeapon: '副武器',
+  head: '头部',
   armor: '护甲',
+  legs: '腿部',
   accessory: '配件',
 };
 
 const GEAR_SLOT_BASE: Record<GearSlot, Partial<Attributes>> = {
   weapon: { strength: 3, spirit: 1 },
+  offWeapon: { strength: 2, speed: 1 },
+  head: { spirit: 2, willpower: 2 },
   armor: { endurance: 3, vitality: 1 },
+  legs: { speed: 3, endurance: 1 },
   accessory: { speed: 2, willpower: 2 },
 };
 

@@ -35,6 +35,7 @@ import {
   ViewSettings,
   ViewRecruits,
   ViewMedical,
+  ViewCraft,
 } from './views';
 
 interface MenuItem {
@@ -57,6 +58,7 @@ const MENU: { group: string; items: MenuItem[] }[] = [
       { id: 'medical', label: '医疗中心', icon: '🏥', group: '生存', Component: ViewMedical },
       { id: 'recruits', label: '幸存者花名册', icon: '🧑‍🤝‍🧑', group: '生存', Component: ViewRecruits },
       { id: 'garden', label: '避难所·菜园', icon: '🌱', group: '生存', Component: ViewGarden },
+      { id: 'craft', label: '医疗·制作台', icon: '⚗️', group: '生存', Component: ViewCraft },
       { id: 'tactics', label: '战术手册', icon: '📓', group: '生存', Component: ViewTactics },
       { id: 'skills', label: '掌握技能', icon: '⚔️', group: '生存', Component: ViewSkills },
       { id: 'faction-skills', label: '战团技能', icon: '🏛️', group: '生存', Component: ViewFactionSkills },

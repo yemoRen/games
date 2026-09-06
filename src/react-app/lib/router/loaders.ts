@@ -50,10 +50,10 @@ async function resolveSessionData(
   }
 }
 
-export async function indexRedirectLoader({ request }: LoaderFunctionArgs) {
-  const session = await resolveSessionData(request);
-
-  return session?.user ? replace('/game') : replace('/login');
+export async function indexRedirectLoader() {
+  // 收打撤（新游戏）为默认入口，与 vercel.json 的 `/` → `/survival` 保持一致。
+  // 旧游戏（万界道友）仍可通过 `/game`、`/login` 直接访问，但不作为首页。
+  return replace('/survival');
 }
 
 export async function guestOnlyLoader({ request }: LoaderFunctionArgs) {

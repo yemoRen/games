@@ -20,6 +20,9 @@ import {
   addRecruit,
   applySortieResult,
   MEDICINES,
+  MED_CRAFT_RECIPES,
+  canCraftMedicine,
+  craftMedicine,
   recruitFee,
   treatNearDeathWithCoins,
   NEAR_DEATH_TREAT_COST,
@@ -28,11 +31,17 @@ import {
   claimQuest,
   buildSortieLoadout,
   recoverAll,
+  GARDEN_CROPS,
+  plantGardenCrop,
+  harvestGardenPlot,
+  clearGardenPlot,
+  emptyGardenPlots,
 } from '@shared/engine/survival/state';
 import type { RNG } from '@shared/engine/survival/rng';
 import {
   RECIPES,
   MATERIAL_LABEL,
+  materialCount,
   FACTIONS,
 } from '@shared/engine/survival/economy';
 import { INJURY_LABEL, regenPerMinute, timeToFullSeconds } from '@shared/engine/survival/recovery';
@@ -102,68 +111,140 @@ const hpBar = (current: number, max: number) => {
   );
 };
 
-// ===== 1. 避难所菜园 =====
+// ===== 1. 避难所菜园（6 块地，种植状态持久化到存档） =====
 export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
-  // 菜园：种植 4 种作物（绷带/抗生素/急救箱/口粮），按等级+基地加成计算收成时间
   const gardenLevel = state.facilities['garden'] ?? 0;
-  const crops = [
-    { id: 'herb', name: '草药', yields: 'bandage' as const, qty: 1, minutes: 6 },
-    { id: 'mush', name: '变异菌', yields: 'antibiotic' as const, qty: 1, minutes: 12 },
-    { id: 'nutr', name: '高能作物', yields: 'medkit' as const, qty: 1, minutes: 25 },
-    { id: 'feed', name: '口粮作物', yields: null, coins: 30, minutes: 8 },
-  ];
-  const [planted, setPlanted] = useState<Record<string, number>>({}); // cropId -> readyAt
+  // 旧存档可能没有 gardenPlots，用空 6 地块兜底；新存档与种植动作都走 persist
+  const plots = state.gardenPlots && state.gardenPlots.length > 0 ? state.gardenPlots : emptyGardenPlots();
+  const [sel, setSel] = useState<Record<number, string>>({}); // 每块地当前选中的作物
   const [now, setNow] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-  const ready = (id: string) => planted[id] != null && planted[id] > 0 && planted[id] <= now;
-  const plant = (c: typeof crops[number]) => {
-    if (planted[c.id] != null && planted[c.id] > now) return;
-    setPlanted({ ...planted, [c.id]: now + c.minutes * 60_000 });
-  };
-  const harvest = (c: typeof crops[number]) => {
-    if (!ready(c.id)) return;
-    mutate((s) => {
-      const ns = { ...s };
-      if (c.yields) {
-        ns.medicines = { ...ns.medicines, [c.yields]: (ns.medicines[c.yields] ?? 0) + c.qty };
-        ns.log = [`【菜园】收获 ${c.name}×${c.qty}。`, ...ns.log].slice(0, 50);
-      } else {
-        ns.coins += c.coins ?? 0;
-        ns.log = [`【菜园】出售 ${c.name} 得 ${c.coins} 废土币。`, ...ns.log].slice(0, 50);
-      }
-      return ns;
-    });
-    setPlanted({ ...planted, [c.id]: 0 });
-  };
+
+  const cropName = (id: string | null) =>
+    id ? (GARDEN_CROPS.find((c) => c.id === id)?.name ?? id) : '';
+
   return (
-    <Section title="避难所·菜园" subtitle="种植、收成换物资。需要先建瞭望塔-医务联动区。">
+    <Section
+      title="避难所·菜园"
+      subtitle="6 块地，每块可任选一种作物种植。成熟后收获换医疗品 / 废土币。种植状态已存档，切走再切回不会丢失。"
+    >
       <div className="mb-3 flex items-center gap-2 text-sm text-stone-600">
         <Pill tone="sky">菜园等级 {gardenLevel}</Pill>
-        <span className="text-xs">每升 1 级收成时间 -10%</span>
+        <span className="text-xs">每升 1 级收成时间 -10%（下限 30%）</span>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {crops.map((c) => {
-          const left = planted[c.id] && planted[c.id] > now ? Math.ceil((planted[c.id] - now) / 60_000) : c.minutes;
-          const done = ready(c.id);
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {plots.map((plot, idx) => {
+          const crop = plot.cropId ? GARDEN_CROPS.find((c) => c.id === plot.cropId) : null;
+          const ready = plot.readyAt != null && now >= plot.readyAt;
+          const leftMin = plot.readyAt && !ready ? Math.max(0, Math.ceil((plot.readyAt - now) / 60_000)) : 0;
           return (
-            <Card key={c.id}>
-              <div className="text-base font-semibold text-stone-800">{c.name}</div>
-              <div className="mt-1 text-xs text-stone-500">
-                收成：{c.yields ? MEDICINES.find((m) => m.id === c.yields)?.name : `+${c.coins} 废土币`}（{c.minutes} 分钟）
+            <Card key={idx}>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-stone-800">第 {idx + 1} 块地</div>
+                {!plot.cropId && <span className="text-xs text-stone-400">空地</span>}
+                {plot.cropId && !ready && <span className="text-xs text-amber-600">种植中…</span>}
+                {ready && <span className="text-xs font-medium text-emerald-600">已成熟</span>}
               </div>
-              <div className="mt-3 flex items-center justify-between">
-                <span className={`text-xs ${done ? 'text-emerald-600' : 'text-stone-500'}`}>{done ? '已成熟' : `${left} 分钟`}</span>
-                {done ? (
-                  <button onClick={() => harvest(c)} className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700">收获</button>
-                ) : (
-                  <button onClick={() => plant(c)} disabled={!!(planted[c.id] && planted[c.id] > now)} className="rounded bg-stone-200 px-3 py-1 text-xs text-stone-700 hover:bg-stone-300 disabled:opacity-40">
-                    {planted[c.id] && planted[c.id] > now ? '种植中…' : '种植'}
+
+              {!plot.cropId ? (
+                <div className="mt-3 space-y-2">
+                  <select
+                    value={sel[idx] ?? ''}
+                    onChange={(e) => setSel((s) => ({ ...s, [idx]: e.target.value }))}
+                    className="w-full rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700"
+                  >
+                    <option value="">选择作物…</option>
+                    {GARDEN_CROPS.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.icon} {c.name}（{c.minutes} 分钟 →{' '}
+                        {c.yields ? MEDICINES.find((m) => m.id === c.yields)?.name : `+${c.coins} 废土币`}）
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    disabled={!sel[idx]}
+                    onClick={() => {
+                      if (!sel[idx]) return;
+                      mutate((s) => plantGardenCrop(s, idx, sel[idx], Date.now()));
+                      setSel((s) => ({ ...s, [idx]: '' }));
+                    }}
+                    className="w-full rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    种植
                   </button>
-                )}
+                </div>
+              ) : (
+                <div className="mt-3">
+                  <div className="text-base font-semibold text-stone-800">
+                    {crop?.icon} {cropName(plot.cropId)}
+                  </div>
+                  <div className="mt-1 text-xs text-stone-500">
+                    收成：
+                    {crop?.yields
+                      ? `${MEDICINES.find((m) => m.id === crop.yields)?.name}×${crop.qty}`
+                      : `+${crop?.coins} 废土币`}
+                  </div>
+                  {ready ? (
+                    <button
+                      onClick={() => mutate((s) => harvestGardenPlot(s, idx, Date.now()))}
+                      className="mt-3 w-full rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                    >
+                      收获
+                    </button>
+                  ) : (
+                    <div className="mt-3 text-xs text-stone-500">剩余约 {leftMin} 分钟成熟</div>
+                  )}
+                  <button
+                    onClick={() => mutate((s) => clearGardenPlot(s, idx))}
+                    className="mt-2 w-full rounded border border-stone-300 px-3 py-1 text-[11px] text-stone-500 hover:bg-stone-100"
+                  >
+                    铲除重种
+                  </button>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    </Section>
+  );
+};
+
+// ===== 1b. 医疗制作 =====
+export const ViewCraft: React.FC<ViewProps> = ({ state, mutate }) => {
+  return (
+    <Section title="医疗·制作台" subtitle="用废土材料合成医疗品，无副本也能补给。">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {MED_CRAFT_RECIPES.map((r) => {
+          const med = MEDICINES.find((m) => m.id === r.medicine);
+          const ok = canCraftMedicine(state, r);
+          return (
+            <Card key={r.id}>
+              <div className="text-base font-semibold text-stone-800">{r.name}</div>
+              <div className="mt-1 text-xs text-stone-500">
+                产出：{med ? `${med.name}（${Math.round(med.healPct * 100)}%生命+${med.healFlat}）` : r.medicine}
               </div>
+              <ul className="mt-2 space-y-1 text-xs">
+                {r.costMaterials.map((c) => {
+                  const have = materialCount(state.materials, c.kind);
+                  return (
+                    <li key={c.kind} className={have >= c.qty ? 'text-emerald-700' : 'text-rose-600'}>
+                      {MATERIAL_LABEL[c.kind]} ×{c.qty}（持有 {have}）
+                    </li>
+                  );
+                })}
+                <li className="text-stone-500">废土币 ⛁{r.costCoins}</li>
+              </ul>
+              <button
+                onClick={() => mutate((s) => craftMedicine(s, r.id))}
+                disabled={!ok}
+                className="mt-3 w-full rounded bg-sky-600 px-3 py-1.5 text-xs text-white hover:bg-sky-700 disabled:opacity-40"
+              >
+                {ok ? '合成' : '材料/币不足'}
+              </button>
             </Card>
           );
         })}
@@ -940,7 +1021,7 @@ export const ViewMedical: React.FC<ViewProps> = ({ state, mutate, setState }) =>
                     key={m.id}
                     onClick={() => mutate((st) => applyMedicineToSurvivor(st, s.id, m.id))}
                     className="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700"
-                  >使用 {m.name}（{m.heal} HP）</button>
+                  >使用 {m.name}（{Math.round(m.healPct * 100)}%生命+{m.healFlat}）</button>
                 ))}
                 {MEDICINES.every((m) => (state.medicines[m.id] ?? 0) === 0) && (
                   <span className="text-xs text-stone-400">没有医疗品了，去「废土市场」购买</span>

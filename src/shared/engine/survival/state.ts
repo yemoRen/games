@@ -21,7 +21,14 @@ import {
   rollGear,
   MATERIAL_LABEL,
 } from './economy';
-import { type RNG, mulberry32 } from './rng';
+import { type RNG } from './rng';
+import {
+  type MainSlotKey,
+  type QuickSlotKey,
+  type ThrowableId,
+  gearDropChance,
+  RAID_PACK_CAPACITY,
+} from './equipment';
 import type { Injury, SurvivorStatus } from './recovery';
 import {
   freshStatus,
@@ -34,9 +41,115 @@ import {
 } from './recovery';
 
 export interface EquipSlots {
-  weapon?: string;
-  armor?: string;
-  accessory?: string;
+  weapon?: string; // 主武器（右手）
+  offWeapon?: string; // 副武器（左手）
+  head?: string; // 头部
+  armor?: string; // 躯干护甲
+  legs?: string; // 腿部
+  accessory?: string; // 饰品 / 战术挂件
+  quickMed?: string; // 快捷·医疗
+  quickThrow?: string; // 快捷·投掷物
+  quickBuff?: string; // 快捷·增益补给
+}
+
+// ===== 菜园系统（持久化到存档，切页不丢） =====
+
+export interface GardenPlot {
+  /** 已种作物 id；null 表示空地 */
+  cropId: string | null;
+  /** 种植时间戳（epoch ms）；null 表示未种 */
+  plantedAt: number | null;
+  /** 预计成熟时间戳（epoch ms）；null 表示未种 */
+  readyAt: number | null;
+}
+
+export interface GardenCrop {
+  id: string;
+  name: string;
+  /** 收成产出的药品 id；null 表示售出换废土币 */
+  yields: string | null;
+  qty: number;
+  /** 售出作物的废土币收益（yields 为 null 时生效） */
+  coins?: number;
+  minutes: number;
+  icon: string;
+}
+
+/** 基础 6 块地，每块地可任选一种作物种植 */
+export const GARDEN_PLOT_COUNT = 6;
+
+export const GARDEN_CROPS: GardenCrop[] = [
+  { id: 'herb', name: '草药', yields: 'bandage', qty: 1, minutes: 6, icon: '🌿' },
+  { id: 'mush', name: '变异菌', yields: 'antibiotic', qty: 1, minutes: 12, icon: '🍄' },
+  { id: 'nutr', name: '高能作物', yields: 'medkit', qty: 1, minutes: 25, icon: '🌾' },
+  { id: 'exg', name: '兴奋草', yields: 'stim', qty: 1, minutes: 14, icon: '⚡' },
+  { id: 'sera', name: '血清藤', yields: 'serum', qty: 1, minutes: 20, icon: '🩸' },
+  { id: 'nano', name: '纳米菇', yields: 'nanogel', qty: 1, minutes: 35, icon: '🧬' },
+  { id: 'feed', name: '口粮作物', yields: null, coins: 30, qty: 1, minutes: 8, icon: '🥫' },
+];
+
+export function emptyGardenPlots(): GardenPlot[] {
+  return Array.from({ length: GARDEN_PLOT_COUNT }, () => ({ cropId: null, plantedAt: null, readyAt: null }));
+}
+
+/** 菜园收成时间随等级缩短：每级 -10%（下限 30%） */
+export function gardenCropDurationMs(crop: GardenCrop, gardenLevel: number): number {
+  const factor = Math.max(0.3, 1 - 0.1 * gardenLevel);
+  return Math.round(crop.minutes * 60_000 * factor);
+}
+
+/** 种植：在指定地块种下作物（若该地块已种则忽略） */
+export function plantGardenCrop(
+  state: SurvivalGameState,
+  plotIndex: number,
+  cropId: string,
+  now: number = Date.now(),
+): SurvivalGameState {
+  const crop = GARDEN_CROPS.find((c) => c.id === cropId);
+  const plots = state.gardenPlots ?? emptyGardenPlots();
+  if (!crop || plotIndex < 0 || plotIndex >= plots.length) return state;
+  if (plots[plotIndex].cropId) return state; // 已种，不改
+  const next = plots.slice();
+  next[plotIndex] = { cropId, plantedAt: now, readyAt: now + gardenCropDurationMs(crop, state.facilities['garden'] ?? 0) };
+  return {
+    ...state,
+    gardenPlots: next,
+    log: [`【菜园】第 ${plotIndex + 1} 块地种下 ${crop.name}。`, ...state.log].slice(0, 50),
+  };
+}
+
+/** 收获：成熟的地块结算产出并清空；未成熟或无作物返回原状态 */
+export function harvestGardenPlot(
+  state: SurvivalGameState,
+  plotIndex: number,
+  now: number = Date.now(),
+): SurvivalGameState {
+  const plots = state.gardenPlots ?? emptyGardenPlots();
+  if (plotIndex < 0 || plotIndex >= plots.length) return state;
+  const plot = plots[plotIndex];
+  if (!plot.cropId || !plot.readyAt || now < plot.readyAt) return state;
+  const crop = GARDEN_CROPS.find((c) => c.id === plot.cropId);
+  if (!crop) return state;
+  const next = plots.slice();
+  next[plotIndex] = { cropId: null, plantedAt: null, readyAt: null };
+  const ns: SurvivalGameState = { ...state, gardenPlots: next };
+  if (crop.yields) {
+    ns.medicines = { ...ns.medicines, [crop.yields]: (ns.medicines[crop.yields] ?? 0) + crop.qty };
+    ns.log = [`【菜园】收获 ${crop.name}×${crop.qty}。`, ...ns.log].slice(0, 50);
+  } else {
+    ns.coins += crop.coins ?? 0;
+    ns.log = [`【菜园】出售 ${crop.name} 得 ${crop.coins} 废土币。`, ...ns.log].slice(0, 50);
+  }
+  return ns;
+}
+
+/** 铲除：清空某地块（未收获也可清除重种） */
+export function clearGardenPlot(state: SurvivalGameState, plotIndex: number): SurvivalGameState {
+  const plots = state.gardenPlots ?? emptyGardenPlots();
+  if (plotIndex < 0 || plotIndex >= plots.length) return state;
+  const next = plots.slice();
+  next[plotIndex] = { cropId: null, plantedAt: null, readyAt: null };
+  return { ...state, gardenPlots: next };
 }
 
 export interface SurvivalGameState {
@@ -49,9 +162,13 @@ export interface SurvivalGameState {
   gear: GearItem[];
   equipped: Record<string, EquipSlots>;
   medicines: Record<string, number>;
+  /** 投掷物库存（快捷·投掷槽的来源），可选字段以兼容旧存档 */
+  throwables?: Record<string, number>;
   coins: number;
   facilities: Record<string, number>;
   factionRep: Record<string, number>;
+  /** 菜园地块（基础 6 块，每块可种一种作物，种植状态持久化） */
+  gardenPlots?: GardenPlot[];
   recruits: SurvivorProfile[];
   sortieHistory: SortieLog[];
   log: string[];
@@ -77,7 +194,7 @@ export interface SortieLog {
 
 const SAVE_VERSION = 1;
 const START_COINS = 120;
-const START_MEDICINES = { bandage: 3, antibiotic: 2, medkit: 1 };
+const START_MEDICINES = { bandage: 3, antibiotic: 2, medkit: 1, stim: 1, nutrient: 1, serum: 1, nanogel: 0 };
 
 /** 战团成员上限（含主角） */
 export const WARBAND_CAP = 10;
@@ -109,26 +226,25 @@ function seedMaterials(): MaterialItem[] {
   }));
 }
 
-export function newGame(rng: RNG): SurvivalGameState {
+export function newGame(): SurvivalGameState {
   const now = Date.now();
-  const s1 = generateSurvivor(rng, { name: '老周' });
-  const s2 = generateSurvivor(rng, { name: '小满' });
-  const status: Record<string, SurvivorStatus> = {};
-  status[s1.id] = freshStatus(s1, now);
-  status[s2.id] = freshStatus(s2, now);
+  // 注意：newGame 只建立「空避难所」，不预置任何成员。
+  // 初创战团由 createProtagonistGame 以玩家注册代号命名的主角填充。
   return {
     version: SAVE_VERSION,
     createdAt: new Date(now).toISOString(),
-    survivors: [s1, s2],
-    activeSurvivorId: s1.id,
-    survivorStatus: status,
+    survivors: [],
+    activeSurvivorId: null,
+    survivorStatus: {},
     materials: seedMaterials(),
     gear: [],
     equipped: {},
     medicines: { ...START_MEDICINES },
+    throwables: { grenade: 1, smoke: 0, flash: 0 },
     coins: START_COINS,
     facilities: emptyFacilities(),
     factionRep: emptyFactionRep(),
+    gardenPlots: emptyGardenPlots(),
     recruits: [],
     sortieHistory: [],
     log: ['【系统】避难所已建立，开始末世求生。'],
@@ -144,7 +260,7 @@ export function activeSurvivor(state: SurvivalGameState): SurvivorProfile | null
  * 其余避难所/物资等沿用 newGame 的初始化。
  */
 export function createProtagonistGame(name: string, now: number = Date.now()): SurvivalGameState {
-  const base = newGame(mulberry32((now >>> 0) || 1));
+  const base = newGame();
   const hero = makeProtagonist(name);
   const status: Record<string, SurvivorStatus> = {
     [hero.id]: freshStatus(hero, now),
@@ -186,7 +302,24 @@ export function recruitSurvivor(
   };
 }
 
-/** 入库战利品：折算废土币 + 转为材料进背包 */
+/** 副本掉落的「药剂类」战利品 → 直接进医疗背包（而非折算材料/币） */
+const LOOT_MEDICINE_MAP: Record<string, MedicineId> = {
+  meds: 'bandage',
+  serum: 'serum',
+  medkit: 'medkit',
+  stim: 'stim',
+  nutrient: 'nutrient',
+  nanogel: 'nanogel',
+};
+
+/** 副本掉落的「投掷物」战利品 → 进投掷物库存（快捷·投掷槽来源） */
+const LOOT_THROWABLE_MAP: Record<string, ThrowableId> = {
+  grenade: 'grenade',
+  smoke: 'smoke',
+  flash: 'flash',
+};
+
+/** 入库战利品：折算废土币 + 转为材料进背包；药剂类直接入医疗背包 */
 export function bankLoot(
   state: SurvivalGameState,
   banked: LootItem[],
@@ -195,19 +328,38 @@ export function bankLoot(
   let coins = state.coins;
   const materials = [...state.materials];
   const gear = [...state.gear];
+  const medicines = { ...state.medicines };
+  const throwables = { ...(state.throwables ?? {}) };
   let gearCount = 0;
+  let medCount = 0;
+  let throwCount = 0;
   for (const item of banked) {
+    const qty = item.qty ?? 1;
     // 装备掉落：入库为可装备库存（带阶级词缀），不折算为材料/币
     if (item.gear) {
       gear.push(item.gear);
-      gearCount += 1;
+      gearCount += qty;
       continue;
     }
-    coins += item.value;
+    // 药剂类战利品：直接进医疗背包
+    const medId = LOOT_MEDICINE_MAP[item.id];
+    if (medId) {
+      medicines[medId] = (medicines[medId] ?? 0) + qty;
+      medCount += qty;
+      continue;
+    }
+    // 投掷物战利品：进投掷物库存
+    const throwId = LOOT_THROWABLE_MAP[item.id];
+    if (throwId) {
+      throwables[throwId] = (throwables[throwId] ?? 0) + qty;
+      throwCount += qty;
+      continue;
+    }
+    coins += item.value * qty;
     const kind = inferMaterialKind(item.name);
     const existing = materials.find((m) => m.kind === kind && m.name === item.name);
     if (existing) {
-      existing.quantity += 1;
+      existing.quantity += qty;
       existing.value = Math.max(existing.value, item.value);
     } else {
       materials.push({
@@ -220,12 +372,17 @@ export function bankLoot(
     }
   }
   const gearNote = gearCount > 0 ? `，缴获装备 ${gearCount} 件` : '';
+  const medNote = medCount > 0 ? `，回收医疗品 ${medCount} 份` : '';
+  const throwNote = throwCount > 0 ? `，回收投掷物 ${throwCount} 件` : '';
+  const bankedQty = banked.reduce((a, b) => a + (b.qty ?? 1), 0);
   return {
     ...state,
     coins,
     materials,
     gear,
-    log: [`【入库】${banked.length} 件物资折算 ${banked.reduce((s, b) => s + (b.gear ? 0 : b.value), 0)} 废土币${gearNote}。`, ...state.log].slice(0, 50),
+    medicines,
+    throwables,
+    log: [`【入库】${bankedQty} 件物资折算 ${banked.reduce((s, b) => s + (b.gear ? 0 : b.value * (b.qty ?? 1)), 0)} 废土币${gearNote}${medNote}${throwNote}。`, ...state.log].slice(0, 50),
   };
 }
 
@@ -249,7 +406,7 @@ export function equipGear(
   if (!gear) return state;
   const current = state.equipped[survivorId] ?? {};
   // 同槽位旧装备若被替换，不会从 gear 列表删除（仍留在背包，可再换）
-  const next: EquipSlots = { ...current, [gear.slot]: gearId };
+  const next = { ...current, [gear.slot]: gearId } as EquipSlots;
   // 防止同一件装备同时装备给两个幸存者：从其人处卸下
   const equippedByOthers = Object.entries(state.equipped).filter(
     ([sid, slots]) => sid !== survivorId && Object.values(slots).includes(gearId),
@@ -259,7 +416,10 @@ export function equipGear(
     const slots = equipped[sid];
     equipped[sid] = {
       weapon: slots.weapon === gearId ? undefined : slots.weapon,
+      offWeapon: slots.offWeapon === gearId ? undefined : slots.offWeapon,
+      head: slots.head === gearId ? undefined : slots.head,
       armor: slots.armor === gearId ? undefined : slots.armor,
+      legs: slots.legs === gearId ? undefined : slots.legs,
       accessory: slots.accessory === gearId ? undefined : slots.accessory,
     };
   }
@@ -278,9 +438,87 @@ export function unequipGear(
   };
 }
 
+/** 设置快捷消耗槽：医疗 / 投掷物 / 增益补给 */
+export function setQuickSlot(
+  state: SurvivalGameState,
+  survivorId: string,
+  slot: QuickSlotKey,
+  itemId: string | undefined,
+): SurvivalGameState {
+  const current = state.equipped[survivorId] ?? {};
+  return {
+    ...state,
+    equipped: { ...state.equipped, [survivorId]: { ...current, [slot]: itemId } },
+  };
+}
+
+/** 战局背包容量上限：每次开局清空，撤离成功才入库，失败则全部清零 */
+export function raidPackCapacity(): number {
+  return RAID_PACK_CAPACITY;
+}
+
+/** 持有指定投掷物的数量 */
+export function throwableCount(state: SurvivalGameState, id: string): number {
+  return state.throwables?.[id] ?? 0;
+}
+
+/**
+ * 撤离失败 / 阵亡结算：
+ *  - 战局背包（carriedLoot）物资全部遗失 —— 由 extraction 引擎处理，不入库；
+ *  - 身上常驻穿戴的装备按概率被搜刮者夺走（永久失去）。
+ * 饰品（探测/幸运类词条）可显著降低掉落概率。
+ */
+export function applyFailureGearLoss(
+  state: SurvivalGameState,
+  survivorId: string,
+  rng: RNG,
+): { state: SurvivalGameState; lost: GearItem[] } {
+  const slots = state.equipped[survivorId] ?? {};
+  // 饰品提供的「降低掉落概率」庇护
+  const trinket = slots.accessory ? getGear(state, slots.accessory) : undefined;
+  const trinketReduce = trinket?.combat?.lootLuck
+    ? Math.min(0.2, trinket.combat.lootLuck * 0.5)
+    : 0;
+
+  const lost: GearItem[] = [];
+  const nextSlots: EquipSlots = { ...slots };
+  const mainKeys: MainSlotKey[] = ['weapon', 'offWeapon', 'head', 'armor', 'legs', 'accessory'];
+  for (const key of mainKeys) {
+    const id = nextSlots[key];
+    if (!id) continue;
+    const g = getGear(state, id);
+    if (!g) continue;
+    if (rng() < gearDropChance(g.tier ?? 0, trinketReduce)) {
+      lost.push(g);
+      nextSlots[key] = undefined;
+    }
+  }
+  if (lost.length === 0) return { state, lost };
+  const lostIds = new Set(lost.map((g) => g.id));
+  return {
+    state: {
+      ...state,
+      gear: state.gear.filter((g) => !lostIds.has(g.id)),
+      equipped: { ...state.equipped, [survivorId]: nextSlots },
+      log: [
+        `【损失】撤离失败，${lost.length} 件穿戴装备被夺走：${lost.map((g) => g.name).join('、')}。`,
+        ...state.log,
+      ].slice(0, 50),
+    },
+    lost,
+  };
+}
+
 function equippedGearList(state: SurvivalGameState, survivorId: string): GearItem[] {
   const slots = state.equipped[survivorId] ?? {};
-  return [slots.weapon, slots.armor, slots.accessory]
+  return [
+    slots.weapon,
+    slots.offWeapon,
+    slots.head,
+    slots.armor,
+    slots.legs,
+    slots.accessory,
+  ]
     .map((id) => (id ? getGear(state, id) : undefined))
     .filter((g): g is GearItem => !!g);
 }
@@ -461,10 +699,15 @@ export { computeShelterBonuses, MATERIAL_LABEL, RECIPES, SHELTER_FACILITIES, FAC
 
 // ===== 医疗消耗品 =====
 
+export type MedicineId = 'bandage' | 'antibiotic' | 'medkit' | 'stim' | 'nutrient' | 'serum' | 'nanogel';
+
 export interface MedicineSpec {
-  id: 'bandage' | 'antibiotic' | 'medkit';
+  id: MedicineId;
   name: string;
-  heal: number;
+  /** 立即回复「最大生命值」的百分比（0~1），随角色血量放大 */
+  healPct: number;
+  /** 立即回复的固定生命值 */
+  healFlat: number;
   /** 治疗伤势的效果（清除指定伤势） */
   treats?: Injury[];
   costCoins: number;
@@ -472,9 +715,15 @@ export interface MedicineSpec {
 }
 
 export const MEDICINES: MedicineSpec[] = [
-  { id: 'bandage', name: '止血绷带', heal: 25, costCoins: 15, description: '立即回血 25，无伤势治疗。' },
-  { id: 'antibiotic', name: '抗生素', heal: 15, treats: ['infection'], costCoins: 25, description: '立即回血 15，清除感染。' },
-  { id: 'medkit', name: '急救箱', heal: 60, treats: ['bleeding', 'shellShock'], costCoins: 60, description: '立即回血 60，清除失血/震伤。' },
+  // —— 基础三件套（数值已翻倍）——
+  { id: 'bandage', name: '止血绷带', healPct: 0.12, healFlat: 20, costCoins: 15, description: '立即回复 12% 生命 + 20 点，无伤势治疗。' },
+  { id: 'antibiotic', name: '抗生素', healPct: 0.10, healFlat: 16, treats: ['infection'], costCoins: 25, description: '立即回复 10% 生命 + 16 点，清除感染。' },
+  { id: 'medkit', name: '急救箱', healPct: 0.30, healFlat: 60, treats: ['bleeding', 'shellShock'], costCoins: 60, description: '立即回复 30% 生命 + 60 点，清除失血/震伤。' },
+  // —— 新增恢复道具 ——
+  { id: 'stim', name: '兴奋剂', healPct: 0.20, healFlat: 25, costCoins: 40, description: '立即回复 20% 生命 + 25 点，无伤势治疗（应急续航）。' },
+  { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, costCoins: 35, description: '立即回复 10% 生命 + 50 点，无伤势治疗（厚血兜底）。' },
+  { id: 'serum', name: '血清', healPct: 0.25, healFlat: 50, treats: ['infection', 'bleeding'], costCoins: 70, description: '立即回复 25% 生命 + 50 点，清除感染与失血。' },
+  { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection'], costCoins: 120, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
 ];
 
 export function medicineQty(state: SurvivalGameState, id: MedicineSpec['id']): number {
@@ -505,7 +754,9 @@ export function applyMedicineToSurvivor(
   if ((state.medicines[medicineId] ?? 0) <= 0) return state;
   const status = state.survivorStatus[survivorId];
   if (!status) return state;
-  let nextStatus = applyMedicine(status, spec.heal, now);
+  // 回血量 = 百分比（随角色最大血量放大）+ 固定值
+  const healAmount = Math.round(spec.healPct * status.maxHp) + spec.healFlat;
+  let nextStatus = applyMedicine(status, healAmount, now);
   if (spec.treats) {
     for (const inj of spec.treats) {
       if (nextStatus.injuries.includes(inj)) {
@@ -513,12 +764,13 @@ export function applyMedicineToSurvivor(
       }
     }
   }
-  // 濒临死亡者用药即脱离濒死（止血/急救稳定伤势）
-  if (nextStatus.dyingUntil) {
+  // 濒死者：只有把全部伤势都治好（伤势清空），才算真正脱离濒死
+  if (nextStatus.dyingUntil && nextStatus.injuries.length === 0) {
     nextStatus = {
       ...nextStatus,
       dyingUntil: undefined,
-      injuries: nextStatus.injuries.filter((i) => i !== 'bleeding' && i !== 'fracture'),
+      lastRecoveredAt: new Date(now).toISOString(),
+      sortieReady: false,
     };
   }
   return {
@@ -557,6 +809,64 @@ export function treatNearDeathWithCoins(
       `【救治】花费 ${NEAR_DEATH_TREAT_COST} 废土币稳定了 ${member?.name ?? '幸存者'} 的伤势。`,
       ...state.log,
     ].slice(0, 50),
+  };
+}
+
+// ===== 医疗道具制作（道具制作） =====
+
+export interface MedCraftRecipe {
+  id: string;
+  name: string;
+  /** 产出药品 id */
+  medicine: MedicineId;
+  /** 消耗材料（按材料大类计） */
+  costMaterials: { kind: MaterialKind; qty: number }[];
+  costCoins: number;
+}
+
+export const MED_CRAFT_RECIPES: MedCraftRecipe[] = [
+  { id: 'craft-bandage', name: '自制绷带', medicine: 'bandage', costMaterials: [{ kind: 'chems', qty: 1 }], costCoins: 5 },
+  { id: 'craft-stim', name: '调配兴奋剂', medicine: 'stim', costMaterials: [{ kind: 'chems', qty: 2 }], costCoins: 12 },
+  { id: 'craft-nutrient', name: '调配营养剂', medicine: 'nutrient', costMaterials: [{ kind: 'food', qty: 1 }, { kind: 'chems', qty: 1 }], costCoins: 8 },
+  { id: 'craft-serum', name: '提纯血清', medicine: 'serum', costMaterials: [{ kind: 'chems', qty: 2 }, { kind: 'electronics', qty: 1 }], costCoins: 18 },
+  { id: 'craft-nanogel', name: '合成纳米凝胶', medicine: 'nanogel', costMaterials: [{ kind: 'chems', qty: 3 }, { kind: 'electronics', qty: 1 }], costCoins: 35 },
+];
+
+function countMaterial(state: SurvivalGameState, kind: MaterialKind): number {
+  return materialCount(state.materials, kind);
+}
+
+export function canCraftMedicine(state: SurvivalGameState, recipe: MedCraftRecipe): boolean {
+  if (state.coins < recipe.costCoins) return false;
+  for (const need of recipe.costMaterials) {
+    if (countMaterial(state, need.kind) < need.qty) return false;
+  }
+  return true;
+}
+
+export function craftMedicine(
+  state: SurvivalGameState,
+  recipeId: string,
+): SurvivalGameState {
+  const recipe = MED_CRAFT_RECIPES.find((r) => r.id === recipeId);
+  if (!recipe || !canCraftMedicine(state, recipe)) return state;
+  const materials = state.materials.map((m) => ({ ...m }));
+  for (const need of recipe.costMaterials) {
+    let remain = need.qty;
+    for (const m of materials) {
+      if (m.kind !== need.kind || remain <= 0) continue;
+      const take = Math.min(m.quantity, remain);
+      m.quantity -= take;
+      remain -= take;
+    }
+  }
+  const medName = MEDICINES.find((m) => m.id === recipe.medicine)?.name ?? recipe.medicine;
+  return {
+    ...state,
+    coins: state.coins - recipe.costCoins,
+    materials: materials.filter((m) => m.quantity > 0),
+    medicines: { ...state.medicines, [recipe.medicine]: (state.medicines[recipe.medicine] ?? 0) + 1 },
+    log: [`【制作】合成 ${medName}×1。`, ...state.log].slice(0, 50),
   };
 }
 
