@@ -6,13 +6,19 @@
  * 不同账号/密码对应不同的游戏进度。未登录时不读写（由玩法页登录门禁保证）。
  */
 import type { SurvivalGameState } from './state';
+import type { ExtractionRunState } from '../extraction/types';
 import { emptyGardenPlots } from './state';
 import { getCurrentUser } from './account';
 
 const SAVE_PREFIX = 'wqqs-survival-save-v1:';
+const RUN_PREFIX = 'wqqs-survival-run-v1:';
 
 function slotKey(name: string): string {
   return `${SAVE_PREFIX}${name}`;
+}
+
+function runSlotKey(name: string): string {
+  return `${RUN_PREFIX}${name}`;
 }
 
 function getStorage(): Storage | null {
@@ -68,4 +74,39 @@ export function clearSave(): void {
   const name = getCurrentUser();
   if (!s || !name) return;
   s.removeItem(slotKey(name));
+}
+
+// ===== 出击对局（sortie run）独立存档：刷新/重进不退出出击 =====
+
+/** 持久化当前出击对局（仅在进行中写入；终局由调用方负责清理） */
+export function saveRun(name: string, run: ExtractionRunState): void {
+  const s = getStorage();
+  if (!s || !name) return;
+  try {
+    s.setItem(runSlotKey(name), JSON.stringify(run));
+  } catch {
+    /* 配额溢出等忽略 */
+  }
+}
+
+/** 读取进行中的出击对局（无则返回 null） */
+export function loadRun(name: string): ExtractionRunState | null {
+  const s = getStorage();
+  if (!s || !name) return null;
+  const raw = s.getItem(runSlotKey(name));
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw) as ExtractionRunState;
+    if (data && typeof data === 'object' && 'phase' in data && 'graph' in data) return data;
+  } catch {
+    /* 损坏存档直接忽略 */
+  }
+  return null;
+}
+
+/** 清除进行中的出击对局 */
+export function clearRun(name: string): void {
+  const s = getStorage();
+  if (!s || !name) return;
+  s.removeItem(runSlotKey(name));
 }

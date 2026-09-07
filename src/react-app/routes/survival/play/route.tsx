@@ -50,6 +50,7 @@ import {
   applyMedicineToSurvivor,
   type RNG,
   seededRng,
+  hashSeed,
   chance,
   applySortieResult,
   recoverAll as _recoverAll,
@@ -60,7 +61,6 @@ import {
   QUICK_SLOTS,
   THROWABLES,
   getThrowable,
-  RAID_PACK_CAPACITY,
   GEAR_SLOT_LABEL,
   LOOT_MEDICINE_MAP,
   xpNeededForLevel,
@@ -86,8 +86,17 @@ import {
   runEffectiveAttributes,
   injuryAttrTextOf,
   cureInjuries,
-  advanceBranch,
-  goToExtract,
+  moveToNode,
+  resolveBagFull,
+  currentZoneOf,
+  zoneNeighbors,
+  nearestExtractZone,
+  isBossZone,
+  runPackCapacity,
+  threatTierOf,
+  THREAT_TIERS,
+  EXTRACT_POINT_COUNT,
+  ZONE_POOL_SIZE,
   leaveExtract,
   dropCarried,
   moveToSecure,
@@ -100,12 +109,11 @@ import {
   MAX_ZONE_SEARCHES,
   SECURE_BOX_SLOTS,
   FIGHT_AMMO_COST,
-  MAP_BRANCH_COUNT,
   type ExtractionRunState,
   type EncounterAction,
 } from '@shared/engine/extraction';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
-import { loadGame, saveGame, clearSave } from '@shared/engine/survival';
+import { loadGame, saveGame, clearSave, saveRun, loadRun, clearRun } from '@shared/engine/survival';
 import {
   INJURY_LABEL,
   INJURY_DESC,
@@ -1029,63 +1037,6 @@ function InventoryPanel(props: {
         </div>
       )}
 
-      {/* 材料 */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-        <h3 className="mb-2 text-xs uppercase tracking-wider text-zinc-500">材料</h3>
-        {state.materials.length === 0 ? (
-          <p className="text-sm text-zinc-600">暂无材料，出击搜刮或拆解战利品获取。</p>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {matPage.slice.map((m) => (
-                <div key={m.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-2">
-                  <div className="text-sm text-zinc-200">{m.name}</div>
-                  <div className="mt-0.5 text-[11px] text-zinc-500">
-                    {MATERIAL_LABEL[m.kind]} · x{m.quantity} · ⛁{m.value}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <Pager
-              page={matPage.page}
-              pageCount={matPage.pageCount}
-              total={state.materials.length}
-              onPrev={() => matPage.setPage(matPage.page - 1)}
-              onNext={() => matPage.setPage(matPage.page + 1)}
-            />
-          </>
-        )}
-      </div>
-
-      {/* 装备 */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-        <h3 className="mb-2 text-xs uppercase tracking-wider text-zinc-500">装备制造</h3>
-        <div className="grid gap-2 sm:grid-cols-3">
-          {RECIPES.map((r) => {
-            const cost = craftCost(state, r);
-            const ok = canCraft(state, r);
-            return (
-              <div key={r.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-3">
-                <div className="text-sm text-zinc-100">{r.name}</div>
-                <div className="mt-0.5 text-[11px] text-zinc-500">
-                  ⛁{cost.coins} +{' '}
-                  {cost.materials.map((m) => `${MATERIAL_LABEL[m.kind]}x${m.qty}`).join(' ')}
-                </div>
-                <button
-                  disabled={!ok}
-                  onClick={() => mutate((s) => craftGear(s, rng, r.id).state)}
-                  className={`mt-2 w-full rounded px-2 py-1.5 text-xs font-medium ${
-                    ok ? 'bg-sky-700 text-white hover:bg-sky-600' : 'cursor-not-allowed bg-zinc-800 text-zinc-500'
-                  }`}
-                >
-                  制造
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
       {/* 装备栏：6 主槽（常驻穿戴）+ 3 快捷槽 */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
         <div className="mb-2 flex items-center justify-between">
@@ -1340,6 +1291,64 @@ function InventoryPanel(props: {
           </>
         )}
       </div>
+
+      {/* 材料 */}
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+        <h3 className="mb-2 text-xs uppercase tracking-wider text-zinc-500">材料</h3>
+        {state.materials.length === 0 ? (
+          <p className="text-sm text-zinc-600">暂无材料，出击搜刮或拆解战利品获取。</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {matPage.slice.map((m) => (
+                <div key={m.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-2">
+                  <div className="text-sm text-zinc-200">{m.name}</div>
+                  <div className="mt-0.5 text-[11px] text-zinc-500">
+                    {MATERIAL_LABEL[m.kind]} · x{m.quantity} · ⛁{m.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Pager
+              page={matPage.page}
+              pageCount={matPage.pageCount}
+              total={state.materials.length}
+              onPrev={() => matPage.setPage(matPage.page - 1)}
+              onNext={() => matPage.setPage(matPage.page + 1)}
+            />
+          </>
+        )}
+      </div>
+
+      {/* 装备 */}
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+        <h3 className="mb-2 text-xs uppercase tracking-wider text-zinc-500">装备制造</h3>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {RECIPES.map((r) => {
+            const cost = craftCost(state, r);
+            const ok = canCraft(state, r);
+            return (
+              <div key={r.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-3">
+                <div className="text-sm text-zinc-100">{r.name}</div>
+                <div className="mt-0.5 text-[11px] text-zinc-500">
+                  ⛁{cost.coins} +{' '}
+                  {cost.materials.map((m) => `${MATERIAL_LABEL[m.kind]}x${m.qty}`).join(' ')}
+                </div>
+                <button
+                  disabled={!ok}
+                  onClick={() => mutate((s) => craftGear(s, rng, r.id).state)}
+                  className={`mt-2 w-full rounded px-2 py-1.5 text-xs font-medium ${
+                    ok ? 'bg-sky-700 text-white hover:bg-sky-600' : 'cursor-not-allowed bg-zinc-800 text-zinc-500'
+                  }`}
+                >
+                  制造
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
     </section>
   );
 }
@@ -1477,6 +1486,13 @@ function SortiePanel(props: {
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId) ?? null;
   const [zoneId, setZoneId] = useState(DANGER_ZONES[0].id);
   const [seed, setSeed] = useState('');
+
+  // 系统消息日志：出现新内容时自动滚动到最新处，免去手动滑动
+  const logScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [run ? run.log[run.log.length - 1] : undefined]);
   // 出击（run）状态已提升到 Hub 层，本组件通过 props 读写，确保「角色 / 背包」页可实时同步
 
   const sync = () => syncRun();
@@ -1588,6 +1604,10 @@ function SortiePanel(props: {
       .filter((id): id is string => !!id)
       .map((id) => state.gear.find((g) => g.id === id))
       .filter((g): g is GearItem => !!g);
+    // v1.0.5：本局 RNG 由种子字符串决定（同种子可复现本局分支图/撤离点/霸主）；不填则用随机种子。
+    const seedInput = seed.trim();
+    const seedNum = seedInput ? hashSeed(seedInput) : Math.floor(Math.random() * 2147483647);
+    const runRng = seededRng(seedNum);
     const r = createRun(loadout, zone, startHp, { current: armorMax, max: armorMax }, startAmmo, {
       equipped: equippedGear,
       // bug1：把角色档案已有的伤势（debuff）一并带进本局，六维削弱与加成才会生效
@@ -1595,6 +1615,9 @@ function SortiePanel(props: {
       // bug2：出击起始 maxHp = 持久 maxHp + 临时驻防加成；baseMaxHp 仅供结算回写时剔除驻防加成
       startMaxHp: startMax,
       baseMaxHp: baseMax,
+      // v1.0.5：把确定性 RNG 注入建局（分支图/撤离点/霸主），并保存种子用于刷新重建
+      rng: runRng,
+      seed: seedNum,
     });
     // v1.0.2：快捷·投掷槽的伤害类投掷物（无 extractBonus 即手雷类）在自动战斗中概率先手引爆
     const throwId = eq.quickThrow;
@@ -1603,8 +1626,7 @@ function SortiePanel(props: {
       r.quickThrow = throwId;
     }
     runRef.current = r;
-    const s = seed.trim();
-    rngRef.current = s ? seededRng(s) : (Math.random as RNG);
+    rngRef.current = runRng;
     sync();
   };
 
@@ -1616,12 +1638,17 @@ function SortiePanel(props: {
 
   const doSearch = () => {
     const s = runRef.current;
-    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract) return;
+    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract || s.bagFullPrompt) return;
     const lootLuck = active
       ? buildSortieLoadout(state, active.id)?.bonus.lootLuck ?? 0
       : 0;
     search(s, rngRef.current, lootLuck);
     if (s.phase !== 'searching') {
+      sync();
+      return;
+    }
+    // v1.0.5：背包已满已在引擎置位 pendingSearch，跳出搜刮流程（不触发救援 / 瞭望塔）
+    if (s.bagFullPrompt) {
       sync();
       return;
     }
@@ -1636,6 +1663,14 @@ function SortiePanel(props: {
         s.log.push(`[${fmtClock(s.elapsedSec)}] 【系统】瞭望塔侦察生效，额外发现一批物资。`);
       }
     }
+    sync();
+  };
+
+  /** v1.0.5：背包已满弹窗的「放弃 / 取消」抉择 */
+  const doResolveBagFull = (mode: 'abandon' | 'cancel') => {
+    const s = runRef.current;
+    if (!s || !s.bagFullPrompt) return;
+    resolveBagFull(s, mode, rngRef.current);
     sync();
   };
 
@@ -1690,18 +1725,11 @@ function SortiePanel(props: {
     sync();
   };
 
-  /** 深入到本大地图的下一个分支区域（搜完 3 次后推进路线，第 10 区为霸主） */
-  const doAdvanceBranch = () => {
+  /** v1.0.5：沿分支图移动到相邻区域（图移动模型的核心） */
+  const doMoveToNode = (targetId: string) => {
     const s = runRef.current;
-    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract) return;
-    advanceBranch(s);
-    sync();
-  };
-
-  const doGoExtract = () => {
-    const s = runRef.current;
-    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract) return;
-    goToExtract(s);
+    if (!s || s.phase !== 'searching' || s.encounter || s.atExtract || s.bagFullPrompt) return;
+    moveToNode(s, targetId, rngRef.current);
     sync();
   };
 
@@ -1876,6 +1904,8 @@ function SortiePanel(props: {
     runRef.current = null;
     setRun(null);
     writtenRef.current = false;
+    const u = getCurrentUser();
+    if (u) clearRun(u);
   };
 
   // 出击结局统一结算：run 进入 dead / extracted 时写回归档一次。
@@ -1889,6 +1919,34 @@ function SortiePanel(props: {
       persistRunResult();
     }
   }, [run, persistRunResult, runRef, writtenRef]);
+
+  // v1.0.5：出击对局持久化 —— 刷新 / 重进不退出出击
+  // 挂载时尝试恢复进行中的对局（仅当本地尚无进行中 run 时，避免覆盖刚开的新局）
+  useEffect(() => {
+    if (runRef.current) return;
+    const u = getCurrentUser();
+    if (!u) return;
+    const saved = loadRun(u);
+    if (saved && (saved.phase === 'searching' || saved.phase === 'combat')) {
+      runRef.current = saved;
+      rngRef.current = seededRng(saved.rngSeed);
+      writtenRef.current = false;
+      sync();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 进行中的对局：每次状态变化后落盘（刷新后可重建）；终局由结算 effect 写回归档并清理
+  useEffect(() => {
+    const u = getCurrentUser();
+    if (!u || !run) return;
+    if (run.phase === 'dead' || run.phase === 'extracted' || run.phase === 'timeout') {
+      clearRun(u);
+      return;
+    }
+    saveRun(u, run);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run]);
 
   if (!active) {
     return (
@@ -1948,6 +2006,18 @@ function SortiePanel(props: {
   const usedSearches = run ? run.zoneSearches[run.zone.id] ?? 0 : 0;
   const secureUsed = run ? run.secureBox.filter((x) => x !== null).length : 0;
   const throwableStock = (state.throwables?.smoke ?? 0) + (state.throwables?.flash ?? 0);
+  // v1.0.5：威胁档 / 区域图派生展示
+  const tier = run ? threatTierOf(run.elapsedSec) : 0;
+  const tierDef = THREAT_TIERS[tier];
+  const extractNames = run
+    ? run.graph.extractZones
+        .map((id) => {
+          const n = run.graph.nodes.find((nn) => nn.id === id);
+          return n ? `${n.name} 危${n.danger}` : id;
+        })
+        .join('、')
+    : '';
+  const curNode = run ? currentZoneOf(run) : null;
 
   const sortieBonus = active ? buildSortieLoadout(state, active.id)?.bonus : undefined;
   const activeStatus = active ? state.survivorStatus[active.id] : undefined;
@@ -1970,22 +2040,14 @@ function SortiePanel(props: {
           )}
           {sortieBonus && (
             <div className="flex flex-wrap gap-2 text-xs">
-              <span className="rounded bg-emerald-900/40 px-2 py-1 text-emerald-300">
-                气血上限 +{Math.round(sortieBonus.hpBonus)}
-              </span>
-              <span className="rounded bg-rose-900/40 px-2 py-1 text-rose-300">
-                暴击 +{Math.round(sortieBonus.critBonus * 100)}%
-              </span>
               <span className="rounded bg-sky-900/40 px-2 py-1 text-sky-300">
-                搜刮运势 +{Math.round(sortieBonus.lootLuck * 100)}%
+                搜刮加成 +{Math.round(sortieBonus.lootLuck * 100)}%
               </span>
-              {sortieBonus.startHpRatio > 0 && (
-                <span className="rounded bg-amber-900/40 px-2 py-1 text-amber-300">
-                  初始血量 +{Math.round(sortieBonus.startHpRatio * 100)}%
-                </span>
-              )}
-              <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-400">
-                由 createCombatUnitFromCultivator 构建
+              <span className="rounded bg-emerald-900/40 px-2 py-1 text-emerald-300">
+                经验加成 +{Math.round((sortieBonus.xpBonus ?? 0) * 100)}%
+              </span>
+              <span className="rounded bg-amber-900/40 px-2 py-1 text-amber-300">
+                金币加成 +{Math.round((sortieBonus.coinBonus ?? 0) * 100)}%
               </span>
             </div>
           )}
@@ -2032,7 +2094,7 @@ function SortiePanel(props: {
       {run && (
         <>
           {/* ① 对局状态栏（常驻：时间 / 位置 / 撤离点 / 安全箱 + 生命护甲弹药负重） */}
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+          <div className="sticky top-0 z-20 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
               <span className="text-zinc-400">
                 ⏱ 对局剩余{' '}
@@ -2053,8 +2115,12 @@ function SortiePanel(props: {
               <span className="text-zinc-400">
                 🚁 撤离点：
                 <span className={run.atExtract ? 'text-emerald-300' : 'text-sky-300'}>
-                  {run.atExtract ? '已抵达' : '已开启'}
+                  {run.extractRevealed ? (run.atExtract ? '已抵达' : '已开启') : '未显形（约第5分钟 / 搜满3区）'}
                 </span>
+              </span>
+              <span className="text-zinc-400">
+                🔥 威胁：
+                <span style={{ color: tierDef.color }}>{tierDef.label}</span>
               </span>
               <span className="text-zinc-400">
                 🛡 安全箱：<span className="text-amber-300">{secureUsed}/{SECURE_BOX_SLOTS}</span>
@@ -2091,7 +2157,7 @@ function SortiePanel(props: {
               </div>
               <div className="flex items-end justify-between text-zinc-500">
                 <span>🎒 负重</span>
-                <span className="text-zinc-200">{carried.length} / {RAID_PACK_CAPACITY} 格</span>
+                <span className="text-zinc-200">{carried.length} / {runPackCapacity(run)} 格</span>
               </div>
             </div>
 
@@ -2164,10 +2230,12 @@ function SortiePanel(props: {
                 </div>
               )}
             </div>
+          </div>
 
-            {/* v1.0.3 ①-b 角色属性 / 增益 / 伤势：出击途中实时反映伤势削减与换装加成 */}
-            {effAttrs && baseAttrs && (
-              <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
+          {/* v1.0.3 ①-b 角色属性 / 增益 / 伤势（随页面滚动，不固定） */}
+          {effAttrs && baseAttrs && (
+            <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+              <div className="space-y-2">
                 <div>
                   <div className="mb-1 text-[11px] text-zinc-500">角色属性（六维）· 伤势削减以红色显示</div>
                   {attrBars(baseAttrs, sortieSixBonus, sortieSixReduction)}
@@ -2198,8 +2266,32 @@ function SortiePanel(props: {
                   )}
                 </div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
+
+          {/* v1.0.5：背包已满弹窗（放弃 / 取消 抉择） */}
+          {run.bagFullPrompt && !isOver && (
+            <div className="rounded-lg border border-amber-700 bg-amber-950/30 p-4">
+              <h2 className="mb-1 text-sm font-semibold text-amber-300">🎒 背包已满！</h2>
+              <p className="mb-3 text-xs text-zinc-300">
+                本轮搜刮翻出了物资却装不下了。可【放弃本轮拾取】（时间照耗、弹药与废土币照常获得），或【取消】（腾出空间后重新点击搜索）。
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  onClick={(e) => { doResolveBagFull('cancel'); e.currentTarget.blur(); }}
+                  className="rounded-lg border border-zinc-600 px-4 py-3 text-sm text-zinc-200 hover:bg-zinc-800"
+                >
+                  ↩ 取消（保留本轮，去清背包）
+                </button>
+                <button
+                  onClick={(e) => { doResolveBagFull('abandon'); e.currentTarget.blur(); }}
+                  className="rounded-lg bg-amber-700 px-4 py-3 font-medium text-white hover:bg-amber-600"
+                >
+                  🗑 放弃本轮拾取
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* ② 场景叙事区 + 系统消息日志：整合为同一面板（场景在上，日志在下） */}
           <div className="rounded-lg border border-sky-900/50 bg-zinc-950/70 p-4">
@@ -2209,7 +2301,7 @@ function SortiePanel(props: {
             </pre>
             <div className="border-t border-zinc-800 pt-3">
               <h2 className="mb-2 text-sm font-medium text-zinc-300">系统消息日志</h2>
-              <div className="max-h-[300px] space-y-1 overflow-y-auto pr-1 font-mono text-[13px] leading-relaxed">
+              <div ref={logScrollRef} className="max-h-[300px] space-y-1 overflow-y-auto pr-1 font-mono text-[13px] leading-relaxed">
                 {run.log.map((line, i) => {
                   const m = line.match(/^\[(\d{2}:\d{2})\]\s*/);
                   const body = m ? line.slice(m[0].length) : line;
@@ -2362,7 +2454,7 @@ function SortiePanel(props: {
               <div className="flex gap-3">
                 <button
                   onClick={(e) => { doSearch(); e.currentTarget.blur(); }}
-                  disabled={searchLeft <= 0}
+                  disabled={searchLeft <= 0 || run.bagFullPrompt}
                   className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
                 >
                   🛰 搜索当前区域
@@ -2371,10 +2463,11 @@ function SortiePanel(props: {
                   </span>
                 </button>
                 <button
-                  onClick={(e) => { doGoExtract(); e.currentTarget.blur(); }}
-                  className="flex-1 rounded-lg bg-sky-700 px-4 py-3 font-medium text-white hover:bg-sky-600"
+                  onClick={(e) => { doExtract(); e.currentTarget.blur(); }}
+                  disabled={!run.atExtract || run.bagFullPrompt}
+                  className="flex-1 rounded-lg bg-sky-700 px-4 py-3 font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
                 >
-                  🏃 前往撤离点
+                  🏃 撤离
                 </button>
               </div>
               {searchLeft <= 0 && (
@@ -2384,46 +2477,62 @@ function SortiePanel(props: {
               )}
               <div>
                 <div className="mb-1.5 flex items-center justify-between text-[11px] uppercase tracking-wider text-zinc-500">
-                  <span>本图路线：{run.map.name}（共 {MAP_BRANCH_COUNT} 区，越深入越危险）</span>
-                  <span className="text-amber-400/80">第 {run.branchIndex + 1}/{MAP_BRANCH_COUNT} 区</span>
+                  <span>区域图（共 {run.graph.nodes.length} 区 · 越深越危险）</span>
+                  <span className="text-amber-400/80">当前深度 {curNode?.depth ?? 0}</span>
                 </div>
+                {/* 当前所在区域 */}
+                <div className="mb-2 rounded border border-emerald-500/60 bg-emerald-500/5 p-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-emerald-300">📍 {curNode?.name}</span>
+                    <span
+                      className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px]"
+                      style={{ color: tierDef.color }}
+                    >
+                      {DANGER_LABEL[curNode?.danger ?? 1] ?? `危${curNode?.danger ?? 1}`}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-zinc-500">
+                    搜刮 {usedSearches}/{MAX_ZONE_SEARCHES}
+                    {isBossZone(run) ? ' · 👑 霸主领地' : ''}
+                    {run.extractRevealed && run.graph.extractZones.includes(run.currentZoneId) ? ' · 🚁 撤离点' : ''}
+                  </div>
+                </div>
+                {/* 相邻可移动区域（点击移动） */}
+                <div className="mb-1 text-[11px] text-zinc-500">相邻区域（点击移动）：</div>
                 <div className="mb-2 flex flex-wrap gap-1">
-                  {run.map.branches?.map((b, i) => {
-                    const isBoss = i === MAP_BRANCH_COUNT - 1;
-                    const cur = i === run.branchIndex;
-                    const past = i < run.branchIndex;
+                  {zoneNeighbors(run).map((n) => {
+                    const revealedExtract = run.graph.extractZones.includes(n.id) && run.extractRevealed;
+                    const isBoss = n.id === run.graph.bossZoneId;
                     return (
-                      <span
-                        key={b.id}
-                        title={b.flavor}
-                        className={`rounded border px-1.5 py-0.5 text-[10px] ${
-                          cur
-                            ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                            : past
-                              ? 'border-zinc-800 text-zinc-600'
-                              : 'border-zinc-700 text-zinc-400'
+                      <button
+                        key={n.id}
+                        onClick={(e) => { doMoveToNode(n.id); e.currentTarget.blur(); }}
+                        className={`rounded border px-2 py-1 text-[11px] ${
+                          revealedExtract
+                            ? 'border-sky-500 bg-sky-900/30 text-sky-200 hover:bg-sky-800/50'
+                            : isBoss
+                              ? 'border-rose-700 bg-rose-900/20 text-rose-200 hover:bg-rose-800/40'
+                              : 'border-zinc-700 text-zinc-300 hover:border-emerald-500 hover:text-emerald-300'
                         }`}
                       >
-                        {i + 1}. {b.name}
+                        {n.name}
+                        <span className="ml-1 opacity-70">危{n.danger}</span>
+                        {revealedExtract && <span className="ml-0.5">🚁</span>}
                         {isBoss && <span className="ml-0.5">👑</span>}
-                      </span>
+                      </button>
                     );
                   })}
+                  {zoneNeighbors(run).length === 0 && (
+                    <span className="text-[11px] text-zinc-600">无相邻区域</span>
+                  )}
                 </div>
-                <button
-                  onClick={(e) => { doAdvanceBranch(); e.currentTarget.blur(); }}
-                  disabled={run.branchIndex >= MAP_BRANCH_COUNT - 1}
-                  className="w-full rounded-lg border border-sky-700 bg-sky-900/30 px-4 py-2.5 text-sm text-sky-200 hover:bg-sky-800/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-600"
-                >
-                  🧭 深入下一区域
-                  <span className="ml-1 text-[11px] opacity-70">
-                    {run.branchIndex >= MAP_BRANCH_COUNT - 1
-                      ? '（已位于霸主领地）'
-                      : run.map.branches?.[run.branchIndex + 1]
-                        ? `（下一站：${run.map.branches[run.branchIndex + 1].name}，消耗时间并提升风险）`
-                        : ''}
-                  </span>
-                </button>
+                {/* 撤离点（显形后列出） */}
+                {run.extractRevealed && (
+                  <div className="mb-2 text-[11px] text-sky-300/80">
+                    🚁 本局撤离点：{extractNames}
+                  </div>
+                )}
+                {/* 抄近路直奔按钮已移除：撤离仅可在身处撤离点区域时进行（见下方本局撤离点 + 区域图 🚁） */}
               </div>
             </div>
           ) : null}
@@ -2492,7 +2601,7 @@ function SortiePanel(props: {
             <h2 className="mb-2 flex items-center justify-between text-sm font-medium text-zinc-300">
               <span>🎒 本局临时背包</span>
               <span className="text-xs text-zinc-500">
-                {carried.length} / {RAID_PACK_CAPACITY} 格 · 估值 {carriedValue}
+                {carried.length} / {runPackCapacity(run)} 格 · 估值 {carriedValue}
               </span>
             </h2>
             <div className="mb-2 flex items-center justify-between rounded border border-amber-900/40 bg-amber-950/10 px-2 py-1 text-[11px]">
@@ -2548,7 +2657,7 @@ function SortiePanel(props: {
                         {!isOver && (
                           <button
                             onClick={() => doUnequipRun(e.slot)}
-                            disabled={(carried.length >= RAID_PACK_CAPACITY)}
+                            disabled={(carried.length >= runPackCapacity(run))}
                             className="rounded border border-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400 hover:border-rose-600 hover:text-rose-300 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
                             title="卸下放回战局背包"
                           >

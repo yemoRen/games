@@ -426,7 +426,9 @@ export function equipGear(
       accessory: slots.accessory === gearId ? undefined : slots.accessory,
     };
   }
-  return { ...state, equipped };
+  const nextState = { ...state, equipped };
+  // v1.0.5 修复 Bug3：佩戴装备后按 六维+词条+装备 重算气血上限并同步角色页
+  return recomputeMaxHpIncludingGear(nextState, survivorId);
 }
 
 export function unequipGear(
@@ -435,10 +437,12 @@ export function unequipGear(
   slot: GearSlot,
 ): SurvivalGameState {
   const current = state.equipped[survivorId] ?? {};
-  return {
+  const next = {
     ...state,
     equipped: { ...state.equipped, [survivorId]: { ...current, [slot]: undefined } },
   };
+  // v1.0.5 修复 Bug3：卸下装备后重算气血上限并同步角色页
+  return recomputeMaxHpIncludingGear(next, survivorId);
 }
 
 /** 设置快捷消耗槽：医疗 / 投掷物 / 增益补给 */
@@ -1129,6 +1133,30 @@ function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): Surviv
         maxHp: newMax,
         currentHp: Math.min(newMax, st.currentHp + delta),
       },
+    },
+  };
+}
+
+/**
+ * 重算某成员最大生命上限，纳入：六维 + 词条气血 + 已装备装备气血（v1.0.5 修复 Bug3：
+ * 佩戴/卸下装备后气血上限未同步至角色页）。
+ * 同步当前生命：按增量等比调整（上限升降，当前生命同步增减，封顶于新上限、封底于 0）。
+ */
+function recomputeMaxHpIncludingGear(state: SurvivalGameState, survivorId: string): SurvivalGameState {
+  const p = state.survivors.find((s) => s.id === survivorId);
+  const st = state.survivorStatus[survivorId];
+  if (!p || !st) return state;
+  const traitC = aggregateTraitCombat(p.traits);
+  const gearC = aggregateGearCombat(state, survivorId);
+  const totalHpBonus = traitC.hpBonus + gearC.hpBonus;
+  const newMax = deriveMaxHp(p.attributes, totalHpBonus);
+  const delta = newMax - st.maxHp;
+  const newCur = Math.min(newMax, Math.max(0, st.currentHp + delta));
+  return {
+    ...state,
+    survivorStatus: {
+      ...state.survivorStatus,
+      [survivorId]: { ...st, maxHp: newMax, currentHp: newCur },
     },
   };
 }

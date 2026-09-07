@@ -22,3 +22,6 @@
 - 类型检查：`bun run tsc -b tsconfig.app.json`
 - 构建：`bun run build:client`（exit 0 即通过）
 - lint 有 3 个历史遗留错误（hono.ts ×2 altcha 未用、ExtractionEngine `_rng`），按约定不动。
+
+## 工具环境坑（重要）
+- 本项目 Edit / Grep / Read 工具存在「沙箱视图」与真实磁盘不一致：Edit 报成功但 Grep/Read 可能读到旧版；关键改动一律用 **Bash + Python**（真实磁盘）落地，并用 Python 读文件复核后才算完成。

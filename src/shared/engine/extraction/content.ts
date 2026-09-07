@@ -14,8 +14,10 @@ import type {
   LootItem,
   SurvivorLoadout,
   ZoneBranch,
+  ZoneNode,
+  ZoneGraph,
 } from './types';
-import { MAP_BRANCH_COUNT } from './types';
+import { MAP_BRANCH_COUNT, EXTRACT_POINT_COUNT } from './types';
 
 const attr = (
   vitality: number,
@@ -335,4 +337,113 @@ export function getZone(id: string): DangerZone {
   const zone = DANGER_ZONES.find((z) => z.id === id);
   if (!zone) throw new Error(`未知危险区域: ${id}`);
   return zone;
+}
+
+// ===== v1.0.5：固定 16 区池（危险度随图深度递增，由生成器按深度推导）=====
+/**
+ * 固定区域池：每局从中取全部 16 区，按随机连边排成一张分支图。
+ * 区域"危险度"在生成时由其在图中的深度推导（越深越危险），因此模板只提供名称/风味。
+ * 每局随机点：连边方式、2 个撤离点、霸主所在最深层节点。
+ */
+export const ZONE_POOL: { id: string; name: string; flavor: string }[] = [
+  { id: 'z01', name: '锈蚀公路口', flavor: '断裂的护栏斜插进土里，远处有车灯残光一闪即灭。' },
+  { id: 'z02', name: '塌方隧道', flavor: '塌落的混凝土把通道挤成一线天，风声像有人在低语。' },
+  { id: 'z03', name: '废弃加油站', flavor: '油罐区警戒线还在，一点火星就是一片火海。' },
+  { id: 'z04', name: '流浪者营地', flavor: '篝火余烬未冷，住户却不知去向。' },
+  { id: 'z05', name: '地下水闸', flavor: '锈蚀的闸门半开，渗水声在黑暗里回荡。' },
+  { id: 'z06', name: '断桥残骸', flavor: '桥面断口处垂着缆绳，对岸有什么在动。' },
+  { id: 'z07', name: '尸横广场', flavor: '枯井般的喷泉池里漂着说不清的东西。' },
+  { id: 'z08', name: '锈蚀车阵', flavor: '报废车辆挤作一团，车底总窸窣作响。' },
+  { id: 'z09', name: '地下管廊', flavor: '管线网络如迷宫，图纸在这里比枪更有用。' },
+  { id: 'z10', name: '坍塌商场', flavor: '扶梯停在半途，橱窗模特还摆着逃跑的姿势。' },
+  { id: 'z11', name: '信号塔基', flavor: '塔顶灯仍在转，登顶即暴露，风景绝佳。' },
+  { id: 'z12', name: '焚毁仓库', flavor: '焦黑货架间，铁钩挂着不明来路的肉块。' },
+  { id: 'z13', name: '辐射苗圃', flavor: '玻璃化土地竟长出荧蓝的藤蔓，碰不得。' },
+  { id: 'z14', name: '沉没站台', flavor: '积水没过脚踝，水面涟漪从黑暗中扩散而来。' },
+  { id: 'z15', name: '医院侧楼', flavor: '走廊尽头的门后，心电监护仪还在长鸣。' },
+  { id: 'z16', name: '深井竖坑', flavor: '井壁滚烫，热风把辐射尘吹成金色的雾。' },
+];
+
+/**
+ * 生成本局分支图：从固定 16 区池构建节点 + 随机连边，保证连通（起点可达全部节点）。
+ *  - 深度：随机生成树 + 少量冗余边，得到每个节点距起点的深度。
+ *  - 危险度：由深度线性推导（1..6），保证"越深越危险"。
+ *  - 霸主：深度最大的节点（并列随机取一），敌人池替换为地图霸主。
+ *  - 撤离点：深度 [2, maxDepth-1] 范围内随机取 EXTRACT_POINT_COUNT 个（排除起点/霸主）。
+ */
+export function generateZoneGraph(theme: DangerZone, rng: () => number): ZoneGraph {
+  const pool = ZONE_POOL;
+  const n = pool.length; // 16
+  const ids = pool.map((z) => z.id);
+  const depth = new Array<number>(n).fill(-1);
+  const parent = new Array<number>(n).fill(-1);
+  depth[0] = 0;
+  for (let i = 1; i < n; i++) {
+    const done: number[] = [];
+    for (let j = 0; j < i; j++) if (depth[j] >= 0) done.push(j);
+    const p = done[Math.floor(rng() * done.length)];
+    parent[i] = p;
+    depth[i] = depth[p] + 1;
+  }
+  const maxDepth = Math.max(...depth);
+
+  const edges: Record<string, string[]> = {};
+  for (const id of ids) edges[id] = [];
+  const addEdge = (a: string, b: string) => {
+    if (a === b) return;
+    if (!edges[a].includes(b)) edges[a].push(b);
+    if (!edges[b].includes(a)) edges[b].push(a);
+  };
+  // 树边（保证连通）
+  for (let i = 1; i < n; i++) addEdge(ids[i], ids[parent[i]]);
+  // 少量横向 / 纵深冗余边，丰富路线
+  const extra = Math.min(12, n);
+  for (let k = 0; k < extra; k++) {
+    const a = Math.floor(rng() * n);
+    const b = Math.floor(rng() * n);
+    if (Math.abs(depth[a] - depth[b]) <= 2) addEdge(ids[a], ids[b]);
+  }
+
+  // 霸主：深度最大者（并列随机取一）
+  const deepIdx = ids.map((_, i) => i).filter((i) => depth[i] === maxDepth);
+  const bossIdx = deepIdx[Math.floor(rng() * deepIdx.length)];
+
+  // 撤离点：深度 [2, maxDepth-1]，排除霸主/起点；不足则从其余节点补足
+  const pick = (count: number, pred: (i: number) => boolean): number[] => {
+    let arr = ids.map((_, i) => i).filter(pred);
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    if (arr.length >= count) return arr.slice(0, count);
+    const rest = ids.map((_, i) => i).filter((i) => i !== 0 && i !== bossIdx && !arr.includes(i));
+    for (let i = rest.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [rest[i], rest[j]] = [rest[j], rest[i]];
+    }
+    return [...arr, ...rest.slice(0, count - arr.length)];
+  };
+  const extractIdx = pick(EXTRACT_POINT_COUNT, (i) => depth[i] >= 2 && depth[i] <= maxDepth - 1 && i !== bossIdx);
+
+  const nodes: ZoneNode[] = ids.map((_, i) => {
+    const danger = Math.max(1, Math.min(6, 1 + Math.round((depth[i] * 5) / Math.max(1, maxDepth))));
+    const isBoss = i === bossIdx;
+    return {
+      id: ids[i],
+      name: pool[i].name,
+      flavor: pool[i].flavor,
+      danger,
+      depth: depth[i],
+      lootTable: theme.lootTable,
+      enemies: isBoss ? (theme.bossEnemy ? [theme.bossEnemy, ...theme.enemies] : theme.enemies) : theme.enemies,
+    };
+  });
+
+  return {
+    startId: ids[0],
+    nodes,
+    edges,
+    extractZones: extractIdx.map((i) => ids[i]),
+    bossZoneId: ids[bossIdx],
+  };
 }

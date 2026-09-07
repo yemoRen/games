@@ -92,7 +92,7 @@ const AttrBar: React.FC<{ label: string; value: number; max: number }> = ({ labe
   <div className="flex items-center gap-2 text-xs">
     <span className="w-10 text-zinc-400">{label}</span>
     <div className="h-1.5 flex-1 overflow-hidden rounded bg-zinc-800">
-      <div className="h-full bg-emerald-950/300" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
+      <div className="h-full bg-emerald-500" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
     </div>
     <span className="w-8 text-right font-mono text-zinc-200">{value}</span>
   </div>
@@ -261,7 +261,7 @@ export const ViewTactics: React.FC<ViewProps> = ({ state }) => {
   return (
     <Section title="战术手册" subtitle={`当前出击者：${active.name}（${active.tierName}）`}>
       <Card>
-        <h3 className="text-sm font-semibold text-zinc-200">主动技·6 维基础属性</h3>
+        <h3 className="text-sm font-semibold text-zinc-200">六维基础属性</h3>
         <div className="mt-3 space-y-2">
           {(Object.keys(active.attributes) as (keyof Attributes)[]).map((k) => (
             <AttrBar key={k} label={attrLabel(k)} value={active.attributes[k]} max={30} />
@@ -278,12 +278,20 @@ export const ViewTactics: React.FC<ViewProps> = ({ state }) => {
               <li key={t.id} className="rounded bg-zinc-950 p-2">
                 <div className="font-medium text-zinc-100">{t.name}</div>
                 <div className="text-xs text-zinc-400">{t.description}</div>
-                {t.combat && (
+                {(t.combat ||
+                  Object.keys(t.modifiers ?? {}).some(
+                    (k) => (t.modifiers?.[k as keyof Attributes] ?? 0) !== 0,
+                  )) && (
                   <div className="mt-1 flex flex-wrap gap-1 text-xs">
-                    {t.combat.hpBonus && <Pill tone="green">HP +{t.combat.hpBonus}</Pill>}
-                    {t.combat.critBonus && <Pill tone="amber">暴击 +{Math.round(t.combat.critBonus * 100)}%</Pill>}
-                    {t.combat.lootLuck && <Pill tone="sky">搜刮 +{Math.round(t.combat.lootLuck * 100)}%</Pill>}
-                    {t.combat.startHpRatio && <Pill>初始 HP +{Math.round(t.combat.startHpRatio * 100)}%</Pill>}
+                    {(Object.keys(t.modifiers ?? {}) as (keyof Attributes)[])
+                      .filter((k) => (t.modifiers?.[k] ?? 0) !== 0)
+                      .map((k) => (
+                        <Pill key={k} tone="green">{attrLabel(k)} +{t.modifiers?.[k]}</Pill>
+                      ))}
+                    {t.combat?.hpBonus && <Pill tone="green">HP +{t.combat.hpBonus}</Pill>}
+                    {t.combat?.critBonus && <Pill tone="amber">暴击 +{Math.round(t.combat.critBonus * 100)}%</Pill>}
+                    {t.combat?.lootLuck && <Pill tone="sky">搜刮 +{Math.round(t.combat.lootLuck * 100)}%</Pill>}
+                    {t.combat?.startHpRatio && <Pill>初始 HP +{Math.round(t.combat.startHpRatio * 100)}%</Pill>}
                   </div>
                 )}
               </li>

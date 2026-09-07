@@ -52,18 +52,26 @@ import type {
   ExtractionRunState,
   ExtractionSummary,
   LootItem,
+  PendingSearch,
   RunEquippedGear,
   SurvivorLoadout,
+  ZoneGraph,
+  ZoneNode,
 } from './types';
 import {
   ACTION_COST,
+  EXTRACT_REVEAL_AT_SEC,
+  EXTRACT_REVEAL_SEARCHES,
   FIGHT_AMMO_COST,
   MAP_BRANCH_COUNT,
   MAX_ZONE_SEARCHES,
   RUN_TIME_LIMIT_SEC,
   SECURE_BOX_SLOTS,
+  threatEncounterChance,
+  threatTierOf,
 } from './types';
 import type { Attributes } from '@shared/types/cultivator';
+import { generateZoneGraph } from './content';
 
 const ATTRIBUTE_MAP: Array<[keyof Attributes, AttributeType]> = [
   ['vitality', AttributeType.VITALITY],
@@ -143,7 +151,8 @@ export function deriveAttrEffects(attrs: Attributes): AttrEffects {
   const spirit = attrs.spirit ?? 10;
   const willpower = attrs.willpower ?? 10;
   return {
-    packCapacity: RAID_PACK_CAPACITY + Math.floor(strength / 5),
+    // 临时背包：基础力量（白字）每 1 点 = 1 格
+    packCapacity: Math.max(1, Math.floor(strength)),
     // 敏捷 10 → 1.00；敏捷 20 → 0.80（搜索更快）；敏捷 6 → 1.08（更慢）
     timeScale: Math.max(0.72, Math.min(1.12, 1 - (speed - 10) * 0.02)),
     sneakBonus: (speed - 10) * 0.03,
@@ -239,9 +248,10 @@ export function recomputeRunMaxHp(state: ExtractionRunState): void {
   hp.current = Math.min(newMax, hp.current ?? 0);
 }
 
-/** 本局战局背包容量（受力量影响） */
+/** 本局战局背包容量 = 基础力量（白字）每 1 点 = 1 格（v1.0.5 起） */
 export function runPackCapacity(state: ExtractionRunState): number {
-  return deriveAttrEffects(runEffectiveAttributes(state)).packCapacity;
+  const base = state.baseAttributes?.strength ?? 10;
+  return Math.max(1, Math.floor(base));
 }
 
 /** 伤势文本（UI 展示用）：给出该伤势削减了哪些基础六维、各减多少点 */
@@ -293,6 +303,82 @@ export function timeLeft(state: ExtractionRunState): number {
   return Math.max(0, RUN_TIME_LIMIT_SEC - state.elapsedSec);
 }
 
+// ===== v1.0.5：分支图 / 威胁时钟 辅助 =====
+
+/** 在分支图中按 id 取节点 */
+function nodeById(state: ExtractionRunState, id: string): ZoneNode | undefined {
+  return state.graph.nodes.find((n) => n.id === id);
+}
+
+/** 当前所在节点 */
+export function currentZoneOf(state: ExtractionRunState): ZoneNode {
+  return nodeById(state, state.currentZoneId) ?? state.graph.nodes[0];
+}
+
+/** 当前节点的相邻可移动节点 */
+export function zoneNeighbors(state: ExtractionRunState): ZoneNode[] {
+  const adj = state.graph.edges[state.currentZoneId] ?? [];
+  return adj.map((id) => nodeById(state, id)).filter((n): n is ZoneNode => !!n);
+}
+
+/** 当前是否位于霸主所在最深层节点 */
+export function isBossZone(state: ExtractionRunState): boolean {
+  return state.currentZoneId === state.graph.bossZoneId;
+}
+
+/** 从当前节点出发，BFS 找到最近的撤离点（节点 id） */
+export function nearestExtractZone(state: ExtractionRunState): string | null {
+  if (state.graph.extractZones.length === 0) return null;
+  const start = state.currentZoneId;
+  const visited = new Set<string>([start]);
+  const queue: string[] = [start];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    if (state.graph.extractZones.includes(cur)) return cur;
+    for (const nb of state.graph.edges[cur] ?? []) {
+      if (!visited.has(nb)) {
+        visited.add(nb);
+        queue.push(nb);
+      }
+    }
+  }
+  return null;
+}
+
+/** 把分支图节点转换为战斗/搜刮用的 DangerZone */
+function nodeToZone(node: ZoneNode): DangerZone {
+  return {
+    id: node.id,
+    name: node.name,
+    dangerLevel: node.danger,
+    flavor: node.flavor,
+    lootTable: node.lootTable,
+    enemies: node.enemies,
+    extractTimeSec: 0,
+  };
+}
+
+/** 从已用时间推导并写入当前威胁档 */
+function updateThreat(state: ExtractionRunState): void {
+  state.threatTier = threatTierOf(state.elapsedSec);
+}
+
+/** 撤离点显形判定：~5 分钟 或 搜满 3 区后显形 */
+function maybeRevealExtract(state: ExtractionRunState): void {
+  if (state.phase !== 'searching') return;
+  if (state.extractRevealed) return;
+  const distinct = Object.keys(state.zoneSearches).filter(
+    (id) => (state.zoneSearches[id] ?? 0) > 0,
+  ).length;
+  if (state.elapsedSec >= EXTRACT_REVEAL_AT_SEC || distinct >= EXTRACT_REVEAL_SEARCHES) {
+    state.extractRevealed = true;
+    const names = state.graph.extractZones
+      .map((id) => nodeById(state, id)?.name ?? id)
+      .join('、');
+    plog(state, `🚁 撤离信号已激活！本局撤离点：${names}。可前往撤离点瞬间撤离，或击破霸主后随时撤离。`);
+  }
+}
+
 /**
  * 消耗对局时间。时间耗尽且尚未撤离 → phase='timeout'（等同阵亡结算）。
  * 只在 searching 阶段生效，避免覆盖 dead/extracted 等终态。
@@ -300,6 +386,9 @@ export function timeLeft(state: ExtractionRunState): number {
 function spendTime(state: ExtractionRunState, sec: number, rng: () => number = Math.random): void {
   if (state.phase !== 'searching') return;
   state.elapsedSec += sec;
+  // v1.0.5：时间推进即刷新威胁档；并检查撤离点显形
+  updateThreat(state);
+  maybeRevealExtract(state);
   if (state.elapsedSec >= RUN_TIME_LIMIT_SEC) {
     state.elapsedSec = RUN_TIME_LIMIT_SEC;
     state.phase = 'timeout';
@@ -473,6 +562,10 @@ export interface CreateRunOptions {
   startMaxHp?: number;
   /** 持久 maxHp（不含临时驻防加成），结算回写基地时以此为准。不传则回落到 startMaxHp。 */
   baseMaxHp?: number;
+  /** v1.0.5：本局 RNG（用于生成分支图 / 撤离点 / 霸主位置）；不传则 Math.random */
+  rng?: () => number;
+  /** v1.0.5：序列化用的 RNG 种子（刷新后重建确定性 RNG）；不传则随机生成 */
+  seed?: number;
 }
 
 export function createRun(
@@ -556,12 +649,25 @@ export function createRun(
   }
   const armor = startArmor ?? { current: 0, max: 0 };
   const map = zone;
-  const startZone = branchZone(map, 0);
+  // v1.0.5：本局分支图（固定 16 区池 + 随机连边 / 随机撤离点 / 霸主浮动），取消旧种子地图
+  const genRng = opts.rng ?? Math.random;
+  const graph = generateZoneGraph(zone, genRng);
+  const startNode = graph.nodes.find((nd) => nd.id === graph.startId) ?? graph.nodes[0];
+  const startZone = nodeToZone(startNode);
   return {
     survivor,
     zone: startZone,
     map,
     branchIndex: 0,
+    // ===== v1.0.5：分支图 / 撤离点 / 威胁时钟 =====
+    currentZoneId: graph.startId,
+    graph,
+    extractRevealed: false,
+    threatTier: 0,
+    bossDefeated: false,
+    rngSeed: opts.seed ?? Math.floor(Math.random() * 2147483647),
+    pendingSearch: null,
+    bagFullPrompt: false,
     condition,
     carriedLoot: [],
     carriedCredits: 0,
@@ -592,7 +698,7 @@ export function createRun(
     scene: [
       '【生存系统】任务简报：',
       `目标区域【${startZone.name}】—— ${startZone.flavor}`,
-      `本图共 ${MAP_BRANCH_COUNT} 个分支区域，越深入越危险，最后一区盘踞着地图霸主。`,
+      `本图共 ${graph.nodes.length} 个区域，连成一张分支网络，越深入越危险，最深处盘踞着霸主。`,
       `对局时长 ${Math.round(RUN_TIME_LIMIT_SEC / 60)} 分钟，时间耗尽未撤离将判定阵亡。`,
       '每次搜索 / 深入都会消耗时间；越接近封锁，遭遇越频繁。',
       '安全箱内的物资即使阵亡也会保留，撤离成功才能带走背包物资。',
@@ -652,52 +758,108 @@ export function search(state: ExtractionRunState, rng: () => number = Math.rando
     plog(state, `本区域已搜刮干净（${MAX_ZONE_SEARCHES}/${MAX_ZONE_SEARCHES}），请前往下一区域。`);
     return;
   }
-  spendTime(state, actionCost(state, ACTION_COST.search), rng);
-  if (state.phase !== 'searching') return;
+  const timeCost = actionCost(state, ACTION_COST.search);
 
-  // 搜刮运势（词条/装备/避难所聚合）：整数保底额外次数 + 小数部分概率额外一次
-  // v1.0.3：感知越高，搜出额外物资的概率越大（与装备搜刮运势叠加）
+  // 先结算"应获得"的战利品（不立即写入背包，便于背包满时抉择）
   const eff = deriveAttrEffects(runEffectiveAttributes(state));
   const percepExtra = rng() < eff.lootExtraChance ? 1 : 0;
   const base = 1 + Math.floor(rng() * 2);
   const extra = Math.floor(luck) + (rng() < luck % 1 ? 1 : 0) + percepExtra;
-  const gained: string[] = [];
+  const gained: LootItem[] = [];
+  let ammoGained = 0;
+  let creditsGained = 0;
+  const planGrant = (raw: LootItem) => {
+    if (raw.id === 'ammo') {
+      ammoGained += AMMO_LOOT_GRANT;
+      return;
+    }
+    if (raw.kind === 'currency' || raw.id === 'credits') {
+      const baseV = (raw.value ?? 1) * (raw.qty ?? 1);
+      const bonus = runCombatBonus(state).coinBonus ?? 0;
+      creditsGained += Math.round(baseV * (1 + bonus));
+      return;
+    }
+    if (raw.kind === 'gear' && !raw.gear) {
+      gained.push(rollGearDrop(rng, state.zone.dangerLevel, luck * 0.2));
+      return;
+    }
+    gained.push(raw);
+  };
   for (let i = 0; i < base + extra; i++) {
-    const raw = state.zone.lootTable[Math.floor(rng() * state.zone.lootTable.length)];
-    const text = grantLoot(state, raw, rng, luck);
-    if (text) gained.push(text);
+    planGrant(state.zone.lootTable[Math.floor(rng() * state.zone.lootTable.length)]);
   }
   // v1.0.3 弹药补给：搜索有概率翻出弹药箱，直接装填进弹匣，不占用战局背包
   if (rng() < AMMO_CACHE_CHANCE) {
-    const amount = AMMO_CACHE_MIN + Math.floor(rng() * (AMMO_CACHE_MAX - AMMO_CACHE_MIN + 1));
-    state.ammo += amount;
-    gained.push(`【弹药补给】×${amount}（已装填进弹匣，余 ${state.ammo} 发）`);
+    ammoGained += AMMO_CACHE_MIN + Math.floor(rng() * (AMMO_CACHE_MAX - AMMO_CACHE_MIN + 1));
   }
   // 装备掉落：危险度越高，越可能搜到带阶级词缀的装备（白-绿-蓝-紫-黄-橙-红）
   const gearChance = 0.25 + state.zone.dangerLevel * 0.04;
   if (rng() < gearChance) {
-    const drop = rollGearDrop(rng, state.zone.dangerLevel, luck * 0.2);
-    const affixText = drop.affixes.map((a) => a.text).join('、');
-    if (addCarriedLoot(state, drop)) {
-      gained.push(`【${drop.name}】(${drop.rarityName}阶，估值 ${drop.value})${affixText ? ` 词缀：${affixText}` : ''}`);
-    }
+    gained.push(rollGearDrop(rng, state.zone.dangerLevel, luck * 0.2));
   }
-  state.zoneSearches[state.zone.id] = searched + 1;
+  // 遭遇判定（威胁查表）
+  const enemy = rollEncounter(state, rng);
+
+  // v1.0.5：背包满且本轮有新物品 → 暂存，弹"放弃/取消"
+  const cap = runPackCapacity(state);
+  const existingIds = new Set(state.carriedLoot.map((l) => l.id));
+  const hasNew = gained.some((g) => !existingIds.has(g.id));
+  if (state.carriedLoot.length >= cap && hasNew) {
+    state.pendingSearch = {
+      gained,
+      ammoGained,
+      creditsGained,
+      encounter: enemy ? { enemy, intro: encounterIntro(state, enemy, rng) } : null,
+      timeCost,
+      zoneSearchesAfter: { ...state.zoneSearches, [state.zone.id]: searched + 1 },
+      searchCountAfter: state.searchCount + 1,
+    };
+    state.bagFullPrompt = true;
+    state.scene = `🎒 背包已满！\n你翻出了物资，却装不下了。\n必须立刻决断：放弃本轮拾取（时间照耗），或取消（腾出空间后重试）。`;
+    plog(state, `🎒 背包已满，弹出 放弃/取消 抉择。`);
+    return;
+  }
+  applySearchOutcome(state, gained, ammoGained, creditsGained, enemy, timeCost);
+}
+
+/** 把已结算的搜刮结果写入对局（时间 / 背包 / 遭遇） */
+function applySearchOutcome(
+  state: ExtractionRunState,
+  gained: LootItem[],
+  ammoGained: number,
+  creditsGained: number,
+  enemy: EnemyArchetype | null,
+  timeCost: number,
+): void {
+  spendTime(state, timeCost);
+  if (state.phase !== 'searching') return;
+  const gainedText: string[] = [];
+  for (const g of gained) {
+    const text = grantLoot(state, g, Math.random, 0);
+    if (text) gainedText.push(text);
+  }
+  if (ammoGained > 0) {
+    state.ammo += ammoGained;
+    gainedText.push(`【弹药补给】×${ammoGained}（已装填进弹匣，余 ${state.ammo} 发）`);
+  }
+  if (creditsGained > 0) {
+    state.carriedCredits += creditsGained;
+    gainedText.push(`【废土币】×${creditsGained}（直接钱财，撤离后折算入基地货币）`);
+  }
+  state.zoneSearches[state.zone.id] = (state.zoneSearches[state.zone.id] ?? 0) + 1;
   state.searchCount++;
   const left = zoneSearchLeft(state);
-  for (const g of gained) plog(state, `搜索区域，获得：${g}`);
+  for (const g of gainedText) plog(state, `搜索区域，获得：${g}`);
 
-  // 遭遇判定：基础概率 + 时间压力（越接近封锁越危险）
-  const enemy = rollEncounter(state, rng);
   if (enemy) {
-    const intro = encounterIntro(state, enemy, rng);
+    const intro = encounterIntro(state, enemy, Math.random);
     state.encounter = { enemy, intro };
     state.scene = intro;
     plog(state, `⚠ 听见脚步声，遭遇【${enemy.name}】！`);
     return;
   }
 
-  const lootText = gained.length > 0 ? gained.join('\n') : '一无所获……只有风穿过破碎的窗棂。';
+  const lootText = gainedText.length > 0 ? gainedText.join('\n') : '一无所获……只有风穿过破碎的窗棂。';
   state.scene = [
     `你压低身位，翻检【${state.zone.name}】的残骸。`,
     '【系统提示】：你开始搜索这片区域。',
@@ -707,6 +869,51 @@ export function search(state: ExtractionRunState, rng: () => number = Math.rando
     '',
     `本区剩余搜索机会：${left}/${MAX_ZONE_SEARCHES}${left === 0 ? '（搜完需转移下一区域）' : ''}`,
   ].join('\n');
+}
+
+/**
+ * v1.0.5：背包满弹窗的"放弃/取消"抉择。
+ *  - cancel：不消耗任何状态，等玩家清理背包后可再次点击搜索（重新结算本轮）。
+ *  - abandon：时间照耗、搜索计数照记，但战利品丢弃（弹药/废土币照常获得）；若本轮触发遭遇则进入抉择。
+ */
+export function resolveBagFull(
+  state: ExtractionRunState,
+  mode: 'abandon' | 'cancel',
+  rng: () => number = Math.random,
+): void {
+  if (!state.pendingSearch) return;
+  const p = state.pendingSearch;
+  if (mode === 'cancel') {
+    state.pendingSearch = null;
+    state.bagFullPrompt = false;
+    state.scene = `你收紧背包带，决定先腾出空间。\n【取消】本轮收刮暂不进行，清理背包后可再次点击搜索。`;
+    return;
+  }
+  // 放弃：消耗时间/计数，但丢弃战利品（弹药/废土币照常获得）
+  state.pendingSearch = null;
+  state.bagFullPrompt = false;
+  spendTime(state, p.timeCost, rng);
+  if (state.phase !== 'searching') return;
+  state.zoneSearches = p.zoneSearchesAfter;
+  state.searchCount = p.searchCountAfter;
+  if (p.ammoGained > 0) {
+    state.ammo += p.ammoGained;
+    plog(state, `【弹药补给】×${p.ammoGained}（已装填，余 ${state.ammo} 发）`);
+  }
+  if (p.creditsGained > 0) {
+    state.carriedCredits += p.creditsGained;
+    plog(state, `【废土币】×${p.creditsGained}（直接钱财）`);
+  }
+  if (p.encounter) {
+    state.encounter = p.encounter;
+    state.scene = p.encounter.intro;
+    plog(state, `⚠ 听见脚步声，遭遇【${p.encounter.enemy.name}】！`);
+  } else {
+    state.scene = `你翻出了物资，但背包已塞满——索性把这一轮战利品留在原地，继续前行。`;
+  }
+  plog(state, `🗑 背包已满，已放弃本轮拾取（时间已消耗）。`);
+  updateThreat(state);
+  maybeRevealExtract(state);
 }
 
 // ===== 遭遇 =====
@@ -732,9 +939,10 @@ function encounterIntro(state: ExtractionRunState, enemy: EnemyArchetype, rng: (
   ].join('\n');
 }
 
-/** 按区域危险度抽一个敌人原型并结算其词缀（不做概率门控） */
-function pickEnemy(state: ExtractionRunState, rng: () => number): EnemyArchetype {
-  const base = state.zone.enemies[Math.floor(rng() * state.zone.enemies.length)];
+/** 按区域危险度抽一个敌人原型并结算其词缀（不做概率门控）。pool 可指定候选敌人池（默认本区敌人池） */
+function pickEnemy(state: ExtractionRunState, rng: () => number, pool?: EnemyArchetype[]): EnemyArchetype {
+  const list = pool && pool.length > 0 ? pool : state.zone.enemies;
+  const base = list[Math.floor(rng() * list.length)];
   const affixes = rollEnemyAffixes(rng, state.zone.dangerLevel);
   const { attributes, hpBonus, critBonus } = aggregateEnemyAffixes(affixes);
   const effectiveAttributes: Attributes = { ...base.attributes };
@@ -754,14 +962,27 @@ function pickEnemy(state: ExtractionRunState, rng: () => number): EnemyArchetype
  * 时间越晚遭遇概率越高（惩罚「贪物资」的玩家）。
  */
 export function rollEncounter(state: ExtractionRunState, rng: () => number = Math.random): EnemyArchetype | null {
-  const timePressure = 0.18 * (state.elapsedSec / RUN_TIME_LIMIT_SEC);
-  // 霸主区：遭遇率显著提升（且敌人池已替换为霸主）
-  const bossFloor = isBossBranch(state);
+  const tier = state.threatTier;
+  const depth = currentZoneOf(state).depth;
+  const bossZone = isBossZone(state);
   // v1.0.3 感知·预警：感知越高越不容易被敌人逮到（最多削减 20 个百分点）
-  const avoid = bossFloor ? 0 : Math.min(0.2, deriveAttrEffects(runEffectiveAttributes(state)).encounterAvoid);
-  const chance = bossFloor
-    ? Math.min(0.95, 0.6 + state.zone.dangerLevel * 0.04 + timePressure)
-    : Math.max(0.05, Math.min(0.85, 0.22 + state.zone.dangerLevel * 0.11 + timePressure - avoid));
+  const avoid = bossZone ? 0 : Math.min(0.2, deriveAttrEffects(runEffectiveAttributes(state)).encounterAvoid);
+  // 霸主区：仅「最后一次搜刮」触发霸主；前两次为普通 / 精英敌人或物资（v1.0.5 修复）
+  if (bossZone) {
+    const searches = state.zoneSearches[state.currentZoneId] ?? 0;
+    if (!state.bossDefeated && searches >= MAX_ZONE_SEARCHES - 1) {
+      const boss = state.zone.enemies.find((e) => e.boss) ?? state.zone.enemies[0];
+      return boss ? pickEnemy(state, rng, [boss]) : null;
+    }
+    const nonBoss = state.zone.enemies.filter((e) => !e.boss);
+    if (nonBoss.length === 0) return null;
+    const chance = Math.max(0.05, threatEncounterChance(depth, tier) - avoid);
+    if (rng() >= chance) return null;
+    return pickEnemy(state, rng, nonBoss);
+  }
+  // 收网期（tier3）：必遇
+  if (tier === 3) return pickEnemy(state, rng);
+  const chance = Math.max(0.05, threatEncounterChance(depth, tier) - avoid);
   if (rng() >= chance) return null;
   return pickEnemy(state, rng);
 }
@@ -1173,7 +1394,9 @@ export function fight(
   plog(state, `📈 击败【${enemy.name}】获得经验 +${xpGain}（已实时结算入角色档案）。`);
   // 霸主击杀奖励：额外掉落一件高阶装备（v1.0.2：保底品阶 ≥ 蓝，品阶概率向高阶偏移）
   if (enemy.boss) {
-    plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理。`);
+    state.bossDefeated = true;
+    state.extractRevealed = true; // 击破霸主即开放撤离
+    plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理——你可随时撤离，或继续搜刮。`);
     const bonus = rollGearDrop(
       rng,
       Math.min(9, state.zone.dangerLevel + 3),
@@ -1362,6 +1585,49 @@ export function moveToZone(state: ExtractionRunState, zone: DangerZone, rng: () 
 }
 
 /**
+ * v1.0.5：沿分支图移动到相邻节点（图移动模型的核心）。
+ *  - 仅允许移动到当前节点的相邻区域；
+ *  - 抵达撤离点（且已显形）→ 立即 atExtract（瞬间撤离，可确认/继续搜刮）；
+ *  - 抵达霸主区且未击破 → 强制遭遇霸主；
+ *  - 当前区未搜满就转移，有概率被残余敌人纠缠（伏击）。
+ */
+export function moveToNode(state: ExtractionRunState, targetId: string, rng: () => number = Math.random): void {
+  if (state.phase !== 'searching' || state.encounter || state.atExtract) return;
+  const adj = state.graph.edges[state.currentZoneId] ?? [];
+  if (!adj.includes(targetId)) return;
+  spendTime(state, actionCost(state, ACTION_COST.move), rng);
+  if (state.phase !== 'searching') return;
+  state.currentZoneId = targetId;
+  state.zone = nodeToZone(currentZoneOf(state));
+  // 霸主区不再于「进入」时强制遭遇；霸主改由本区最后一次搜刮触发（v1.0.5 修复）
+  if (state.graph.extractZones.includes(targetId) && state.extractRevealed) {
+    state.atExtract = true;
+    plog(state, `🚁 你抵达撤离点【${state.zone.name}】，救援就在眼前。`);
+  } else {
+    state.atExtract = false;
+  }
+  // 转移伏击：当前区未搜满就转移，有概率被残余敌人纠缠
+  const searched = state.zoneSearches[state.currentZoneId] ?? 0;
+  if (searched < MAX_ZONE_SEARCHES) {
+    const ambushChance = 0.5 * (1 - searched / MAX_ZONE_SEARCHES);
+    if (rng() < ambushChance) {
+      const enemy = pickEnemy(state, rng);
+      const intro = `⚠️ 转移遭袭！\n你收拾行装准备离开【${state.zone.name}】——但未探索彻底的区域里，残余的敌人循着你的动静追了上来！\n一名【${enemy.name}】堵住了去路。${enemy.affixes?.length ? `\n敌方词条：${enemy.affixes.map((a) => a.label).join('、')}` : ''}\n先解决纠缠，才能继续：\n🔹【主动开战】消耗弹药，开启回合战斗\n🔹【潜行绕行】消耗时间，有概率被发现；失败将被迫交战\n🔹【投掷物脱离】消耗烟雾弹/闪光弹，必定脱离纠缠\n🔹【突围撤离点】放弃深入，直奔撤离位置`;
+      state.encounter = { enemy, intro };
+      state.scene = intro;
+      plog(state, `⚠ 转移途中被【${enemy.name}】纠缠（本区仅搜刮 ${searched}/${MAX_ZONE_SEARCHES} 次）！`);
+      updateThreat(state);
+      maybeRevealExtract(state);
+      return;
+    }
+  }
+  state.scene = `你穿过废墟间的缝隙，转移到了【${state.zone.name}】（危${state.zone.dangerLevel}，深度 ${currentZoneOf(state).depth}）。\n${state.zone.flavor}`;
+  plog(state, `📍 转移至【${state.zone.name}】（危${state.zone.dangerLevel}）。`);
+  updateThreat(state);
+  maybeRevealExtract(state);
+}
+
+/**
  * 深入到本大地图的下一个分支区域（v1.0.2 主路线）：
  * 搜完 3 次 → 深入下一分支；第 MAP_BRANCH_COUNT 区为霸主领地。
  *
@@ -1415,14 +1681,23 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
   plog(state, `📍 深入至【${nz.name}】（危${nz.dangerLevel}${bossFloor ? '·霸主区' : ''}）。`);
 }
 
-/** 主动奔赴撤离点：消耗时间 */
+/** v1.0.5：突围奔赴最近撤离点（BFS 找最近撤离点，抄近路直奔，抵达即 atExtract） */
 export function goToExtract(state: ExtractionRunState, rng: () => number = Math.random): void {
   if (state.phase !== 'searching' || state.encounter || state.atExtract) return;
+  if (!state.extractRevealed) return; // v1.0.5：撤离点未显形前不可突围（防止非撤离点直接撤离）
+  const target = nearestExtractZone(state);
+  if (!target) {
+    state.scene = '⚠ 暂无可抵达的撤离点（区域图异常）。';
+    return;
+  }
   spendTime(state, actionCost(state, ACTION_COST.travel), rng);
   if (state.phase !== 'searching') return;
+  state.currentZoneId = target;
+  state.zone = nodeToZone(currentZoneOf(state));
   state.atExtract = true;
-  state.scene = '🚁 你已抵达撤离信号区，救援直升机正在接近。\n【确认撤离】结束本局，背包物资全部入库。\n【继续搜刮】放弃本次机会——贪心者自负风险。';
-  plog(state, '🚁 已抵达撤离点，等待撤离确认。');
+  state.scene = '🚁 你不再恋战，抄近路冲向撤离信号区……\n救援直升机正在接近。\n【确认撤离】结束本局，背包物资全部入库。\n【继续搜刮】放弃本次机会——贪心者自负风险。';
+  plog(state, '🚁 突围成功，已抵达撤离点。');
+  maybeRevealExtract(state);
 }
 
 /** 放弃本次撤离，返回地图继续搜刮 */
@@ -1489,13 +1764,19 @@ export function runAutoExtraction(opts: {
   maxSearches?: number;
 }): { state: ExtractionRunState; summary: ExtractionSummary } {
   const rng = opts.rng ?? Math.random;
-  const state = createRun(opts.survivor, opts.zone);
-  const maxSearches = opts.maxSearches ?? 4;
+  const state = createRun(opts.survivor, opts.zone, undefined, undefined, undefined, { rng });
+  const maxSearches = opts.maxSearches ?? 8;
   let i = 0;
   while (i < maxSearches && state.phase === 'searching') {
     search(state, rng);
+    if (state.pendingSearch) resolveBagFull(state, 'abandon', rng);
     if (state.encounter) resolveEncounter(state, 'fight', rng);
     if (state.corpse) lootCorpse(state, rng);
+    // 当前区搜满则向相邻区移动一次，继续探索分支图
+    if ((state.zoneSearches[state.zone.id] ?? 0) >= MAX_ZONE_SEARCHES) {
+      const nb = zoneNeighbors(state)[0];
+      if (nb) moveToNode(state, nb.id, rng);
+    }
     i++;
   }
   const outcome: ExtractOutcome =

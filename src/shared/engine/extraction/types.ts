@@ -61,6 +61,52 @@ export const ACTION_COST = {
   leaveExtract: 15, // 放弃撤离返回搜刮
 } as const;
 
+// ===== v1.0.5：撤离点显形 + 威胁时钟 + 16 区分支图 =====
+
+/** 撤离点显形时机：进局约第 5 分钟，或已搜满 3 个区域后显形（显形前隐藏） */
+export const EXTRACT_REVEAL_AT_SEC = 5 * 60;
+export const EXTRACT_REVEAL_SEARCHES = 3;
+/** 每局随机撤离点数量 */
+export const EXTRACT_POINT_COUNT = 2;
+/** 固定区域池容量（v1.0.5 起：16 区图） */
+export const ZONE_POOL_SIZE = 16;
+
+/** 威胁档（由对局已用时间推导，时间越晚档位越高） */
+export type ThreatTier = 0 | 1 | 2 | 3;
+
+/** 威胁档定义：fromSec 为进入该档的对局已用秒数 */
+export const THREAT_TIERS: { tier: ThreatTier; label: string; fromSec: number; color: string }[] = [
+  { tier: 0, label: '平静', fromSec: 0, color: '#34d399' },
+  { tier: 1, label: '警戒', fromSec: 8 * 60, color: '#fbbf24' },
+  { tier: 2, label: '交火', fromSec: 18 * 60, color: '#fb923c' },
+  { tier: 3, label: '收网', fromSec: 28 * 60, color: '#f87171' },
+];
+
+/**
+ * 威胁查表：行=区域深度(0..6)，列=威胁档 → 遭遇概率。
+ * 浅层低、深层高、收网期(tier3)必遇。
+ */
+export function threatEncounterChance(depth: number, tier: ThreatTier): number {
+  const d = Math.max(0, Math.min(6, Math.round(depth)));
+  const row = [
+    [0.05, 0.15, 0.3, 1.0],
+    [0.08, 0.2, 0.38, 1.0],
+    [0.1, 0.25, 0.45, 1.0],
+    [0.13, 0.3, 0.52, 1.0],
+    [0.16, 0.35, 0.6, 1.0],
+    [0.2, 0.42, 0.68, 1.0],
+    [0.25, 0.5, 0.75, 1.0],
+  ][d];
+  return row[tier];
+}
+
+/** 由对局已用秒数推导当前威胁档 */
+export function threatTierOf(elapsedSec: number): ThreatTier {
+  let t: ThreatTier = 0;
+  for (const def of THREAT_TIERS) if (elapsedSec >= def.fromSec) t = def.tier;
+  return t;
+}
+
 /** 单场交战消耗的弹药；弹药不足则被迫近身肉搏（先挨一刀） */
 export const FIGHT_AMMO_COST = 5;
 
@@ -133,6 +179,49 @@ export interface ZoneBranch {
   flavor: string;
 }
 
+/** v1.0.5：分支图节点（固定 16 区池中的一区，含产物品类与敌人池） */
+export interface ZoneNode {
+  id: string;
+  name: string;
+  flavor: string;
+  /** 危险度 1..6（随深度递增），驱动产物品阶 / 敌人强度 / 威胁查表 */
+  danger: number;
+  /** 在分支图中的深度（= 距起点的边数），用于威胁查表与"越深越危险" */
+  depth: number;
+  lootTable: LootItem[];
+  enemies: EnemyArchetype[];
+}
+
+/** v1.0.5：本局分支图：节点 + 双向邻接表 + 撤离点 / 霸主 */
+export interface ZoneGraph {
+  startId: string;
+  nodes: ZoneNode[];
+  /** zoneId → 相邻可移动 zoneId 列表 */
+  edges: Record<string, string[]>;
+  /** 本局 2 个随机撤离点（节点 id） */
+  extractZones: string[];
+  /** 本局霸主所在最深层节点 id */
+  bossZoneId: string;
+}
+
+/** 背包已满时的暂存搜刮计划（放弃 / 取消 抉择用） */
+export interface PendingSearch {
+  /** 本轮本应获得的战利品（已结算，未写入背包） */
+  gained: LootItem[];
+  /** 弹药增量（不占背包，放弃也照常获得） */
+  ammoGained: number;
+  /** 废土币增量（不占背包） */
+  creditsGained: number;
+  /** 本轮触发的遭遇（若有） */
+  encounter: RunEncounter | null;
+  /** 本轮应消耗的对局时间（秒） */
+  timeCost: number;
+  /** 执行本轮后应写入的 zoneSearches */
+  zoneSearchesAfter: Record<string, number>;
+  /** 执行本轮后的累计搜索次数 */
+  searchCountAfter: number;
+}
+
 export interface SurvivorLoadout {
   name: string;
   attributes: Attributes;
@@ -154,7 +243,7 @@ export interface RunEquippedGear {
 
 /** 六维深化派生值（v1.0.3）：由当前有效六维实时推导，供引擎与 UI 共用 */
 export interface AttrEffects {
-  /** 战局背包总格数 = 基础 12 + floor(力量/5) */
+  /** 战局背包总格数 = 基础力量（白字）每 1 点 = 1 格（v1.0.5 起 1:1，见 runPackCapacity） */
   packCapacity: number;
   /** 搜索/潜行等行动的耗时系数（敏捷越高越快） */
   timeScale: number;
@@ -177,8 +266,25 @@ export interface ExtractionRunState {
   zone: DangerZone;
   /** 当前大地图（branchIndex 推进的容器；zone 为其派生分支） */
   map: DangerZone;
-  /** 当前分支区域序号（0 起；MAP_BRANCH_COUNT-1 为霸主区） */
+  /** 当前分支区域序号（0 起；MAP_BRANCH_COUNT-1 为霸主区，v1.0.5 起仅作兼容保留） */
   branchIndex: number;
+  // ===== v1.0.5：分支图 / 撤离点 / 威胁时钟 =====
+  /** 当前所在区域节点 id（分支图节点） */
+  currentZoneId: string;
+  /** 本局分支图（固定 16 区池 + 随机连边；可序列化） */
+  graph: ZoneGraph;
+  /** 撤离点是否已显形（~5 分钟 或 搜满 3 区后） */
+  extractRevealed: boolean;
+  /** 当前威胁档（由 elapsedSec 推导，0..3） */
+  threatTier: ThreatTier;
+  /** 霸主是否已被击破（击破后可在任意位置立即撤离） */
+  bossDefeated?: boolean;
+  /** 序列化用的 RNG 种子（刷新后据此重建确定性 RNG） */
+  rngSeed: number;
+  /** 背包已满时的暂存搜刮计划（放弃 / 取消 抉择） */
+  pendingSearch?: PendingSearch | null;
+  /** 背包已满提示开关 */
+  bagFullPrompt?: boolean;
   /** 单次出击 survival 状态（复用 condition） */
   condition: CultivatorCondition;
   /** 已搜刮、尚未撤离的物资（死亡/超时即遗失） */
