@@ -56,6 +56,8 @@ export interface GearCombatBonus {
   hpBonus?: number;
   critBonus?: number;
   lootLuck?: number;
+  xpBonus?: number;
+  coinBonus?: number;
 }
 
 export interface GearItem {
@@ -76,26 +78,37 @@ export interface GearItem {
   rarityName?: string;
 }
 
+/**
+ * 制造词缀池（v1.0.2）：与掉落装备同规则 —— 词条只加特殊属性（生命/暴击/搜刮/经验/金币），
+ * 不加六维；装备的六维来自配方 baseModifiers（灰字基础属性）。
+ */
 interface GearAffix {
   id: string;
   name: string;
-  modifiers: Partial<Attributes>;
-  /** 描述模板，{n} 会被数值替换 */
   desc: string;
   weight: number;
+  combat: GearCombatBonus;
 }
 
 const GEAR_AFFIXES: GearAffix[] = [
-  { id: 'kevlar', name: '凯夫拉衬层', modifiers: { endurance: 4 }, desc: '耐力 +{n}', weight: 10 },
-  { id: 'power-core', name: '动力核心', modifiers: { strength: 4 }, desc: '力量 +{n}', weight: 10 },
-  { id: 'reflex', name: '反射神经', modifiers: { speed: 4 }, desc: '敏捷 +{n}', weight: 10 },
-  { id: 'optics', name: '瞄准镜组', modifiers: { spirit: 4 }, desc: '感知 +{n}', weight: 10 },
-  { id: 'vitality-boost', name: '强韧骨架', modifiers: { vitality: 4 }, desc: '体质 +{n}', weight: 10 },
-  { id: 'focus', name: '镇定剂', modifiers: { willpower: 4 }, desc: '意志 +{n}', weight: 10 },
-  { id: 'titan', name: '泰坦合金', modifiers: { endurance: 3, vitality: 2 }, desc: '耐力 +{n}/体质 +2', weight: 5 },
-  { id: 'sharpened', name: '开刃处理', modifiers: { strength: 3, speed: 1 }, desc: '力量 +{n}/敏捷 +1', weight: 5 },
-  { id: 'scout', name: '侦察模块', modifiers: { spirit: 3, speed: 2 }, desc: '感知 +{n}/敏捷 +2', weight: 5 },
+  { id: 'hp-boost', name: '强化装甲', desc: '生命值 +{n}', weight: 12, combat: { hpBonus: 18 } },
+  { id: 'crit-boost', name: '致命一击', desc: '暴击率 +{n}%', weight: 9, combat: { critBonus: 0.03 } },
+  { id: 'scav-sense', name: '搜刮直觉', desc: '搜刮运势 +{n}%', weight: 8, combat: { lootLuck: 0.08 } },
+  { id: 'coin-sense', name: '拾荒嗅觉', desc: '金币获取 +{n}%', weight: 9, combat: { coinBonus: 0.1 } },
+  { id: 'xp-boost', name: '实战淬炼', desc: '经验获取 +{n}%', weight: 7, combat: { xpBonus: 0.1 } },
+  { id: 'titan-plating', name: '泰坦装甲', desc: '生命值 +{n}', weight: 5, combat: { hpBonus: 40 } },
 ];
+
+/** 按倍率缩放特殊属性词条 */
+function scaleGearCombat(c: GearCombatBonus, mag: number): GearCombatBonus {
+  const out: GearCombatBonus = {};
+  if (c.hpBonus) out.hpBonus = Math.round(c.hpBonus * mag);
+  if (c.critBonus) out.critBonus = Number((c.critBonus * mag).toFixed(3));
+  if (c.lootLuck) out.lootLuck = Number((c.lootLuck * mag).toFixed(3));
+  if (c.xpBonus) out.xpBonus = Number((c.xpBonus * mag).toFixed(3));
+  if (c.coinBonus) out.coinBonus = Number((c.coinBonus * mag).toFixed(3));
+  return out;
+}
 
 export interface CraftRecipe {
   id: string;
@@ -324,38 +337,29 @@ function nextGearId(): string {
 export function rollGear(rng: RNG, recipe: CraftRecipe): GearItem {
   const modifiers: Partial<Attributes> = { ...recipe.baseModifiers };
   const affixes: string[] = [];
+  const combat: GearCombatBonus = {};
   const chosen = pickN(rng, GEAR_AFFIXES, recipe.affixCount);
   for (const a of chosen) {
     const magnitude = randInt(rng, 1, 4) + (recipe.rarity === '精英' ? 1 : 0);
-    affixes.push(a.desc.replace('{n}', String(magnitude)));
-    for (const k of Object.keys(a.modifiers) as (keyof Attributes)[]) {
-      modifiers[k] = (modifiers[k] ?? 0) + (a.modifiers[k] ?? 0) * (magnitude / 4);
-    }
+    const c = scaleGearCombat(a.combat, magnitude / 2);
+    // 展示文本（与掉落装备同风格：生命值整数，其余按百分数取整）
+    const parts: string[] = [];
+    if (c.hpBonus) parts.push(`生命值 +${c.hpBonus}`);
+    if (c.critBonus) parts.push(`暴击率 +${Math.round(c.critBonus * 100)}%`);
+    if (c.lootLuck) parts.push(`搜刮运势 +${Math.round(c.lootLuck * 100)}%`);
+    if (c.xpBonus) parts.push(`经验获取 +${Math.round(c.xpBonus * 100)}%`);
+    if (c.coinBonus) parts.push(`金币获取 +${Math.round(c.coinBonus * 100)}%`);
+    if (parts.length > 0) affixes.push(parts.join('/'));
+    combat.hpBonus = (combat.hpBonus ?? 0) + (c.hpBonus ?? 0);
+    combat.critBonus = Number(((combat.critBonus ?? 0) + (c.critBonus ?? 0)).toFixed(3));
+    combat.lootLuck = Number(((combat.lootLuck ?? 0) + (c.lootLuck ?? 0)).toFixed(3));
+    combat.xpBonus = Number(((combat.xpBonus ?? 0) + (c.xpBonus ?? 0)).toFixed(3));
+    combat.coinBonus = Number(((combat.coinBonus ?? 0) + (c.coinBonus ?? 0)).toFixed(3));
   }
   // 取整
   const rounded: Partial<Attributes> = {};
   for (const k of Object.keys(modifiers) as (keyof Attributes)[]) {
     rounded[k] = Math.round(modifiers[k] ?? 0);
-  }
-  // 战斗词条：半数概率附加一条（气血/暴击/搜刮运势），让「正式装备词条」进入 battle-v5
-  const combat: GearCombatBonus = {};
-  const combatAffixes: string[] = [];
-  if (rng() < 0.5) {
-    const roll = randInt(rng, 0, 2);
-    const mag = recipe.rarity === '精英' ? 1.5 : 1;
-    if (roll === 0) {
-      const v = Math.round(randInt(rng, 8, 16) * mag);
-      combat.hpBonus = v;
-      combatAffixes.push(`气血 +${v}`);
-    } else if (roll === 1) {
-      const v = Number((0.04 + rng() * 0.04) * mag).toFixed(3);
-      combat.critBonus = Number(v);
-      combatAffixes.push(`暴击 +${Math.round(Number(v) * 100)}%`);
-    } else {
-      const v = Number((0.1 * mag).toFixed(2));
-      combat.lootLuck = v;
-      combatAffixes.push(`搜刮运势 +${Math.round(v * 100)}%`);
-    }
   }
   const value = Math.round(
     recipe.costCoins +
@@ -370,7 +374,7 @@ export function rollGear(rng: RNG, recipe: CraftRecipe): GearItem {
     slot: recipe.slot,
     rarity: recipe.rarity,
     modifiers: rounded,
-    affixes: [...affixes, ...combatAffixes],
+    affixes,
     combat: Object.keys(combat).length ? combat : undefined,
     value,
   };

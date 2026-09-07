@@ -88,7 +88,7 @@ export const router = createBrowserRouter(
       <Route
         path="/survival/play"
         lazy={lazyRoute(() => import('@app/routes/survival/play/route'))}
-        handle={title('全民求生·系统搜打撤')}
+        handle={title('全境求生·系统搜打撤')}
       />
       <Route
         path="/survival/login"
@@ -103,7 +103,7 @@ export const router = createBrowserRouter(
       <Route
         path="/survival"
         lazy={lazyRoute(() => import('@app/routes/survival/route'))}
-        handle={title('全民求生·系统搜打撤')}
+        handle={title('全境求生·系统搜打撤')}
       />
       <Route
         id={AUTH_LAYOUT_ROUTE_ID}

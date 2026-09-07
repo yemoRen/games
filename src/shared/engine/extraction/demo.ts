@@ -39,7 +39,7 @@ function printScenario(title: string, survivorIdx: number, zoneId: string, seed:
 }
 
 console.log('══════════════════════════════════════════════════════════════');
-console.log('  《全民求生・系统搜打撤》— Phase 0/1 最小可玩 Demo');
+console.log('  《全境求生・系统搜打撤》— Phase 0/1 最小可玩 Demo');
 console.log('  引擎复用：battle-v5（真实战斗）+ CultivatorCondition（in-run 状态）');
 console.log('══════════════════════════════════════════════════════════════');
 

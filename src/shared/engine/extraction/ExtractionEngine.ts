@@ -318,6 +318,7 @@ export function createRun(
     atExtract: false,
     battles: [],
     xpGained: 0,
+    buffCharges: 0,
     scene: [
       '【生存系统】任务简报：',
       `目标区域【${startZone.name}】—— ${startZone.flavor}`,
@@ -434,18 +435,8 @@ function encounterIntro(state: ExtractionRunState, enemy: EnemyArchetype, rng: (
   ].join('\n');
 }
 
-/**
- * 按区域危险度 + 对局时间压力随机抽一个敌人原型，并按危险度结算其词缀。
- * 时间越晚遭遇概率越高（惩罚「贪物资」的玩家）。
- */
-export function rollEncounter(state: ExtractionRunState, rng: () => number = Math.random): EnemyArchetype | null {
-  const timePressure = 0.18 * (state.elapsedSec / RUN_TIME_LIMIT_SEC);
-  // 霸主区：遭遇率显著提升（且敌人池已替换为霸主）
-  const bossFloor = isBossBranch(state);
-  const chance = bossFloor
-    ? Math.min(0.95, 0.6 + state.zone.dangerLevel * 0.04 + timePressure)
-    : Math.min(0.85, 0.22 + state.zone.dangerLevel * 0.11 + timePressure);
-  if (rng() >= chance) return null;
+/** 按区域危险度抽一个敌人原型并结算其词缀（不做概率门控） */
+function pickEnemy(state: ExtractionRunState, rng: () => number): EnemyArchetype {
   const base = state.zone.enemies[Math.floor(rng() * state.zone.enemies.length)];
   const affixes = rollEnemyAffixes(rng, state.zone.dangerLevel);
   const { attributes, hpBonus, critBonus } = aggregateEnemyAffixes(affixes);
@@ -459,6 +450,21 @@ export function rollEncounter(state: ExtractionRunState, rng: () => number = Mat
     bonus: { hpBonus, critBonus },
     affixes,
   };
+}
+
+/**
+ * 按区域危险度 + 对局时间压力随机判定是否遭遇敌人。
+ * 时间越晚遭遇概率越高（惩罚「贪物资」的玩家）。
+ */
+export function rollEncounter(state: ExtractionRunState, rng: () => number = Math.random): EnemyArchetype | null {
+  const timePressure = 0.18 * (state.elapsedSec / RUN_TIME_LIMIT_SEC);
+  // 霸主区：遭遇率显著提升（且敌人池已替换为霸主）
+  const bossFloor = isBossBranch(state);
+  const chance = bossFloor
+    ? Math.min(0.95, 0.6 + state.zone.dangerLevel * 0.04 + timePressure)
+    : Math.min(0.85, 0.22 + state.zone.dangerLevel * 0.11 + timePressure);
+  if (rng() >= chance) return null;
+  return pickEnemy(state, rng);
 }
 
 /**
@@ -727,12 +733,25 @@ export function fight(
   const hpBeforeFight = state.condition.resources.hp.current;
 
   const runtime = new BattleRuntime();
+  // v1.0.2 增益药剂：出战前使用了增益补给（buffCharges>0）时，本场交战六维临时强化，消耗 1 次
+  let effAttrs = state.survivor.attributes;
+  if (state.buffCharges > 0) {
+    state.buffCharges -= 1;
+    effAttrs = {
+      ...state.survivor.attributes,
+      strength: (state.survivor.attributes.strength ?? 0) + 5,
+      speed: (state.survivor.attributes.speed ?? 0) + 5,
+      endurance: (state.survivor.attributes.endurance ?? 0) + 3,
+      willpower: (state.survivor.attributes.willpower ?? 0) + 2,
+    };
+    plog(state, '🧪 增益药剂生效：力量/敏捷/耐力/意志临时提升（剩余备战 ' + state.buffCharges + ' 次）。');
+  }
   // 有完整档案+战斗加成时走正式 battle-v5 战斗单元（装备/词条生效）；否则属性直转。
   let survivorUnit: Unit;
   if (state.survivor.profile && state.survivor.bonus) {
     survivorUnit = buildSurvivorUnit(
       state.survivor.profile,
-      state.survivor.attributes,
+      effAttrs,
       state.survivor.bonus,
       runtime,
       state.condition.resources.hp.current,
@@ -742,11 +761,17 @@ export function fight(
       runtime,
       'survivor',
       state.survivor.name,
-      state.survivor.attributes,
+      effAttrs,
       state.condition.resources.hp.current,
     );
   }
   const enemyUnit = buildEnemyUnit(runtime, enemy);
+  // v1.0.2 伤害类投掷物自动使用：快捷·投掷槽装备了破片手雷时，45% 概率战斗先手引爆
+  if (state.quickThrow === 'grenade' && rng() < 0.45) {
+    const dmg = Math.max(10, Math.round(enemyUnit.getMaxHp() * 0.2));
+    enemyUnit.takeDamage(dmg);
+    plog(state, `💣 你抢先拉开破片手雷掷向【${enemy.name}】，轰然爆炸造成 ${dmg} 点伤害！`);
+  }
   const duel = resolveDuelToCompletion({
     battleId: 'extraction-duel',
     player: survivorUnit,
@@ -795,17 +820,22 @@ export function fight(
   if (state.armor.current <= 0 && state.armor.max > 0) {
     plog(state, '🛡 护甲耐久耗尽，已失去防护！');
   }
-  state.corpse = { enemyName: enemy.name };
+  state.corpse = { enemyName: enemy.name, boss: !!enemy.boss };
   // 击杀经验：与敌人强度/区域危险度挂钩（撤离成功才结算入角色）
   const xpGain = Math.round(
     (12 + state.zone.dangerLevel * 8) * (enemy.boss ? 3 : 1) * (0.8 + rng() * 0.4),
   );
   state.xpGained += xpGain;
   plog(state, `📈 击败【${enemy.name}】获得经验 +${xpGain}（撤离成功后结算）。`);
-  // 霸主击杀奖励：额外掉落一件高阶装备
+  // 霸主击杀奖励：额外掉落一件高阶装备（v1.0.2：保底品阶 ≥ 蓝，品阶概率向高阶偏移）
   if (enemy.boss) {
     plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理。`);
-    const bonus = rollGearDrop(rng, Math.min(9, state.zone.dangerLevel + 1), 0.5);
+    const bonus = rollGearDrop(
+      rng,
+      Math.min(9, state.zone.dangerLevel + 3),
+      0.8,
+      Math.min(6, Math.max(2, state.zone.dangerLevel)),
+    );
     if (addCarriedLoot(state, bonus)) {
       plog(state, `👑 霸主战利品：【${bonus.name}】（${bonus.rarityName}阶，估值 ${bonus.value}）。`);
     }
@@ -839,18 +869,32 @@ export function consumeCarriedItem(state: ExtractionRunState, index: number): Lo
   return it;
 }
 
-/** 搜刮敌方尸体：战斗胜利后的额外战利品机会 */
+/** 搜刮敌方尸体：战斗胜利后的额外战利品机会（霸主尸体必掉高阶装备） */
 export function lootCorpse(state: ExtractionRunState, rng: () => number = Math.random): void {
   if (!state.corpse || state.phase !== 'searching') return;
   spendTime(state, ACTION_COST.corpseLoot);
   if (state.phase !== 'searching') return;
   const enemyName = state.corpse.enemyName;
+  const wasBoss = !!state.corpse.boss;
   const picks = 1 + Math.floor(rng() * 2);
   const gained: string[] = [];
   for (let i = 0; i < picks; i++) {
     const raw = state.zone.lootTable[Math.floor(rng() * state.zone.lootTable.length)];
     const text = grantLoot(state, raw, rng, 0.1);
     if (text) gained.push(text);
+  }
+  // 霸主尸体：额外必掉一件高阶装备（保底品阶随地图危险度提升）
+  if (wasBoss) {
+    const drop = rollGearDrop(
+      rng,
+      Math.min(9, state.zone.dangerLevel + 2),
+      0.6,
+      Math.min(6, Math.max(1, state.zone.dangerLevel - 1)),
+    );
+    if (addCarriedLoot(state, drop)) {
+      gained.push(`【${drop.name}】(${drop.rarityName}阶，估值 ${drop.value}) —— 霸主遗物！`);
+      plog(state, `👑 霸主遗物：【${drop.name}】（${drop.rarityName}阶，估值 ${drop.value}）。`);
+    }
   }
   state.corpse = undefined;
   const lootText = gained.length > 0 ? gained.join('\n') : '尸体上只有弹壳与血迹，一无所获。';
@@ -878,14 +922,41 @@ export function moveToZone(state: ExtractionRunState, zone: DangerZone): void {
 /**
  * 深入到本大地图的下一个分支区域（v1.0.2 主路线）：
  * 搜完 3 次 → 深入下一分支；第 MAP_BRANCH_COUNT 区为霸主领地。
+ *
+ * v1.0.2 转移伏击：分支未彻底探索（<MAX_ZONE_SEARCHES 次）就贸然深入，
+ * 有概率被该区域残余的敌人纠缠 —— 且搜得越少概率越高（0 次约 55%，搜满 3 次必定安全）。
  */
-export function advanceBranch(state: ExtractionRunState): void {
+export function advanceBranch(state: ExtractionRunState, rng: () => number = Math.random): void {
   if (state.phase !== 'searching' || state.encounter || state.atExtract) return;
   const len = state.map.branches?.length ?? 0;
   if (len === 0 || state.branchIndex >= len - 1) {
     state.scene = '你已站在本图最深处——霸主领地。这里没有更深的区域了。\n（击败霸主或就此撤离，自行决断。）';
     plog(state, '📍 已位于本图最深分支区。');
     return;
+  }
+  // 转移伏击判定：该分支搜刮次数越多，残余敌人越少，伏击概率越低
+  const searched = state.zoneSearches[state.zone.id] ?? 0;
+  if (searched < MAX_ZONE_SEARCHES) {
+    const ambushChance = 0.55 * (1 - searched / MAX_ZONE_SEARCHES);
+    if (rng() < ambushChance) {
+      const enemy = pickEnemy(state, rng);
+      state.encounter = {
+        enemy,
+        intro: [
+          '⚠️ 转移遭袭！',
+          `你收拾行装准备离开【${state.zone.name}】——但未探索彻底的区域里，残余的敌人循着你的动静追了上来！`,
+          `一名【${enemy.name}】堵住了退路。${enemy.affixes?.length ? `\n敌方词条：${enemy.affixes.map((a) => a.label).join('、')}` : ''}`,
+          '先解决纠缠，才能继续深入：',
+          '🔹【主动开战】消耗弹药，开启回合战斗',
+          '🔹【潜行绕行】消耗时间，有概率被发现；失败将被迫交战',
+          '🔹【投掷物脱离】消耗烟雾弹/闪光弹，必定脱离纠缠',
+          '🔹【突围撤离点】放弃深入，直奔撤离位置',
+        ].join('\n'),
+      };
+      state.scene = state.encounter.intro;
+      plog(state, `⚠ 转移途中被【${enemy.name}】纠缠（本分支仅搜刮 ${searched}/${MAX_ZONE_SEARCHES} 次）！`);
+      return;
+    }
   }
   spendTime(state, ACTION_COST.move);
   if (state.phase !== 'searching') return;

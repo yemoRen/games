@@ -1,5 +1,5 @@
 /**
- * 全民求生・系统搜打撤 — 主玩法 Hub（Phase 2 + 3 整合界面）
+ * 全境求生・系统搜打撤 — 主玩法 Hub（Phase 2 + 3 整合界面）
  *
  * 仿原游戏「底部常驻导航」：角色 / 背包 / 基地 / 出击。
  * 全部状态走 @shared/engine/survival，并通过 localStorage 持久化（刷新不丢）。
@@ -32,6 +32,7 @@ import {
   investFaction,
   nextFactionCost,
   buildSortieLoadout,
+  aggregateGearCombat,
   computeShelterBonuses,
   RECIPES,
   SHELTER_FACILITIES,
@@ -55,6 +56,7 @@ import {
   MAIN_EQUIP_SLOTS,
   QUICK_SLOTS,
   THROWABLES,
+  getThrowable,
   RAID_PACK_CAPACITY,
   GEAR_SLOT_LABEL,
   LOOT_MEDICINE_MAP,
@@ -1177,8 +1179,29 @@ function SortiePanel(props: {
     // 死亡/超时结算：战局背包清零，但安全箱 100% 保留（搜打撤保底设计）
     if (s.phase === 'dead' || s.phase === 'timeout') bankSecureIntoBanked(s);
     const failed = s.phase === 'dead' || s.phase === 'timeout';
+    // v1.0.2 特殊词条结算：经验获取 / 金币获取加成（仅撤离成功生效）
+    const special = prof ? aggregateGearCombat(state, prof.id) : null;
+    const xpFinal = failed || !special ? s.xpGained : Math.round(s.xpGained * (1 + (special.xpBonus ?? 0)));
     setState((prev) => {
       let next = bankLoot(prev, s.bankedLoot);
+      if (!failed && special && ((special.xpBonus ?? 0) > 0 || (special.coinBonus ?? 0) > 0)) {
+        const notes: string[] = [];
+        if ((special.xpBonus ?? 0) > 0) {
+          notes.push(`实战淬炼生效，经验获取 +${Math.round((special.xpBonus ?? 0) * 100)}%（本次经验 ${s.xpGained} → ${xpFinal}）`);
+        }
+        const coinBonusCoins = (special.coinBonus ?? 0) > 0
+          ? Math.round(
+              s.bankedLoot.reduce((a, b) => a + (b.gear ? 0 : b.value * (b.qty ?? 1)), 0) * (special.coinBonus ?? 0),
+            )
+          : 0;
+        if (coinBonusCoins > 0) {
+          next = { ...next, coins: next.coins + coinBonusCoins };
+          notes.push(`拾荒嗅觉生效，额外 +${coinBonusCoins} 废土币`);
+        }
+        if (notes.length > 0) {
+          next = { ...next, log: [`【词条】${notes.join('；')}。`, ...next.log].slice(0, 50) };
+        }
+      }
       if (s.bankedNpc) next = addRecruit(next, s.bankedNpc);
       let after = applySortieResult(next, {
         survivorId: prof.id,
@@ -1191,8 +1214,8 @@ function SortiePanel(props: {
         rescued: !!s.bankedNpc,
         finalHp: s.condition.resources.hp.current,
         maxHp: s.condition.resources.hp.max ?? 0,
-        // 经验结算：仅撤离成功入账（applySortieResult 内部也会按 outcome 把关）
-        xpGained: failed ? 0 : s.xpGained,
+        // 经验结算：仅撤离成功入账（applySortieResult 内部也会按 outcome 把关）；经验词条已折算
+        xpGained: failed ? 0 : xpFinal,
       });
       // 撤离失败 / 阵亡 / 超时：战局背包（carriedLoot）已由 extract 拦下不入库；
       // 身上常驻穿戴的装备还要按概率被搜刮者夺走。
@@ -1201,7 +1224,7 @@ function SortiePanel(props: {
       }
       return after;
     });
-  }, [setState]);
+  }, [setState, state]);
 
   const start = () => {
     if (!active) return;
@@ -1224,6 +1247,12 @@ function SortiePanel(props: {
     const weaponGear = eq.weapon ? state.gear.find((g) => g.id === eq.weapon) : undefined;
     const startAmmo = 24 + (weaponGear ? (weaponGear.tier ?? 0) * 8 : 0);
     const r = createRun(loadout, zone, startHp, { current: armorMax, max: armorMax }, startAmmo);
+    // v1.0.2：快捷·投掷槽的伤害类投掷物（无 extractBonus 即手雷类）在自动战斗中概率先手引爆
+    const throwId = eq.quickThrow;
+    const throwSpec = throwId ? getThrowable(throwId) : undefined;
+    if (throwId && throwSpec && !throwSpec.extractBonus && (state.throwables?.[throwId] ?? 0) > 0) {
+      r.quickThrow = throwId;
+    }
     runRef.current = r;
     const s = seed.trim();
     rngRef.current = s ? seededRng(s) : (Math.random as RNG);
@@ -1392,6 +1421,24 @@ function SortiePanel(props: {
     }));
   };
 
+  /** v1.0.2 使用增益补给：消耗快捷·增益槽对应的基地库存，为下场交战储备 1 次属性强化 */
+  const applyBuff = () => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching' || !active) return;
+    const quickBuffId = state.equipped[active.id]?.quickBuff;
+    if (!quickBuffId || (state.medicines[quickBuffId] ?? 0) <= 0) return;
+    const spec = MEDICINES.find((m) => m.id === quickBuffId);
+    s.buffCharges += 1;
+    s.log.push(
+      `[${fmtClock(s.elapsedSec)}] 🧪 使用增益补给【${spec?.name ?? quickBuffId}】，下场交战属性强化（备战 ${s.buffCharges} 次）。`,
+    );
+    sync();
+    setState((prev) => ({
+      ...prev,
+      medicines: { ...prev.medicines, [quickBuffId]: Math.max(0, (prev.medicines[quickBuffId] ?? 0) - 1) },
+    }));
+  };
+
   const reset = () => {
     runRef.current = null;
     setRun(null);
@@ -1429,6 +1476,11 @@ function SortiePanel(props: {
   const equippedMed = quickMedId ? MEDICINES.find((m) => m.id === quickMedId) : undefined;
   const availableMeds =
     quickMedId && equippedMed && (state.medicines[quickMedId] ?? 0) > 0 ? [equippedMed] : [];
+  // v1.0.2 增益补给：快捷·增益槽 + 基地库存 > 0 时可在出击途中使用
+  const quickBuffId = active ? state.equipped[active.id]?.quickBuff : undefined;
+  const buffSpec = quickBuffId ? MEDICINES.find((m) => m.id === quickBuffId) : undefined;
+  const buffStock = quickBuffId ? state.medicines[quickBuffId] ?? 0 : 0;
+  const buffCharges = run?.buffCharges ?? 0;
   const isOver = run?.phase === 'dead' || run?.phase === 'extracted' || run?.phase === 'timeout';
   const failed = run?.phase === 'dead' || run?.phase === 'timeout';
   /** ⚔ 摘要行下标 → 战斗回放（日志行内展开用） */
@@ -1776,6 +1828,28 @@ function SortiePanel(props: {
                   );
                 })}
               </div>
+            </div>
+          ) : null}
+
+          {/* 🧪 增益补给（v1.0.2：快捷·增益槽药品，为下场交战储备属性强化） */}
+          {!isOver && buffSpec && buffStock > 0 ? (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+              <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
+                🧪 增益补给
+                <span className="text-[11px] font-normal text-zinc-500">
+                  （使用后下场交战力量/敏捷/耐力/意志临时提升；消耗基地库存）
+                </span>
+              </h2>
+              <button
+                onClick={(e) => { applyBuff(); e.currentTarget.blur(); }}
+                className="rounded-lg border border-sky-800 bg-sky-900/40 px-3 py-2 text-xs text-sky-200 hover:bg-sky-800/60"
+              >
+                使用 {buffSpec.name}
+                <span className="ml-1 opacity-70">×{buffStock}</span>
+                {buffCharges > 0 && (
+                  <span className="ml-1 text-sky-300">（已备战 {buffCharges} 次）</span>
+                )}
+              </button>
             </div>
           ) : null}
 

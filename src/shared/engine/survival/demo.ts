@@ -66,7 +66,7 @@ function runSortie(state: SurvivalGameState, zoneId: string, seed: number) {
   return bankLoot(state, run.bankedLoot);
 }
 
-console.log('=== 全民求生・系统搜打撤 Demo（Phase 2 + 3）===\n');
+console.log('=== 全境求生・系统搜打撤 Demo（Phase 2 + 3）===\n');
 
 const rng = seededRng('seed-demo-2026');
 let state = newGame();

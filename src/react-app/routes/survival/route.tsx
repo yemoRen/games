@@ -1,5 +1,5 @@
 /**
- * 全民求生·系统搜打撤 — 独立落地页（Landing）。
+ * 全境求生·系统搜打撤 — 独立落地页（Landing）。
  *
  * 与万界道友完全并列的独立游戏入口：废土风视觉，自带账号体系。
  * 借鉴原游戏登录页「顶部标识 + 大标题 + slogan + 居中卡片 + 页脚互链」的结构，
@@ -117,7 +117,7 @@ export default function SurvivalLanding() {
             <HazardMark />
           </div>
           <h1 className="font-mono text-4xl font-bold tracking-tight text-zinc-50 sm:text-5xl">
-            全民求生
+            全境求生
             <span className="text-emerald-400"> · </span>
             <span className="text-amber-400">系统搜打撤</span>
           </h1>

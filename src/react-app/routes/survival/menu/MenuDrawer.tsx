@@ -152,22 +152,22 @@ export function MenuDrawer(props: MenuDrawerProps) {
         />
         {/* 抽屉面板（右侧滑入） */}
         <aside
-          className={`absolute right-0 top-0 flex h-full w-[min(92vw,420px)] flex-col bg-stone-50 shadow-2xl transition-transform duration-300 ease-out ${
+          className={`absolute right-0 top-0 flex h-full w-[min(92vw,420px)] flex-col bg-zinc-950 shadow-2xl transition-transform duration-300 ease-out ${
             open ? 'translate-x-0' : 'translate-x-full'
           }`}
         >
-          <header className="sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white/95 px-4 py-3 backdrop-blur">
+          <header className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/95 px-4 py-3 backdrop-blur">
             {active ? (
               <button
                 onClick={() => setActiveId(null)}
-                className="text-sm text-stone-600 hover:text-stone-900"
+                className="text-sm text-zinc-300 hover:text-zinc-100"
               >
                 ← 返回末世行止
               </button>
             ) : (
-              <h1 className="text-lg font-semibold text-stone-800">末世行止</h1>
+              <h1 className="text-lg font-semibold text-zinc-100">末世行止</h1>
             )}
-            <div className="flex items-center gap-2 text-sm text-stone-500">
+            <div className="flex items-center gap-2 text-sm text-zinc-400">
               {active && (
                 <span className="flex items-center gap-1 text-xs">
                   <span aria-hidden>{active.icon}</span>
@@ -190,9 +190,9 @@ export function MenuDrawer(props: MenuDrawerProps) {
                 {MENU.map((g) => (
                   <section
                     key={g.group}
-                    className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm"
+                    className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 shadow-sm"
                   >
-                    <h2 className="border-b border-stone-200 pb-2 text-sm font-semibold text-stone-700">
+                    <h2 className="border-b border-zinc-800 pb-2 text-sm font-semibold text-zinc-200">
                       {g.group}
                     </h2>
                     <ul className="mt-3 grid grid-cols-2 gap-2 text-sm">
@@ -200,12 +200,12 @@ export function MenuDrawer(props: MenuDrawerProps) {
                         <li key={it.id}>
                           <button
                             onClick={() => setActiveId(it.id)}
-                            className="flex w-full items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2 text-left hover:border-emerald-400 hover:bg-emerald-50"
+                            className="flex w-full items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-left hover:border-emerald-600 hover:bg-emerald-950/30"
                           >
                             <span aria-hidden className="text-base">
                               {it.icon}
                             </span>
-                            <span className="text-stone-800">{it.label}</span>
+                            <span className="text-zinc-100">{it.label}</span>
                           </button>
                         </li>
                       ))}

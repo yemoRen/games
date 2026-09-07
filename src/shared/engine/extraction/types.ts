@@ -24,6 +24,10 @@ export interface CombatBonus {
   critBonus: number;
   lootLuck: number;
   startHpRatio: number;
+  /** v1.0.2 特殊词条：经验获取加成（0.1 = +10%） */
+  xpBonus?: number;
+  /** v1.0.2 特殊词条：金币获取加成（0.1 = +10%） */
+  coinBonus?: number;
 }
 
 /** 出击状态机阶段 */
@@ -177,12 +181,17 @@ export interface ExtractionRunState {
   atExtract: boolean;
   /** 当前场景叙事（多行文本，区别于底部滚动日志） */
   scene: string;
-  /** 战斗胜利后可搜刮的敌方尸体（搜刮一次后清除） */
-  corpse?: { enemyName: string };
+  /** 战斗胜利后可搜刮的敌方尸体（搜刮一次后清除；霸主尸体掉更高阶装备） */
+  corpse?: { enemyName: string; boss?: boolean };
   /** 战斗回放记录（每场一场，对应 log 中 ⚔ 行；供 UI 展开） */
   battles: BattleReplayEntry[];
   /** 本次出击累计击杀经验（撤离成功才结算入角色） */
   xpGained: number;
+  // ===== v1.0.2 追加 =====
+  /** 出击前快捷·投掷槽装备的投掷物 id（伤害类手雷在战斗中概率自动使用） */
+  quickThrow?: string;
+  /** 增益药剂备战次数（UI 使用增益时 +1；每次交战消耗 1 次，属性临时提升） */
+  buffCharges: number;
 }
 
 // ===== 战斗回放（v1.0.2） =====

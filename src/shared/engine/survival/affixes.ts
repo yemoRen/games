@@ -15,7 +15,7 @@
 
 import type { Attributes } from '@shared/types/cultivator';
 import type { GearItem, GearSlot } from './economy';
-import { type RNG, pick, pickN, weightedPick } from './rng';
+import { type RNG, pickN, weightedPick } from './rng';
 
 // ===== 7 阶稀有度（颜色即阶级） =====
 
@@ -90,8 +90,14 @@ export interface SurvivalAffix {
   desc: string;
   /** 属性增量（按 affixMag 缩放） */
   modifiers?: Partial<Attributes>;
-  /** 战斗增益（按 affixMag 缩放）：仅 hpBonus/critBonus/lootLuck */
-  combat?: { hpBonus?: number; critBonus?: number; lootLuck?: number };
+  /** 战斗增益（按 affixMag 缩放） */
+  combat?: {
+    hpBonus?: number;
+    critBonus?: number;
+    lootLuck?: number;
+    xpBonus?: number;
+    coinBonus?: number;
+  };
   weight: number;
   /** 仅在该阶级及以上才会出现（高价值词缀锁高阶） */
   minTier?: number;
@@ -110,7 +116,13 @@ export interface AppliedAffix {
   /** 最终描述（{n} 已替换） */
   text: string;
   modifiers?: Partial<Attributes>;
-  combat?: { hpBonus?: number; critBonus?: number; lootLuck?: number };
+  combat?: {
+    hpBonus?: number;
+    critBonus?: number;
+    lootLuck?: number;
+    xpBonus?: number;
+    coinBonus?: number;
+  };
 }
 
 // ===== 敌人词缀池（作用于敌人战斗单元） =====
@@ -130,21 +142,24 @@ export const ENEMY_AFFIXES: SurvivalAffix[] = [
   { id: 'ea-unbroken', name: '不灭', desc: '气血 +{n}', combat: { hpBonus: 40 }, weight: 3, minTier: 5, kind: 'defense' },
 ];
 
-// ===== 装备掉落词缀池（更贴近「制造的词条」） =====
+// ===== 装备掉落词缀池（v1.0.2：只加特殊属性，不加六维） =====
+//
+// 设计原则：装备自身的六维 = 槽位基础属性（灰字，固定可靠）；
+// 生成的「词条」只提供特殊属性 —— 生命值 / 暴击 / 搜刮运势 / 经验获取 / 金币获取。
+// 数值随词条阶级（affixMag）缩放：白阶通常只有 1 条低数值词条，
+// 高阶有概率多条 + 更高数值；低阶也有小概率出多词条（搏一搏的惊喜）。
 
 export const GEAR_AFFIXES: SurvivalAffix[] = [
-  { id: 'ga-kevlar', name: '凯夫拉衬层', desc: '耐力 +{n}', modifiers: { endurance: 4 }, weight: 10, kind: 'defense' },
-  { id: 'ga-power', name: '动力核心', desc: '力量 +{n}', modifiers: { strength: 4 }, weight: 10, kind: 'offense' },
-  { id: 'ga-reflex', name: '反射神经', desc: '敏捷 +{n}', modifiers: { speed: 4 }, weight: 10, kind: 'utility' },
-  { id: 'ga-optics', name: '瞄准镜组', desc: '感知 +{n}', modifiers: { spirit: 4 }, weight: 10, kind: 'utility' },
-  { id: 'ga-vitality', name: '强韧骨架', desc: '体质 +{n}', modifiers: { vitality: 4 }, weight: 10, kind: 'defense' },
-  { id: 'ga-focus', name: '镇定剂', desc: '意志 +{n}', modifiers: { willpower: 4 }, weight: 10, kind: 'utility' },
-  { id: 'ga-letal', name: '致命一击', desc: '暴击 +{n}%', combat: { critBonus: 0.04 }, weight: 8, minTier: 2, kind: 'offense' },
-  { id: 'ga-armor', name: '强化装甲', desc: '气血 +{n}', combat: { hpBonus: 14 }, weight: 8, minTier: 2, kind: 'defense' },
-  { id: 'ga-scav', name: '搜刮直觉', desc: '搜刮运势 +{n}%', combat: { lootLuck: 0.1 }, weight: 7, minTier: 1, kind: 'utility' },
-  { id: 'ga-titan', name: '泰坦合金', desc: '耐力 +{n}/体质 +2', modifiers: { endurance: 5, vitality: 2 }, weight: 5, minTier: 3, kind: 'defense' },
-  { id: 'ga-overcharge', name: '过载', desc: '力量 +{n}/暴击 +{n}%', modifiers: { strength: 4 }, combat: { critBonus: 0.05 }, weight: 5, minTier: 3, kind: 'offense' },
-  { id: 'ga-mythic', name: '神话锻造', desc: '气血 +{n}/暴击 +{n}%', combat: { hpBonus: 30, critBonus: 0.06 }, weight: 3, minTier: 5, kind: 'defense' },
+  { id: 'ga-hp', name: '强化装甲', desc: '生命值 +{n}', combat: { hpBonus: 20 }, weight: 12, kind: 'defense' },
+  { id: 'ga-crit', name: '致命一击', desc: '暴击率 +{n}%', combat: { critBonus: 0.03 }, weight: 9, minTier: 1, kind: 'offense' },
+  { id: 'ga-scav', name: '搜刮直觉', desc: '搜刮运势 +{n}%', combat: { lootLuck: 0.08 }, weight: 8, minTier: 1, kind: 'utility' },
+  { id: 'ga-coin', name: '拾荒嗅觉', desc: '金币获取 +{n}%', combat: { coinBonus: 0.10 }, weight: 9, kind: 'utility' },
+  { id: 'ga-xp', name: '实战淬炼', desc: '经验获取 +{n}%', combat: { xpBonus: 0.10 }, weight: 8, minTier: 2, kind: 'utility' },
+  { id: 'ga-bigHP', name: '泰坦装甲', desc: '生命值 +{n}', combat: { hpBonus: 45 }, weight: 5, minTier: 3, kind: 'defense' },
+  { id: 'ga-deadly', name: '死神印记', desc: '暴击率 +{n}%', combat: { critBonus: 0.06 }, weight: 4, minTier: 4, kind: 'offense' },
+  { id: 'ga-midas', name: '点石成金', desc: '金币获取 +{n}%/搜刮运势 +{n}%', combat: { coinBonus: 0.10, lootLuck: 0.08 }, weight: 3, minTier: 4, kind: 'utility' },
+  { id: 'ga-veteran', name: '老兵传承', desc: '经验获取 +{n}%/生命值 +{n}', combat: { xpBonus: 0.12, hpBonus: 25 }, weight: 3, minTier: 5, kind: 'utility' },
+  { id: 'ga-mythic', name: '神话锻造', desc: '生命值 +{n}/暴击率 +{n}%', combat: { hpBonus: 60, critBonus: 0.08 }, weight: 2, minTier: 6, kind: 'defense' },
 ];
 
 const GEAR_SLOT_NAMES: Record<GearSlot, string> = {
@@ -205,6 +220,8 @@ function scaleCombat(
   if (c.hpBonus) out.hpBonus = Math.round(c.hpBonus * mag);
   if (c.critBonus) out.critBonus = Number((c.critBonus * mag).toFixed(3));
   if (c.lootLuck) out.lootLuck = Number((c.lootLuck * mag).toFixed(3));
+  if (c.xpBonus) out.xpBonus = Number((c.xpBonus * mag).toFixed(3));
+  if (c.coinBonus) out.coinBonus = Number((c.coinBonus * mag).toFixed(3));
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -213,7 +230,7 @@ function instantiate(def: SurvivalAffix, tier: number): AppliedAffix {
   const mag = t.affixMag;
   const modifiers = scaleModifiers(def.modifiers, mag);
   const combat = scaleCombat(def.combat, mag);
-  // 按出现顺序收集展示数值：属性增量(整数) → 战斗增益(气血整数/暴击或运势百分比)
+  // 按出现顺序收集展示数值：属性增量(整数) → 战斗增益(生命值整数/百分比类取整百分数)
   const displayValues: number[] = [];
   if (modifiers) {
     for (const k of Object.keys(modifiers) as (keyof Attributes)[]) {
@@ -224,6 +241,8 @@ function instantiate(def: SurvivalAffix, tier: number): AppliedAffix {
     if (combat.hpBonus != null) displayValues.push(combat.hpBonus);
     if (combat.critBonus != null) displayValues.push(Math.round(combat.critBonus * 100));
     if (combat.lootLuck != null) displayValues.push(Math.round(combat.lootLuck * 100));
+    if (combat.xpBonus != null) displayValues.push(Math.round(combat.xpBonus * 100));
+    if (combat.coinBonus != null) displayValues.push(Math.round(combat.coinBonus * 100));
   }
   let text = def.desc;
   for (const v of displayValues) {
@@ -283,20 +302,48 @@ export function aggregateEnemyAffixes(
 }
 
 /**
- * 随机掉落一件装备（带阶级词缀）。阶级随副本危险度提升。
+ * 随机掉落一件装备（带阶级词条）。阶级随副本危险度提升。
+ * v1.0.2：
+ *  - 掉落槽位覆盖全部 6 个主槽（武器/护甲权重更高，头部/腿部/副武器/饰品不再缺席）；
+ *  - 词条只加特殊属性（生命/暴击/搜刮/经验/金币），六维 = 槽位基础属性（灰字，随阶级小幅成长）；
+ *  - 白阶通常 1 条词条，高阶有概率多条更高数值；低阶保留小概率多词条；
+ *  - minTier：保底品阶（Boss 掉落用，保证比同地图小怪高一截）。
  * 返回可直接放进 carriedLoot 的 LootItem（gear 字段携带完整 GearItem）。
  */
-export function rollGearDrop(rng: RNG, dangerLevel: number, luckBias = 0.1): LootItemGear {
-  const tier = rollTier(rng, dangerLevel, luckBias);
+export function rollGearDrop(
+  rng: RNG,
+  dangerLevel: number,
+  luckBias = 0.1,
+  minTier = 0,
+): LootItemGear {
+  const tier = Math.max(rollTier(rng, dangerLevel, luckBias), Math.max(0, Math.min(6, minTier)));
   const t = tierByTier(tier);
-  const slot = pick(rng, ['weapon', 'armor', 'accessory'] as GearSlot[]);
+  // 全 6 槽位加权：武器/护甲是核心输出与减伤位，权重更高；其余四槽均分剩余权重
+  const slot = weightedPick(rng, [
+    { value: 'weapon' as GearSlot, weight: 24 },
+    { value: 'armor' as GearSlot, weight: 22 },
+    { value: 'offWeapon' as GearSlot, weight: 14 },
+    { value: 'head' as GearSlot, weight: 14 },
+    { value: 'legs' as GearSlot, weight: 13 },
+    { value: 'accessory' as GearSlot, weight: 13 },
+  ]);
   const slotName = GEAR_SLOT_NAMES[slot];
 
-  const affixCount = 1 + (tier >= 3 ? 1 : 0) + (tier >= 6 ? 1 : 0);
+  // 词条数量：低阶通常 1 条（6% 出 2 条），阶级越高多词条概率越高（最多 3 条）
+  const extraChance = tier >= 4 ? 0.75 : tier >= 2 ? 0.45 : tier >= 1 ? 0.15 : 0.06;
+  let affixCount = 1;
+  if (rng() < extraChance) affixCount++;
+  if (affixCount === 2 && rng() < extraChance * 0.5) affixCount++;
+
   const pool = GEAR_AFFIXES.filter((a) => (a.minTier ?? 0) <= tier);
   const chosen = pickN(rng, pool, affixCount);
 
-  const modifiers: Partial<Attributes> = { ...GEAR_SLOT_BASE[slot] };
+  // 灰字：槽位基础属性，随装备阶级小幅成长（白 +0% → 红 +120%）
+  const baseScale = 1 + 0.2 * tier;
+  const modifiers: Partial<Attributes> = {};
+  for (const k of Object.keys(GEAR_SLOT_BASE[slot]) as (keyof Attributes)[]) {
+    modifiers[k] = Math.round((GEAR_SLOT_BASE[slot][k] ?? 0) * baseScale);
+  }
   const combat: NonNullable<AppliedAffix['combat']> = {};
   const affixInstances: AppliedAffix[] = [];
   const affixStrings: string[] = [];
@@ -305,15 +352,12 @@ export function rollGearDrop(rng: RNG, dangerLevel: number, luckBias = 0.1): Loo
     const inst = instantiate(def, tier);
     affixInstances.push(inst);
     affixStrings.push(inst.text);
-    if (inst.modifiers) {
-      for (const k of Object.keys(inst.modifiers) as (keyof Attributes)[]) {
-        modifiers[k] = (modifiers[k] ?? 0) + (inst.modifiers[k] ?? 0);
-      }
-    }
     if (inst.combat) {
       combat.hpBonus = (combat.hpBonus ?? 0) + (inst.combat.hpBonus ?? 0);
-      combat.critBonus = (combat.critBonus ?? 0) + (inst.combat.critBonus ?? 0);
-      combat.lootLuck = (combat.lootLuck ?? 0) + (inst.combat.lootLuck ?? 0);
+      combat.critBonus = Number(((combat.critBonus ?? 0) + (inst.combat.critBonus ?? 0)).toFixed(3));
+      combat.lootLuck = Number(((combat.lootLuck ?? 0) + (inst.combat.lootLuck ?? 0)).toFixed(3));
+      combat.xpBonus = Number(((combat.xpBonus ?? 0) + (inst.combat.xpBonus ?? 0)).toFixed(3));
+      combat.coinBonus = Number(((combat.coinBonus ?? 0) + (inst.combat.coinBonus ?? 0)).toFixed(3));
     }
   }
 
@@ -325,7 +369,7 @@ export function rollGearDrop(rng: RNG, dangerLevel: number, luckBias = 0.1): Loo
     modifiers,
     affixes: affixStrings,
     combat: Object.keys(combat).length ? combat : undefined,
-    value: Math.round(40 + tier * 30 + affixInstances.length * 20),
+    value: Math.round(40 + tier * 45 + affixInstances.length * 25),
     tier,
     tierColor: t.color,
     rarityName: t.label,

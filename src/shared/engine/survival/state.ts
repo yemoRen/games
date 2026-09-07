@@ -656,19 +656,23 @@ export function buildLoadout(
 
 // ===== 出击战斗加成聚合（词条 + 装备 + 避难所） =====
 
-/** 已装备装备的战斗词条汇总 */
+/** 已装备装备的战斗词条汇总（v1.0.2：含经验/金币获取加成等特殊词条） */
 export function aggregateGearCombat(state: SurvivalGameState, survivorId: string): CombatBonus {
   let hpBonus = 0;
   let critBonus = 0;
   let lootLuck = 0;
+  let xpBonus = 0;
+  let coinBonus = 0;
   for (const g of equippedGearList(state, survivorId)) {
     const c = g.combat;
     if (!c) continue;
     hpBonus += c.hpBonus ?? 0;
     critBonus += c.critBonus ?? 0;
     lootLuck += c.lootLuck ?? 0;
+    xpBonus += c.xpBonus ?? 0;
+    coinBonus += c.coinBonus ?? 0;
   }
-  return { hpBonus, critBonus, lootLuck, startHpRatio: 0 };
+  return { hpBonus, critBonus, lootLuck, startHpRatio: 0, xpBonus, coinBonus };
 }
 
 /**
@@ -691,6 +695,8 @@ export function buildSortieLoadout(
     critBonus: traitC.critBonus + gearC.critBonus,
     lootLuck: traitC.lootLuck + gearC.lootLuck + bonuses.lootLuck,
     startHpRatio: traitC.startHpRatio,
+    xpBonus: gearC.xpBonus,
+    coinBonus: gearC.coinBonus,
   };
   return { name: profile.name, attributes: loadout.attributes, profile, bonus };
 }

@@ -54,7 +54,7 @@ export default function SurvivalSignup() {
             WASTELAND · EXTRACTION PROTOCOL
           </p>
           <h1 className="mt-3 text-2xl font-bold text-zinc-50">
-            全民求生 <span className="text-amber-400">·</span>{' '}
+            全境求生 <span className="text-amber-400">·</span>{' '}
             <span className="text-emerald-400">系统搜打撤</span>
           </h1>
           <p className="mt-2 text-sm text-rose-400/80 tracking-[0.2em]">建立幸存者档案</p>

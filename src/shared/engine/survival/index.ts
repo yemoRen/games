@@ -1,5 +1,5 @@
 /*
- * survival/index.ts — 全民求生・系统搜打撤 换皮引擎总出口
+ * survival/index.ts — 全境求生・系统搜打撤 换皮引擎总出口
  * Phase 2（角色随机生成）+ Phase 3（经济/势力/避难所）。
  */
 export * from './rng';

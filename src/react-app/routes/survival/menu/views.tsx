@@ -20,6 +20,7 @@ import {
   addRecruit,
   applySortieResult,
   MEDICINES,
+  type MedicineSpec,
   MED_CRAFT_RECIPES,
   canCraftMedicine,
   craftMedicine,
@@ -61,10 +62,10 @@ interface ViewProps {
 
 const Section: React.FC<{ title: string; subtitle?: string; children: React.ReactNode; right?: React.ReactNode }> = ({ title, subtitle, children, right }) => (
   <div className="space-y-4">
-    <div className="flex items-end justify-between gap-4 border-b border-stone-200 pb-3">
+    <div className="flex items-end justify-between gap-4 border-b border-zinc-800 pb-3">
       <div>
-        <h2 className="text-xl font-semibold text-stone-800">{title}</h2>
-        {subtitle && <p className="mt-1 text-sm text-stone-500">{subtitle}</p>}
+        <h2 className="text-xl font-semibold text-zinc-100">{title}</h2>
+        {subtitle && <p className="mt-1 text-sm text-zinc-400">{subtitle}</p>}
       </div>
       {right}
     </div>
@@ -73,40 +74,40 @@ const Section: React.FC<{ title: string; subtitle?: string; children: React.Reac
 );
 
 const Card: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
-  <div className={`rounded-xl border border-stone-200 bg-white p-4 shadow-sm ${className ?? ''}`}>{children}</div>
+  <div className={`rounded-xl border border-zinc-800 bg-zinc-900 p-4 shadow-sm ${className ?? ''}`}>{children}</div>
 );
 
 const Pill: React.FC<{ children: React.ReactNode; tone?: 'green' | 'red' | 'amber' | 'sky' | 'stone' }> = ({ children, tone = 'stone' }) => {
   const map: Record<string, string> = {
-    green: 'bg-emerald-100 text-emerald-700',
-    red: 'bg-rose-100 text-rose-700',
-    amber: 'bg-amber-100 text-amber-700',
-    sky: 'bg-sky-100 text-sky-700',
-    stone: 'bg-stone-100 text-stone-700',
+    green: 'bg-emerald-900/40 text-emerald-300',
+    red: 'bg-rose-900/40 text-rose-300',
+    amber: 'bg-amber-900/40 text-amber-300',
+    sky: 'bg-sky-900/40 text-sky-300',
+    stone: 'bg-zinc-800 text-zinc-200',
   };
   return <span className={`inline-block rounded px-2 py-0.5 text-xs ${map[tone]}`}>{children}</span>;
 };
 
 const AttrBar: React.FC<{ label: string; value: number; max: number }> = ({ label, value, max }) => (
   <div className="flex items-center gap-2 text-xs">
-    <span className="w-10 text-stone-500">{label}</span>
-    <div className="h-1.5 flex-1 overflow-hidden rounded bg-stone-200">
-      <div className="h-full bg-emerald-500" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
+    <span className="w-10 text-zinc-400">{label}</span>
+    <div className="h-1.5 flex-1 overflow-hidden rounded bg-zinc-800">
+      <div className="h-full bg-emerald-950/300" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
     </div>
-    <span className="w-8 text-right font-mono text-stone-700">{value}</span>
+    <span className="w-8 text-right font-mono text-zinc-200">{value}</span>
   </div>
 );
 
 const hpBar = (current: number, max: number) => {
   const pct = max > 0 ? Math.max(0, Math.min(100, (current / max) * 100)) : 0;
-  const tone = pct > 60 ? 'bg-emerald-500' : pct > 30 ? 'bg-amber-500' : 'bg-rose-500';
+  const tone = pct > 60 ? 'bg-emerald-950/300' : pct > 30 ? 'bg-amber-950/300' : 'bg-rose-950/300';
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="w-6 text-stone-500">HP</span>
-      <div className="h-2 flex-1 overflow-hidden rounded bg-stone-200">
+      <span className="w-6 text-zinc-400">HP</span>
+      <div className="h-2 flex-1 overflow-hidden rounded bg-zinc-800">
         <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-16 text-right font-mono text-stone-700">{current}/{max}</span>
+      <span className="w-16 text-right font-mono text-zinc-200">{current}/{max}</span>
     </div>
   );
 };
@@ -131,7 +132,7 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
       title="避难所·菜园"
       subtitle="6 块地，每块可任选一种作物种植。成熟后收获换医疗品 / 废土币。种植状态已存档，切走再切回不会丢失。"
     >
-      <div className="mb-3 flex items-center gap-2 text-sm text-stone-600">
+      <div className="mb-3 flex items-center gap-2 text-sm text-zinc-300">
         <Pill tone="sky">菜园等级 {gardenLevel}</Pill>
         <span className="text-xs">每升 1 级收成时间 -10%（下限 30%）</span>
       </div>
@@ -143,10 +144,10 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
           return (
             <Card key={idx}>
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-stone-800">第 {idx + 1} 块地</div>
-                {!plot.cropId && <span className="text-xs text-stone-400">空地</span>}
-                {plot.cropId && !ready && <span className="text-xs text-amber-600">种植中…</span>}
-                {ready && <span className="text-xs font-medium text-emerald-600">已成熟</span>}
+                <div className="text-sm font-semibold text-zinc-100">第 {idx + 1} 块地</div>
+                {!plot.cropId && <span className="text-xs text-zinc-500">空地</span>}
+                {plot.cropId && !ready && <span className="text-xs text-amber-300">种植中…</span>}
+                {ready && <span className="text-xs font-medium text-emerald-300">已成熟</span>}
               </div>
 
               {!plot.cropId ? (
@@ -154,7 +155,7 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
                   <select
                     value={sel[idx] ?? ''}
                     onChange={(e) => setSel((s) => ({ ...s, [idx]: e.target.value }))}
-                    className="w-full rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700"
+                    className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
                   >
                     <option value="">选择作物…</option>
                     {GARDEN_CROPS.map((c) => (
@@ -178,10 +179,10 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
                 </div>
               ) : (
                 <div className="mt-3">
-                  <div className="text-base font-semibold text-stone-800">
+                  <div className="text-base font-semibold text-zinc-100">
                     {crop?.icon} {cropName(plot.cropId)}
                   </div>
-                  <div className="mt-1 text-xs text-stone-500">
+                  <div className="mt-1 text-xs text-zinc-400">
                     收成：
                     {crop?.yields
                       ? `${MEDICINES.find((m) => m.id === crop.yields)?.name}×${crop.qty}`
@@ -195,11 +196,11 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
                       收获
                     </button>
                   ) : (
-                    <div className="mt-3 text-xs text-stone-500">剩余约 {leftMin} 分钟成熟</div>
+                    <div className="mt-3 text-xs text-zinc-400">剩余约 {leftMin} 分钟成熟</div>
                   )}
                   <button
                     onClick={() => mutate((s) => clearGardenPlot(s, idx))}
-                    className="mt-2 w-full rounded border border-stone-300 px-3 py-1 text-[11px] text-stone-500 hover:bg-stone-100"
+                    className="mt-2 w-full rounded border border-zinc-700 px-3 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800"
                   >
                     铲除重种
                   </button>
@@ -223,20 +224,20 @@ export const ViewCraft: React.FC<ViewProps> = ({ state, mutate }) => {
           const ok = canCraftMedicine(state, r);
           return (
             <Card key={r.id}>
-              <div className="text-base font-semibold text-stone-800">{r.name}</div>
-              <div className="mt-1 text-xs text-stone-500">
+              <div className="text-base font-semibold text-zinc-100">{r.name}</div>
+              <div className="mt-1 text-xs text-zinc-400">
                 产出：{med ? `${med.name}（${Math.round(med.healPct * 100)}%生命+${med.healFlat}）` : r.medicine}
               </div>
               <ul className="mt-2 space-y-1 text-xs">
                 {r.costMaterials.map((c) => {
                   const have = materialCount(state.materials, c.kind);
                   return (
-                    <li key={c.kind} className={have >= c.qty ? 'text-emerald-700' : 'text-rose-600'}>
+                    <li key={c.kind} className={have >= c.qty ? 'text-emerald-300' : 'text-rose-300'}>
                       {MATERIAL_LABEL[c.kind]} ×{c.qty}（持有 {have}）
                     </li>
                   );
                 })}
-                <li className="text-stone-500">废土币 ⛁{r.costCoins}</li>
+                <li className="text-zinc-400">废土币 ⛁{r.costCoins}</li>
               </ul>
               <button
                 onClick={() => mutate((s) => craftMedicine(s, r.id))}
@@ -256,11 +257,11 @@ export const ViewCraft: React.FC<ViewProps> = ({ state, mutate }) => {
 // ===== 2. 战术手册 =====
 export const ViewTactics: React.FC<ViewProps> = ({ state }) => {
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId);
-  if (!active) return <Section title="战术手册"><div className="text-stone-500">未指定出击者。</div></Section>;
+  if (!active) return <Section title="战术手册"><div className="text-zinc-400">未指定出击者。</div></Section>;
   return (
     <Section title="战术手册" subtitle={`当前出击者：${active.name}（${active.tierName}）`}>
       <Card>
-        <h3 className="text-sm font-semibold text-stone-700">主动技·6 维基础属性</h3>
+        <h3 className="text-sm font-semibold text-zinc-200">主动技·6 维基础属性</h3>
         <div className="mt-3 space-y-2">
           {(Object.keys(active.attributes) as (keyof Attributes)[]).map((k) => (
             <AttrBar key={k} label={attrLabel(k)} value={active.attributes[k]} max={30} />
@@ -268,15 +269,15 @@ export const ViewTactics: React.FC<ViewProps> = ({ state }) => {
         </div>
       </Card>
       <Card>
-        <h3 className="text-sm font-semibold text-stone-700">被动技·战斗词条</h3>
+        <h3 className="text-sm font-semibold text-zinc-200">被动技·战斗词条</h3>
         {active.traits.length === 0 ? (
-          <div className="mt-2 text-sm text-stone-500">无词条。</div>
+          <div className="mt-2 text-sm text-zinc-400">无词条。</div>
         ) : (
-          <ul className="mt-2 space-y-2 text-sm text-stone-700">
+          <ul className="mt-2 space-y-2 text-sm text-zinc-200">
             {active.traits.map((t) => (
-              <li key={t.id} className="rounded bg-stone-50 p-2">
-                <div className="font-medium text-stone-800">{t.name}</div>
-                <div className="text-xs text-stone-500">{t.description}</div>
+              <li key={t.id} className="rounded bg-zinc-950 p-2">
+                <div className="font-medium text-zinc-100">{t.name}</div>
+                <div className="text-xs text-zinc-400">{t.description}</div>
                 {t.combat && (
                   <div className="mt-1 flex flex-wrap gap-1 text-xs">
                     {t.combat.hpBonus && <Pill tone="green">HP +{t.combat.hpBonus}</Pill>}
@@ -302,16 +303,16 @@ export const ViewSkills: React.FC<ViewProps> = ({ state }) => (
         <Card key={s.id}>
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-base font-semibold text-stone-800">{s.name}</span>
-              <span className="ml-2 text-xs text-stone-500">{s.tierName} · 战力 {s.power}</span>
+              <span className="text-base font-semibold text-zinc-100">{s.name}</span>
+              <span className="ml-2 text-xs text-zinc-400">{s.tierName} · 战力 {s.power}</span>
             </div>
             <Pill tone="sky">{rarityLabel(s.rarity)}</Pill>
           </div>
           <ul className="mt-2 flex flex-wrap gap-1 text-xs">
             {s.traits.map((t) => (
-              <li key={t.id} className="rounded bg-emerald-50 px-2 py-1 text-emerald-700">{t.name}</li>
+              <li key={t.id} className="rounded bg-emerald-950/30 px-2 py-1 text-emerald-300">{t.name}</li>
             ))}
-            {s.traits.length === 0 && <li className="text-stone-500">（无被动技能）</li>}
+            {s.traits.length === 0 && <li className="text-zinc-400">（无被动技能）</li>}
           </ul>
         </Card>
       ))}
@@ -329,12 +330,12 @@ export const ViewFactionSkills: React.FC<ViewProps> = ({ state }) => (
           <Card key={f.id}>
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-base font-semibold text-stone-800">{f.name}</div>
-                <div className="text-xs text-stone-500">{f.description}</div>
+                <div className="text-base font-semibold text-zinc-100">{f.name}</div>
+                <div className="text-xs text-zinc-400">{f.description}</div>
               </div>
               <Pill tone={rep > 0 ? 'sky' : 'stone'}>声望 {rep} / 5</Pill>
             </div>
-            <ul className="mt-2 text-xs text-stone-700">
+            <ul className="mt-2 text-xs text-zinc-200">
               {Object.entries(f.attrPerRepLevel).map(([k, v]) => (
                 <li key={k}>· 每级 全队 {attrLabel(k as keyof Attributes)} +{v}</li>
               ))}
@@ -350,22 +351,22 @@ export const ViewFactionSkills: React.FC<ViewProps> = ({ state }) => (
 export const ViewBattleLog: React.FC<ViewProps> = ({ state }) => (
   <Section title="全部战绩" subtitle={`累计出击 ${state.sortieHistory.length} 次。`}>
     {state.sortieHistory.length === 0 ? (
-      <Card><div className="text-sm text-stone-500">尚无出击记录。前往「出击」体验首次搜打撤。</div></Card>
+      <Card><div className="text-sm text-zinc-400">尚无出击记录。前往「出击」体验首次搜打撤。</div></Card>
     ) : (
       <div className="space-y-2">
         {state.sortieHistory.slice(0, 30).map((s: SortieLog) => (
           <Card key={s.id} className="!p-3">
             <div className="flex items-center justify-between text-sm">
               <div>
-                <span className="font-semibold text-stone-800">{s.survivorName}</span>
-                <span className="mx-1 text-stone-400">→</span>
+                <span className="font-semibold text-zinc-100">{s.survivorName}</span>
+                <span className="mx-1 text-zinc-500">→</span>
                 <span>{s.zoneName}</span>
               </div>
               <Pill tone={s.outcome === 'success' ? 'green' : s.outcome === 'death' ? 'red' : 'amber'}>
                 {s.outcome === 'success' ? '撤离成功' : s.outcome === 'death' ? '阵亡' : '超时'}
               </Pill>
             </div>
-            <div className="mt-1 flex flex-wrap gap-3 text-xs text-stone-500">
+            <div className="mt-1 flex flex-wrap gap-3 text-xs text-zinc-400">
               <span>{new Date(s.at).toLocaleString()}</span>
               <span>入库 {s.bankedItems} 件 / {s.bankedValue} 废土币</span>
               {s.enemyFaced && <span>· 敌人 {s.enemyFaced}</span>}
@@ -389,13 +390,13 @@ export const ViewExplorationNotes: React.FC<ViewProps> = ({ state }) => {
           return (
             <Card key={z.id}>
               <div className="flex items-center justify-between">
-                <div className="text-base font-semibold text-stone-800">{known ? z.name : '【未探索】'}</div>
+                <div className="text-base font-semibold text-zinc-100">{known ? z.name : '【未探索】'}</div>
                 <Pill tone={z.dangerLevel >= 4 ? 'red' : z.dangerLevel >= 2 ? 'amber' : 'green'}>危险 {z.dangerLevel}</Pill>
               </div>
               {known ? (
-                <div className="mt-2 text-sm text-stone-600">{z.flavor}</div>
+                <div className="mt-2 text-sm text-zinc-300">{z.flavor}</div>
               ) : (
-                <div className="mt-2 text-sm text-stone-400">完成该区域出击以解锁详细描述。</div>
+                <div className="mt-2 text-sm text-zinc-500">完成该区域出击以解锁详细描述。</div>
               )}
             </Card>
           );
@@ -450,13 +451,13 @@ export const ViewWandering: React.FC<ViewProps> = ({ state, mutate, rng }) => {
         <button onClick={() => { setRunning(true); runOnce(); setRunning(false); }} disabled={running} className="rounded bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 disabled:opacity-40">
           派出一支小队
         </button>
-        <span className="text-xs text-stone-500">最近 10 次记录（仅本菜单会话内存）</span>
+        <span className="text-xs text-zinc-400">最近 10 次记录（仅本菜单会话内存）</span>
       </div>
       <div className="space-y-1">
         {log.map((l, i) => (
-          <div key={i} className="rounded bg-stone-50 px-3 py-1 text-xs text-stone-700">{l}</div>
+          <div key={i} className="rounded bg-zinc-950 px-3 py-1 text-xs text-zinc-200">{l}</div>
         ))}
-        {log.length === 0 && <div className="text-sm text-stone-400">还没有记录。</div>}
+        {log.length === 0 && <div className="text-sm text-zinc-500">还没有记录。</div>}
       </div>
     </Section>
   );
@@ -504,7 +505,7 @@ export const ViewMirage: React.FC<ViewProps> = ({ state, mutate, rng }) => {
     <Section title="蜃景密室" subtitle="危险等级 5 的扭曲时空，高风险高回报。">
       {!unlocked ? (
         <Card>
-          <div className="text-sm text-stone-700">解锁费用 {unlockCost} 废土币（一次性）。</div>
+          <div className="text-sm text-zinc-200">解锁费用 {unlockCost} 废土币（一次性）。</div>
           <button
             onClick={() => state.coins >= unlockCost && mutate((s) => ({ ...s, coins: s.coins - unlockCost, mirageUnlocked: true } as SurvivalGameState))}
             disabled={state.coins < unlockCost}
@@ -515,7 +516,7 @@ export const ViewMirage: React.FC<ViewProps> = ({ state, mutate, rng }) => {
         </Card>
       ) : (
         <Card>
-          <div className="text-sm text-stone-700">已解锁。每点一次按钮即派当前出击者跑一次最高危区域。</div>
+          <div className="text-sm text-zinc-200">已解锁。每点一次按钮即派当前出击者跑一次最高危区域。</div>
           <button onClick={enter} className="mt-3 rounded bg-purple-600 px-4 py-2 text-white hover:bg-purple-700">进入蜃景密室</button>
         </Card>
       )}
@@ -526,7 +527,7 @@ export const ViewMirage: React.FC<ViewProps> = ({ state, mutate, rng }) => {
 // ===== 9. 重塑天赋 =====
 export const ViewRerollTrait: React.FC<ViewProps> = ({ state, mutate, rng }) => {
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId);
-  if (!active) return <Section title="重塑天赋"><div className="text-stone-500">未指定出击者。</div></Section>;
+  if (!active) return <Section title="重塑天赋"><div className="text-zinc-400">未指定出击者。</div></Section>;
   const cost = 80 + active.tier * 60;
   const reroll = () => {
     if (state.coins < cost) return;
@@ -542,8 +543,8 @@ export const ViewRerollTrait: React.FC<ViewProps> = ({ state, mutate, rng }) => 
   return (
     <Section title="重塑天赋" subtitle={`当前出击者：${active.name}（${active.tierName}）`}>
       <Card>
-        <div className="text-sm text-stone-700">保留名字/段位，词条与基础属性全部重随。</div>
-        <div className="mt-2 text-xs text-stone-500">费用：{cost} 废土币 · 当前余额 {state.coins}</div>
+        <div className="text-sm text-zinc-200">保留名字/段位，词条与基础属性全部重随。</div>
+        <div className="mt-2 text-xs text-zinc-400">费用：{cost} 废土币 · 当前余额 {state.coins}</div>
         <button onClick={reroll} disabled={state.coins < cost} className="mt-3 rounded bg-amber-600 px-4 py-2 text-white hover:bg-amber-700 disabled:opacity-40">
           消耗 {cost} 重塑
         </button>
@@ -562,15 +563,15 @@ export const ViewQuests: React.FC<ViewProps> = ({ state, mutate }) => {
           <Card key={quest.id}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="font-semibold text-stone-800">{quest.name}</div>
-                <div className="text-sm text-stone-500">{quest.desc}</div>
-                <div className="mt-2 text-xs text-stone-500">进度 {done} / {target}</div>
+                <div className="font-semibold text-zinc-100">{quest.name}</div>
+                <div className="text-sm text-zinc-400">{quest.desc}</div>
+                <div className="mt-2 text-xs text-zinc-400">进度 {done} / {target}</div>
               </div>
               <div className="text-right">
                 <Pill tone={claimed ? 'stone' : doneGoal ? 'green' : 'amber'}>
                   {claimed ? '已领' : doneGoal ? '可领' : '进行中'}
                 </Pill>
-                <div className="mt-2 text-xs text-stone-600">奖励 {quest.rewardCoins} 废土币{quest.rewardMedicineId && '+1 ' + (MEDICINES.find((m) => m.id === quest.rewardMedicineId)?.name ?? '')}</div>
+                <div className="mt-2 text-xs text-zinc-300">奖励 {quest.rewardCoins} 废土币{quest.rewardMedicineId && '+1 ' + (MEDICINES.find((m) => m.id === quest.rewardMedicineId)?.name ?? '')}</div>
                 <button
                   onClick={() => mutate((s) => claimQuest(s, quest.id))}
                   disabled={!doneGoal || claimed}
@@ -587,28 +588,94 @@ export const ViewQuests: React.FC<ViewProps> = ({ state, mutate }) => {
 
 // ===== 11. 废土市场（NPC 交易） =====
 export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
+  // v1.0.2：购买需二次确认防误触；支持批量 ×1 / ×5；确认后扣币入库
+  const [pending, setPending] = useState<{ id: MedicineSpec['id']; qty: number } | null>(null);
+  const [bought, setBought] = useState<string | null>(null);
+
+  const doBuy = (id: MedicineSpec['id'], qty: number) => {
+    const spec = MEDICINES.find((m) => m.id === id);
+    if (!spec) return;
+    mutate((s) => buyMedicine(s, id, qty));
+    setBought(`✅ 已购买 ${spec.name}×${qty}，消耗 ${spec.costCoins * qty} 废土币（库存 +${qty}）。`);
+    setPending(null);
+  };
+
   return (
     <Section title="废土市场" subtitle="从市集购入医疗物资、卖出多余材料。">
       <div className="grid gap-3 sm:grid-cols-2">
         <Card>
-          <h3 className="font-semibold text-stone-800">购入医疗品</h3>
-          <div className="mt-3 space-y-2">
-            {MEDICINES.map((m) => (
-              <div key={m.id} className="flex items-center justify-between text-sm">
-                <div>
-                  <div className="font-medium">{m.name}</div>
-                  <div className="text-xs text-stone-500">{m.description}</div>
+          <h3 className="font-semibold text-zinc-100">购入医疗品</h3>
+          <p className="mt-1 text-xs text-zinc-400">
+            当前废土币：<span className="font-medium text-zinc-200">{state.coins}</span>
+          </p>
+          {bought && <div className="mt-2 rounded border border-emerald-800 bg-emerald-950/30 px-2 py-1 text-xs text-emerald-300">{bought}</div>}
+          <div className="mt-3 space-y-3">
+            {MEDICINES.map((m) => {
+              const stock = state.medicines[m.id] ?? 0;
+              const isPending = pending?.id === m.id;
+              const qty = isPending ? pending.qty : 1;
+              const total = m.costCoins * qty;
+              const afford = state.coins >= m.costCoins;
+              const affordQty = state.coins >= total;
+              return (
+                <div key={m.id} className="rounded border border-zinc-800 p-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-medium text-zinc-100">
+                        {m.name}
+                        <span className="ml-2 text-xs text-zinc-400">库存 ×{stock}</span>
+                      </div>
+                      <div className="text-xs text-zinc-400">{m.description}</div>
+                      <div className="mt-0.5 text-xs text-zinc-300">单价 {m.costCoins} 废土币</div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {[1, 5].map((q) => (
+                        <button
+                          key={q}
+                          onClick={() => { setPending({ id: m.id, qty: q }); setBought(null); }}
+                          disabled={!afford}
+                          className={`rounded px-2 py-1 text-xs transition ${
+                            isPending && qty === q
+                              ? 'bg-sky-700 text-white'
+                              : 'bg-sky-600 text-white hover:bg-sky-700'
+                          } disabled:opacity-40`}
+                        >
+                          ×{q}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {isPending && (
+                    <div className="mt-2 flex items-center justify-between rounded border border-amber-700 bg-amber-950/30 px-2 py-1.5">
+                      <span className="text-xs text-amber-300">
+                        确认购买 {m.name}×{qty}？将消耗 <span className="font-semibold">{total}</span> 废土币
+                        {!affordQty && '（废土币不足！）'}
+                      </span>
+                      <span className="flex gap-1">
+                        <button
+                          onClick={() => doBuy(m.id, qty)}
+                          disabled={!affordQty}
+                          className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-40"
+                        >
+                          确认购买
+                        </button>
+                        <button
+                          onClick={() => setPending(null)}
+                          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+                        >
+                          取消
+                        </button>
+                      </span>
+                    </div>
+                  )}
                 </div>
-                <button onClick={() => mutate((s) => buyMedicine(s, m.id))} disabled={state.coins < m.costCoins} className="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700 disabled:opacity-40">
-                  {m.costCoins} 币
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
         <Card>
-          <h3 className="font-semibold text-stone-800">回收材料（10 币/件）</h3>
-          <p className="mt-1 text-xs text-stone-500">将 1 件任意材料按 10 废土币出售（演示用，简化模型）。</p>
+          <h3 className="font-semibold text-zinc-100">回收材料（10 币/件）</h3>
+          <p className="mt-1 text-xs text-zinc-400">将 1 件任意材料按 10 废土币出售（演示用，简化模型）。</p>
           <button
             onClick={() => mutate((s) => {
               if (s.materials.length === 0) return s;
@@ -644,10 +711,10 @@ export const ViewRecycle: React.FC<ViewProps> = ({ state, mutate, rng }) => {
           return (
             <Card key={r.id}>
               <div className="flex items-center justify-between">
-                <div className="font-semibold text-stone-800">{r.name}</div>
+                <div className="font-semibold text-zinc-100">{r.name}</div>
                 <Pill>{r.rarity}</Pill>
               </div>
-              <div className="mt-2 text-xs text-stone-500">
+              <div className="mt-2 text-xs text-zinc-400">
                 费用 {r.costCoins} 币 · 材料 {r.costMaterials.map((m) => `${MATERIAL_LABEL[m.kind]}×${m.qty}`).join('、')}
               </div>
               <button
@@ -673,16 +740,16 @@ export const ViewPremiumShop: React.FC<ViewProps> = ({ state, mutate }) => {
   const premium = (state as { premiumCoins?: number }).premiumCoins ?? 0;
   return (
     <Section title="英雄商城" subtitle="使用废土钻石（演示货币）购买稀有道具。">
-      <Card className="mb-3 !bg-amber-50">
-        <div className="text-sm text-amber-700">当前钻石：{premium}</div>
+      <Card className="mb-3 !bg-amber-950/30">
+        <div className="text-sm text-amber-300">当前钻石：{premium}</div>
         <button onClick={() => mutate((s) => ({ ...s, premiumCoins: (premium ?? 0) + 10 } as SurvivalGameState))} className="mt-2 rounded bg-amber-600 px-3 py-1 text-xs text-white hover:bg-amber-700">+10（演示按钮）</button>
       </Card>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((it) => (
           <Card key={it.id}>
-            <div className="font-semibold text-stone-800">{it.name}</div>
-            <div className="mt-1 text-xs text-stone-500">{it.desc}</div>
-            <button disabled className="mt-3 rounded bg-stone-300 px-3 py-1 text-xs text-white">兑换（暂未开放）</button>
+            <div className="font-semibold text-zinc-100">{it.name}</div>
+            <div className="mt-1 text-xs text-zinc-400">{it.desc}</div>
+            <button disabled className="mt-3 rounded bg-zinc-700 px-3 py-1 text-xs text-white">兑换（暂未开放）</button>
           </Card>
         ))}
       </div>
@@ -694,10 +761,10 @@ export const ViewPremiumShop: React.FC<ViewProps> = ({ state, mutate }) => {
 export const ViewAuction: React.FC = () => (
   <Section title="拍卖行" subtitle="玩家间物品竞拍（需服务端，本地未启用）">
     <Card>
-      <div className="text-sm text-stone-600">
+      <div className="text-sm text-zinc-300">
         拍卖行依赖实时出价与历史成交，本地单用户存档无法承载。功能已锁定以等待后端支持。
       </div>
-      <div className="mt-3 text-xs text-stone-400">建议路径：列表/出价/成交/历史</div>
+      <div className="mt-3 text-xs text-zinc-500">建议路径：列表/出价/成交/历史</div>
     </Card>
   </Section>
 );
@@ -710,7 +777,7 @@ export const ViewLeaderboard: React.FC<ViewProps> = ({ state }) => {
       <Card>
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs text-stone-500">
+            <tr className="text-left text-xs text-zinc-400">
               <th className="py-1">#</th>
               <th>姓名</th>
               <th>段位</th>
@@ -720,10 +787,10 @@ export const ViewLeaderboard: React.FC<ViewProps> = ({ state }) => {
           </thead>
           <tbody>
             {sorted.map((s, i) => (
-              <tr key={s.id} className="border-t border-stone-100">
-                <td className="py-2 font-mono text-stone-500">{i + 1}</td>
+              <tr key={s.id} className="border-t border-zinc-800">
+                <td className="py-2 font-mono text-zinc-400">{i + 1}</td>
                 <td className="font-medium">{s.name}</td>
-                <td className="text-stone-600">{s.tierName}</td>
+                <td className="text-zinc-300">{s.tierName}</td>
                 <td className="font-mono">{s.power}</td>
                 <td><Pill>{rarityLabel(s.rarity)}</Pill></td>
               </tr>
@@ -739,7 +806,7 @@ export const ViewLeaderboard: React.FC<ViewProps> = ({ state }) => {
 export const ViewWager: React.FC = () => (
   <Section title="末世赌局" subtitle="以废土币押注其他幸存者的 PvP 战斗结果">
     <Card>
-      <div className="text-sm text-stone-600">需 PvP 匹配与见证，本地未启用。</div>
+      <div className="text-sm text-zinc-300">需 PvP 匹配与见证，本地未启用。</div>
     </Card>
   </Section>
 );
@@ -748,7 +815,7 @@ export const ViewWager: React.FC = () => (
 export const ViewArena: React.FC = () => (
   <Section title="擂台切磋" subtitle="与其他玩家 1v1 对决">
     <Card>
-      <div className="text-sm text-stone-600">需 PvP 匹配，本地未启用。</div>
+      <div className="text-sm text-zinc-300">需 PvP 匹配，本地未启用。</div>
     </Card>
   </Section>
 );
@@ -774,7 +841,7 @@ export const ViewNews: React.FC<ViewProps> = ({ state }) => {
           <Card key={i} className="!p-3">
             <div className="flex items-start gap-2">
               <Pill tone={m.tone}>{m.tone === 'green' ? '利好' : m.tone === 'red' ? '警报' : m.tone === 'amber' ? '提醒' : m.tone === 'sky' ? '情报' : '日常'}</Pill>
-              <div className="text-sm text-stone-700">{m.text}</div>
+              <div className="text-sm text-zinc-200">{m.text}</div>
             </div>
           </Card>
         ))}
@@ -818,12 +885,12 @@ export const ViewRedeem: React.FC<ViewProps> = ({ state, mutate }) => {
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
             placeholder="输入兑换码"
-            className="flex-1 rounded border border-stone-300 px-3 py-2 text-sm"
+            className="flex-1 rounded border border-zinc-700 px-3 py-2 text-sm"
           />
           <button onClick={apply} className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700">兑换</button>
         </div>
-        {msg && <div className="mt-2 text-xs text-stone-600">{msg}</div>}
-        <div className="mt-3 text-xs text-stone-400">演示码：WASTELAND2026 / FIRSTSTEP / LASTHOPE</div>
+        {msg && <div className="mt-2 text-xs text-zinc-300">{msg}</div>}
+        <div className="mt-3 text-xs text-zinc-500">演示码：WASTELAND2026 / FIRSTSTEP / LASTHOPE</div>
       </Card>
     </Section>
   );
@@ -839,20 +906,20 @@ export const ViewMerit: React.FC<ViewProps> = ({ state }) => {
       <Card>
         <div className="grid grid-cols-3 gap-3 text-center">
           <div>
-            <div className="text-2xl font-bold text-emerald-700">{merit}</div>
-            <div className="mt-1 text-xs text-stone-500">累计救援</div>
+            <div className="text-2xl font-bold text-emerald-300">{merit}</div>
+            <div className="mt-1 text-xs text-zinc-400">累计救援</div>
           </div>
           <div>
-            <div className="text-2xl font-bold text-amber-700">{recruits}</div>
-            <div className="mt-1 text-xs text-stone-500">待招募集合</div>
+            <div className="text-2xl font-bold text-amber-300">{recruits}</div>
+            <div className="mt-1 text-xs text-zinc-400">待招募集合</div>
           </div>
           <div>
-            <div className="text-2xl font-bold text-rose-700">{deaths}</div>
-            <div className="mt-1 text-xs text-stone-500">队员牺牲</div>
+            <div className="text-2xl font-bold text-rose-300">{deaths}</div>
+            <div className="mt-1 text-xs text-zinc-400">队员牺牲</div>
           </div>
         </div>
       </Card>
-      <div className="mt-3 text-xs text-stone-400">* 仅统计本存档。多次出击叠加。</div>
+      <div className="mt-3 text-xs text-zinc-500">* 仅统计本存档。多次出击叠加。</div>
     </Section>
   );
 };
@@ -861,7 +928,7 @@ export const ViewMerit: React.FC<ViewProps> = ({ state }) => {
 export const ViewCommunity: React.FC = () => (
   <Section title="幸存者社群" subtitle="玩家交流群">
     <Card>
-      <div className="text-sm text-stone-600">本地单人版本不展示真实社群入口。正式版会接入官方 QQ/Discord 群链接。</div>
+      <div className="text-sm text-zinc-300">本地单人版本不展示真实社群入口。正式版会接入官方 QQ/Discord 群链接。</div>
     </Card>
   </Section>
 );
@@ -870,8 +937,8 @@ export const ViewCommunity: React.FC = () => (
 export const ViewFeedback: React.FC = () => (
   <Section title="意见反馈" subtitle="把体验上的问题告诉我们">
     <Card>
-      <textarea rows={4} placeholder="写下你的建议…" className="w-full rounded border border-stone-300 p-2 text-sm" disabled />
-      <div className="mt-2 text-xs text-stone-400">（演示版本：服务端未启用，正式环境会写入反馈表）</div>
+      <textarea rows={4} placeholder="写下你的建议…" className="w-full rounded border border-zinc-700 p-2 text-sm" disabled />
+      <div className="mt-2 text-xs text-zinc-500">（演示版本：服务端未启用，正式环境会写入反馈表）</div>
     </Card>
   </Section>
 );
@@ -882,8 +949,8 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
   return (
     <Section title="系统设置">
       <Card>
-        <h3 className="font-semibold text-stone-800">存档</h3>
-        <div className="mt-2 text-xs text-stone-500">本存档创建于 {new Date(state.createdAt).toLocaleString()}。</div>
+        <h3 className="font-semibold text-zinc-100">存档</h3>
+        <div className="mt-2 text-xs text-zinc-400">本存档创建于 {new Date(state.createdAt).toLocaleString()}。</div>
         <div className="mt-3 flex gap-2">
           <button
             onClick={() => {
@@ -896,8 +963,8 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
         </div>
       </Card>
       <Card>
-        <h3 className="font-semibold text-stone-800">世界种子</h3>
-        <div className="mt-1 text-xs text-stone-500">不同种子会让区域、敌人、战利品生成有微妙差异。</div>
+        <h3 className="font-semibold text-zinc-100">世界种子</h3>
+        <div className="mt-1 text-xs text-zinc-400">不同种子会让区域、敌人、战利品生成有微妙差异。</div>
         <div className="mt-3 flex items-center gap-2">
           <span className="font-mono text-sm">{seed}</span>
           <button
@@ -919,7 +986,7 @@ export const ViewRecruits: React.FC<ViewProps> = ({ state, mutate }) => {
       subtitle={`目前 ${state.recruits.length} 名待招募 · 战团 ${state.survivors.length}/${WARBAND_CAP}`}
     >
       {state.recruits.length === 0 ? (
-        <Card><div className="text-sm text-stone-500">暂无待招募成员。出击搜打撤时，有概率在副本中救出幸存者，他们会先进入这里的花名册，用废土币招募后加入战团。越厉害的幸存者招募费越高。</div></Card>
+        <Card><div className="text-sm text-zinc-400">暂无待招募成员。出击搜打撤时，有概率在副本中救出幸存者，他们会先进入这里的花名册，用废土币招募后加入战团。越厉害的幸存者招募费越高。</div></Card>
       ) : (
         <div className="space-y-2">
           {state.recruits.map((r) => {
@@ -929,14 +996,14 @@ export const ViewRecruits: React.FC<ViewProps> = ({ state, mutate }) => {
               <Card key={r.id}>
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="font-semibold text-stone-800">{r.name}</div>
-                    <div className="text-xs text-stone-500">{r.tierName} · 战力 {r.power}</div>
+                    <div className="font-semibold text-zinc-100">{r.name}</div>
+                    <div className="text-xs text-zinc-400">{r.tierName} · 战力 {r.power}</div>
                     <ul className="mt-1 flex flex-wrap gap-1 text-xs">
-                      {r.traits.map((t) => <li key={t.id} className="rounded bg-sky-50 px-1.5 py-0.5 text-sky-700">{t.name}</li>)}
+                      {r.traits.map((t) => <li key={t.id} className="rounded bg-sky-950/40 px-1.5 py-0.5 text-sky-300">{t.name}</li>)}
                     </ul>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs text-stone-500">招募费 {fee}</div>
+                    <div className="text-xs text-zinc-400">招募费 {fee}</div>
                     <div className="mt-2 flex gap-1">
                       <button
                         onClick={() => mutate((s) => acceptRecruit(s, r.id))}
@@ -944,7 +1011,7 @@ export const ViewRecruits: React.FC<ViewProps> = ({ state, mutate }) => {
                         className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-40"
                         title={full ? '战团已满，需先遣散' : state.coins < fee ? '废土币不足' : ''}
                       >招募</button>
-                      <button onClick={() => mutate((s) => dismissRecruit(s, r.id))} className="rounded bg-stone-500 px-3 py-1 text-xs text-white hover:bg-stone-600">放走</button>
+                      <button onClick={() => mutate((s) => dismissRecruit(s, r.id))} className="rounded bg-zinc-9500 px-3 py-1 text-xs text-white hover:bg-stone-600">放走</button>
                     </div>
                   </div>
                 </div>
@@ -953,7 +1020,7 @@ export const ViewRecruits: React.FC<ViewProps> = ({ state, mutate }) => {
           })}
         </div>
       )}
-      {full && <div className="text-xs text-rose-600">战团已满（{WARBAND_CAP} 人），无法招募新成员，请先在「战团成员」中遣散腾位。</div>}
+      {full && <div className="text-xs text-rose-300">战团已满（{WARBAND_CAP} 人），无法招募新成员，请先在「战团成员」中遣散腾位。</div>}
     </Section>
   );
 };
@@ -985,17 +1052,17 @@ export const ViewMedical: React.FC<ViewProps> = ({ state, mutate, setState }) =>
             <Card key={s.id}>
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-semibold text-stone-800">{s.name}</div>
-                  <div className="text-xs text-stone-500">{s.tierName} · 体质 {s.attributes.vitality}</div>
+                  <div className="font-semibold text-zinc-100">{s.name}</div>
+                  <div className="text-xs text-zinc-400">{s.tierName} · 体质 {s.attributes.vitality}</div>
                 </div>
-                <div className="text-right text-xs text-stone-500">
+                <div className="text-right text-xs text-zinc-400">
                   恢复速率 {rate.toFixed(2)}/分<br />
                   预计满血 {etaText}
                 </div>
               </div>
               <div className="mt-3">{hpBar(status.currentHp, status.maxHp)}</div>
               {isDying && (
-                <div className="mt-2 rounded border border-rose-300 bg-rose-50 p-2 text-xs text-rose-700">
+                <div className="mt-2 rounded border border-rose-800 bg-rose-950/30 p-2 text-xs text-rose-300">
                   <div className="flex items-center justify-between gap-2">
                     <span>☠ 濒死状态·约 {dyingLeft} 分钟内未救治将离世</span>
                     <button
@@ -1024,7 +1091,7 @@ export const ViewMedical: React.FC<ViewProps> = ({ state, mutate, setState }) =>
                   >使用 {m.name}（{Math.round(m.healPct * 100)}%生命+{m.healFlat}）</button>
                 ))}
                 {MEDICINES.every((m) => (state.medicines[m.id] ?? 0) === 0) && (
-                  <span className="text-xs text-stone-400">没有医疗品了，去「废土市场」购买</span>
+                  <span className="text-xs text-zinc-500">没有医疗品了，去「废土市场」购买</span>
                 )}
               </div>
             </Card>
