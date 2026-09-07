@@ -564,6 +564,8 @@ export function createRun(
     branchIndex: 0,
     condition,
     carriedLoot: [],
+    carriedCredits: 0,
+    carriedCreditsBonus: 0,
     bankedLoot: [],
     phase: 'searching',
     searchCount: 0,
@@ -622,6 +624,17 @@ function grantLoot(state: ExtractionRunState, raw: LootItem, rng: () => number, 
   if (item.id === 'ammo') {
     state.ammo += AMMO_LOOT_GRANT;
     return `【弹药】×${AMMO_LOOT_GRANT}（已装填进弹匣，余 ${state.ammo} 发）`;
+  }
+  // v1.0.4：废土币只作为出击搜索的直接钱财，不进入战局背包（不占格、不算材料），单独累计，撤离后折算入基地货币
+  if (item.kind === 'currency' || item.id === 'credits') {
+    const base = (item.value ?? 1) * (item.qty ?? 1);
+    // 金币获取加成（拾荒嗅觉 / 装备词条）直接体现在搜刮到的废土币数量上：
+    // 无加成 = base 个；100% 加成 = 2×base 个。加成随当前穿戴实时计算（含副本内换装）。
+    const bonus = runCombatBonus(state).coinBonus ?? 0;
+    const total = Math.round(base * (1 + bonus));
+    state.carriedCredits += total;
+    state.carriedCreditsBonus += total - base;
+    return `【废土币】×${total}（直接钱财，撤离后折算入基地货币）`;
   }
   const tierNote = item.rarityName ? `(${item.rarityName}阶 · 估值 ${item.value})` : `(估值 ${item.value})`;
   if (!addCarriedLoot(state, item)) return null;
@@ -1157,7 +1170,7 @@ export function fight(
     (12 + state.zone.dangerLevel * 8) * (enemy.boss ? 3 : 1) * (0.8 + rng() * 0.4),
   );
   state.xpGained += xpGain;
-  plog(state, `📈 击败【${enemy.name}】获得经验 +${xpGain}（撤离成功后结算）。`);
+  plog(state, `📈 击败【${enemy.name}】获得经验 +${xpGain}（已实时结算入角色档案）。`);
   // 霸主击杀奖励：额外掉落一件高阶装备（v1.0.2：保底品阶 ≥ 蓝，品阶概率向高阶偏移）
   if (enemy.boss) {
     plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理。`);

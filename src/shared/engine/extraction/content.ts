@@ -42,14 +42,14 @@ export const SURVIVOR_PRESETS: SurvivorLoadout[] = [
 ];
 
 /** 战利品池片段 */
-const LOOT: Record<string, LootItem> = {
+export const LOOT: Record<string, LootItem> = {
   scrap: { id: 'scrap', name: '废金属', kind: 'material', value: 5 },
   meds: { id: 'meds', name: '绷带', kind: 'consumable', value: 12 },
   can: { id: 'can', name: '罐头', kind: 'consumable', value: 8 },
   ammo: { id: 'ammo', name: '弹药', kind: 'material', value: 10 },
   parts: { id: 'parts', name: '电子零件', kind: 'material', value: 18 },
   gear: { id: 'gear', name: '防弹背心', kind: 'gear', value: 45 },
-  credits: { id: 'credits', name: '废土币', kind: 'currency', value: 25 },
+  credits: { id: 'credits', name: '废土币', kind: 'currency', value: 1, qty: 25 },
   serum: { id: 'serum', name: '抗辐射血清', kind: 'consumable', value: 30 },
   battery: { id: 'battery', name: '高能电池', kind: 'material', value: 22 },
   alloy: { id: 'alloy', name: '军用合金', kind: 'material', value: 35 },
@@ -59,6 +59,7 @@ const LOOT: Record<string, LootItem> = {
   stim: { id: 'stim', name: '兴奋剂', kind: 'consumable', value: 22 },
   nutrient: { id: 'nutrient', name: '营养剂', kind: 'consumable', value: 18 },
   nanogel: { id: 'nanogel', name: '纳米凝胶', kind: 'consumable', value: 60 },
+  splint: { id: 'splint', name: '夹板绷带', kind: 'consumable', value: 25 },
   chempack: { id: 'chempack', name: '化学试剂', kind: 'material', value: 14 },
   ration: { id: 'ration', name: '压缩口粮', kind: 'material', value: 9 },
   // —— 投掷物（快捷·投掷槽来源）——

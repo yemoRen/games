@@ -326,7 +326,7 @@ export function bankLoot(
   banked: LootItem[],
 ): SurvivalGameState {
   if (banked.length === 0) return state;
-  let coins = state.coins;
+  const coins = state.coins;
   const materials = [...state.materials];
   const gear = [...state.gear];
   const medicines = { ...state.medicines };
@@ -338,7 +338,9 @@ export function bankLoot(
     const qty = item.qty ?? 1;
     // 装备掉落：入库为可装备库存（带阶级词缀），不折算为材料/币
     if (item.gear) {
-      gear.push(item.gear);
+      // v1.0.4：防御同 id 装备重复入库（避免装备库出现重复/假显示与勾选串号）
+      const droppedGear = item.gear;
+      if (!gear.some((x) => x.id === droppedGear.id)) gear.push(droppedGear);
       gearCount += qty;
       continue;
     }
@@ -356,7 +358,7 @@ export function bankLoot(
       throwCount += qty;
       continue;
     }
-    coins += item.value * qty;
+    // v1.0.4：材料仅入库为背包材料，不再折算为废土币（金额仅由本局搜刮的废土币以 1:1 折算，见 persistRunResult）
     const kind = inferMaterialKind(item.name);
     const existing = materials.find((m) => m.kind === kind && m.name === item.name);
     if (existing) {
@@ -368,7 +370,7 @@ export function bankLoot(
         name: item.name,
         kind,
         value: item.value,
-        quantity: 1,
+        quantity: qty,
       });
     }
   }
@@ -383,7 +385,7 @@ export function bankLoot(
     gear,
     medicines,
     throwables,
-    log: [`【入库】${bankedQty} 件物资折算 ${banked.reduce((s, b) => s + (b.gear ? 0 : b.value * (b.qty ?? 1)), 0)} 废土币${gearNote}${medNote}${throwNote}。`, ...state.log].slice(0, 50),
+    log: [`【入库】${bankedQty} 件物资入库（废土币由本局携带额单独 1:1 折算，材料/装备/药品仅入库、不折算）${gearNote}${medNote}${throwNote}。`, ...state.log].slice(0, 50),
   };
 }
 
@@ -706,7 +708,7 @@ export { computeShelterBonuses, MATERIAL_LABEL, RECIPES, SHELTER_FACILITIES, FAC
 
 // ===== 医疗消耗品 =====
 
-export type MedicineId = 'bandage' | 'antibiotic' | 'medkit' | 'stim' | 'nutrient' | 'serum' | 'nanogel';
+export type MedicineId = 'bandage' | 'antibiotic' | 'medkit' | 'stim' | 'nutrient' | 'serum' | 'nanogel' | 'splint';
 
 export interface MedicineSpec {
   id: MedicineId;
@@ -731,6 +733,7 @@ export const MEDICINES: MedicineSpec[] = [
   { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, treats: ['fatigue'], costCoins: 35, description: '立即回复 10% 生命 + 50 点，消除疲惫（厚血兜底）。' },
   { id: 'serum', name: '血清', healPct: 0.25, healFlat: 50, treats: ['infection', 'bleeding'], costCoins: 70, description: '立即回复 25% 生命 + 50 点，清除感染与失血。' },
   { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection', 'fatigue'], costCoins: 120, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
+  { id: 'splint', name: '夹板绷带', healPct: 0.12, healFlat: 20, treats: ['fracture'], costCoins: 50, description: '立即回复 12% 生命 + 20 点，专门清除骨折（伤势专用）。' },
 ];
 
 export function medicineQty(state: SurvivalGameState, id: MedicineSpec['id']): number {
@@ -829,6 +832,8 @@ export interface MedCraftRecipe {
   /** 消耗材料（按材料大类计） */
   costMaterials: { kind: MaterialKind; qty: number }[];
   costCoins: number;
+  /** v1.0.3c：出击临时制作台专用需求（用本局背包内的 loot id 物资合成）；缺省则按 costMaterials 映射材料大类 */
+  sortieNeeds?: { lootId: string; qty: number }[];
 }
 
 export const MED_CRAFT_RECIPES: MedCraftRecipe[] = [
@@ -837,6 +842,7 @@ export const MED_CRAFT_RECIPES: MedCraftRecipe[] = [
   { id: 'craft-nutrient', name: '调配营养剂', medicine: 'nutrient', costMaterials: [{ kind: 'food', qty: 1 }, { kind: 'chems', qty: 1 }], costCoins: 8 },
   { id: 'craft-serum', name: '提纯血清', medicine: 'serum', costMaterials: [{ kind: 'chems', qty: 2 }, { kind: 'electronics', qty: 1 }], costCoins: 18 },
   { id: 'craft-nanogel', name: '合成纳米凝胶', medicine: 'nanogel', costMaterials: [{ kind: 'chems', qty: 3 }, { kind: 'electronics', qty: 1 }], costCoins: 35 },
+  { id: 'craft-splint', name: '夹板绷带', medicine: 'splint', costMaterials: [{ kind: 'metal', qty: 2 }, { kind: 'chems', qty: 1 }], costCoins: 25, sortieNeeds: [{ lootId: 'meds', qty: 1 }, { lootId: 'scrap', qty: 2 }] },
 ];
 
 function countMaterial(state: SurvivalGameState, kind: MaterialKind): number {
@@ -1228,6 +1234,7 @@ export const LOOT_MEDICINE_MAP: Record<string, MedicineId> = {
   stim: 'stim',
   nutrient: 'nutrient',
   nanogel: 'nanogel',
+  splint: 'splint',
 };
 
 // ===== 任务 / 悬赏（轻量版） =====

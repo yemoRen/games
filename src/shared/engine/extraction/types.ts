@@ -183,6 +183,10 @@ export interface ExtractionRunState {
   condition: CultivatorCondition;
   /** 已搜刮、尚未撤离的物资（死亡/超时即遗失） */
   carriedLoot: LootItem[];
+  /** 本局搜刮直接获得的废土币（不占背包格、不算材料；撤离成功后折算入基地货币） */
+  carriedCredits: number;
+  /** 本局搜刮废土币中，由金币获取加成（拾荒嗅觉/装备词条）额外带来的部分（仅用于结算文案展示，已计入 carriedCredits） */
+  carriedCreditsBonus: number;
   /** 已安全入库的物资 */
   bankedLoot: LootItem[];
   /** 救援到的幸存者（仅 carry 中，撤离时入库到招募集合） */

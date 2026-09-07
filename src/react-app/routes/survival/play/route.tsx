@@ -34,7 +34,6 @@ import {
   investFaction,
   nextFactionCost,
   buildSortieLoadout,
-  aggregateGearCombat,
   computeShelterBonuses,
   RECIPES,
   SHELTER_FACILITIES,
@@ -55,6 +54,8 @@ import {
   applySortieResult,
   recoverAll as _recoverAll,
   MEDICINES,
+  MED_CRAFT_RECIPES,
+  type MedicineId,
   MAIN_EQUIP_SLOTS,
   QUICK_SLOTS,
   THROWABLES,
@@ -122,6 +123,56 @@ import {
   affixColor,
   affixLabel,
 } from '@shared/engine/survival/affixes';
+
+// ===== 出击临时制作台（v1.0.3c）=====
+// 材料大类 → 本局背包内对应的 loot id（用于把「医疗制作台」配方映射到副本内可搜到的物资）
+const MATERIAL_TO_LOOT: Record<string, string> = {
+  metal: 'scrap',
+  chems: 'chempack',
+  food: 'ration',
+  electronics: 'parts',
+};
+
+// 药品 → 本局背包内对应的 loot 模板（产出的医疗品以 loot 形式进入临时背包，可直接「💊 使用」）
+const MED_LOOT_TEMPLATE: Partial<Record<MedicineId, { id: string; name: string; value: number }>> = {
+  bandage: { id: 'meds', name: '绷带', value: 12 },
+  medkit: { id: 'medkit', name: '急救包', value: 40 },
+  stim: { id: 'stim', name: '兴奋剂', value: 22 },
+  nutrient: { id: 'nutrient', name: '营养剂', value: 18 },
+  serum: { id: 'serum', name: '抗辐射血清', value: 30 },
+  nanogel: { id: 'nanogel', name: '纳米凝胶', value: 60 },
+  splint: { id: 'splint', name: '夹板绷带', value: 25 },
+};
+
+// loot id → 中文显示名（仅用于合成面板展示需求）
+const LOOT_NAME: Record<string, string> = {
+  scrap: '废金属',
+  chempack: '化学试剂',
+  ration: '压缩口粮',
+  parts: '电子零件',
+  meds: '绷带',
+};
+
+interface SortieCraftDef {
+  id: string;
+  medicine: MedicineId;
+  name: string;
+  needs: { lootId: string; qty: number }[];
+  /** 合成所需废土币：从本局临时背包搜到的废土币（carriedCredits）中扣除 */
+  costCoins: number;
+}
+
+// 由「医疗制作台」配方派生出击临时制作台配方：优先用 sortieNeeds，否则按材料大类映射
+const SORTIE_MED_CRAFT: SortieCraftDef[] = MED_CRAFT_RECIPES.map((r) => ({
+  id: r.id,
+  medicine: r.medicine,
+  name: r.name,
+  needs:
+    r.sortieNeeds && r.sortieNeeds.length > 0
+      ? r.sortieNeeds
+      : r.costMaterials.map((c) => ({ lootId: MATERIAL_TO_LOOT[c.kind] ?? c.kind, qty: c.qty })),
+  costCoins: r.costCoins,
+}));
 
 /**
  * 词条说明：点击展开小气泡（移动端友好），点击其他区域自动关闭，不遮挡屏幕。
@@ -953,7 +1004,11 @@ function InventoryPanel(props: {
       Object.values(slots).filter((x): x is string => typeof x === 'string'),
     ),
   );
-  const ownedGear = state.gear.filter((g) => !equippedGearIds.has(g.id));
+  // v1.0.4：装备库按阶位从高到低降序显示（高阶置顶）
+  const ownedGear = state.gear
+    .filter((g) => !equippedGearIds.has(g.id))
+    .slice()
+    .sort((a, b) => (b.tier ?? 0) - (a.tier ?? 0) || (b.value ?? 0) - (a.value ?? 0));
   const filteredGear = gearCat === 'all' ? ownedGear : ownedGear.filter((g) => g.slot === gearCat);
   const gearPage = usePagination(filteredGear, 6);
   const selectedGear = ownedGear.filter((g) => recycleSel[g.id]);
@@ -1180,11 +1235,11 @@ function InventoryPanel(props: {
         ) : (
           <>
             <ul className="space-y-2">
-              {gearPage.slice.map((g) => {
+              {gearPage.slice.map((g, gi) => {
                 const checked = !!recycleSel[g.id];
                 return (
                   <li
-                    key={g.id}
+                    key={`${g.id}-${gi}`}
                     className={`rounded border p-3 transition ${
                       checked ? 'border-rose-700/60 bg-rose-950/10' : 'border-zinc-800 bg-zinc-950/50'
                     }`}
@@ -1437,20 +1492,19 @@ function SortiePanel(props: {
     // 死亡/超时结算：战局背包清零，但安全箱 100% 保留（搜打撤保底设计）
     if (s.phase === 'dead' || s.phase === 'timeout') bankSecureIntoBanked(s);
     const failed = s.phase === 'dead' || s.phase === 'timeout';
-    // v1.0.3 新需求①：经验已在「战斗后实时结算」（含装备 xpBonus 加成）直接写入角色档案，
-    // 此处不再重复入账；仅保留拾荒嗅觉的金币加成结算。
-    const special = prof ? aggregateGearCombat(state, prof.id) : null;
-    setState((prev) => {
-      let next = bankLoot(prev, s.bankedLoot);
-      if (!failed && special && (special.coinBonus ?? 0) > 0) {
-        // 拾荒嗅觉：按撤离带回的物资价值额外加成废土币（经验已在战斗中实时结算，此处仅结算金币）
-        const coinBonusCoins = Math.round(
-          s.bankedLoot.reduce((a, b) => a + (b.gear ? 0 : b.value * (b.qty ?? 1)), 0) * (special.coinBonus ?? 0),
-        );
-        if (coinBonusCoins > 0) {
-          next = { ...next, coins: next.coins + coinBonusCoins };
-          next = { ...next, log: [`【词条】拾荒嗅觉生效，额外 +${coinBonusCoins} 废土币。`, ...next.log].slice(0, 50) };
+      // v1.0.4：金币获取加成（拾荒嗅觉 / 装备词条）已在「搜刮」时直接计入废土币数量，
+      // 故此处只做结算文案，不再重复折算（carriedCredits 已含加成）。
+      setState((prev) => {
+        let next = bankLoot(prev, s.bankedLoot);
+        if (!failed && s.carriedCreditsBonus > 0) {
+          // 仅展示加成部分，避免金额被重复加算
+          next = { ...next, log: [`【词条】拾荒嗅觉生效，搜刮废土币额外 +${s.carriedCreditsBonus}（已计入本局废土币）。`, ...next.log].slice(0, 50) };
         }
+      // v1.0.4：撤离成功后，本局搜刮的直接钱财（废土币）折算入基地货币；阵亡/超时则不结算（随战局背包一起遗失）
+      if (!failed && s.carriedCredits > 0) {
+        const gained = s.carriedCredits;
+        next = { ...next, coins: next.coins + gained };
+        next = { ...next, log: [`【撤离结算】本局搜刮废土币 ×${gained} 已折算入基地货币。`, ...next.log].slice(0, 50) };
       }
       if (s.bankedNpc) next = addRecruit(next, s.bankedNpc);
       let after = applySortieResult(next, {
@@ -1593,9 +1647,9 @@ function SortiePanel(props: {
       // 投掷物脱离：消耗基地库存的烟雾弹/闪光弹（无库存则不可用）
       if ((state.throwables?.smoke ?? 0) <= 0 && (state.throwables?.flash ?? 0) <= 0) return;
     }
-    resolveEncounter(s, action, rngRef.current);
     // 新需求①：战斗后实时结算经验（含装备 xpBonus 加成），立即写入角色档案；途中升级则副本状态回复全满、伤势清除
     const xpBefore = s.xpGained ?? 0;
+    resolveEncounter(s, action, rngRef.current);
     const xpDelta = (s.xpGained ?? 0) - xpBefore;
     if (xpDelta > 0 && active) {
       const special = buildSortieLoadout(state, active.id)?.bonus;
@@ -1722,6 +1776,45 @@ function SortiePanel(props: {
     sync();
   };
 
+  /** v1.0.3c 出击临时制作台：判断能否用本局背包材料 + 本局废土币合成某药品 */
+  const canCraftInSortie = (r: SortieCraftDef): boolean => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return false;
+    const counts: Record<string, number> = {};
+    for (const it of s.carriedLoot) counts[it.id] = (counts[it.id] ?? 0) + (it.qty ?? 1);
+    return (
+      r.needs.every((n) => (counts[n.lootId] ?? 0) >= n.qty) && s.carriedCredits >= r.costCoins
+    );
+  };
+
+  /** v1.0.3c 出击临时制作台：消耗本局背包内的材料 + 本局搜到的废土币，合成对应药品（进入临时背包，可就地使用） */
+  const doCraftInSortie = (recipeId: string) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    const r = SORTIE_MED_CRAFT.find((x) => x.id === recipeId);
+    if (!r || !canCraftInSortie(r)) return;
+    // 1) 按 loot id 消耗所需材料（整格/堆叠均可）
+    for (const n of r.needs) {
+      let remain = n.qty;
+      for (let i = 0; i < s.carriedLoot.length && remain > 0; i++) {
+        const it = s.carriedLoot[i];
+        if (it.id !== n.lootId) continue;
+        const take = Math.min(it.qty ?? 1, remain);
+        it.qty = (it.qty ?? 1) - take;
+        remain -= take;
+      }
+    }
+    s.carriedLoot = s.carriedLoot.filter((it) => (it.qty ?? 1) > 0);
+    // 2) 扣除本局废土币（从临时背包搜到的货币里结算）
+    if (r.costCoins > 0) s.carriedCredits -= r.costCoins;
+    // 3) 产出对应药品 loot（若背包格已满则顺延到下一次搜刮/撤离带回，这里忽略极端满格）
+    const tpl = MED_LOOT_TEMPLATE[r.medicine];
+    const medName = MEDICINES.find((m) => m.id === r.medicine)?.name ?? r.medicine;
+    if (tpl) addCarriedLoot(s, { id: tpl.id, name: tpl.name, kind: 'consumable', value: tpl.value, qty: 1 });
+    s.log.push(`[${fmtClock(s.elapsedSec)}] ⚗️ 临时制作台合成【${medName}】×1（消耗本局背包材料 + 废土币 ${r.costCoins}）。`);
+    sync();
+  };
+
   const doExtract = () => {
     const s = runRef.current;
     if (!s || s.phase === 'dead' || s.phase === 'extracted') return;
@@ -1813,6 +1906,7 @@ function SortiePanel(props: {
   const armorCur = armor?.current ?? 0;
   const armorMax = armor?.max ?? 0;
   const carried = run?.carriedLoot ?? [];
+  // v1.0.4：携带估值仅统计战局背包内的物资（材料/装备/药品等）；废土币为单独直接钱财，已在独立行展示，不计入此处估值
   const carriedValue = carried.reduce((a, b) => a + b.value * (b.qty ?? 1), 0);
   const banked = run?.bankedLoot ?? [];
   const bankedValue = banked.reduce((a, b) => a + b.value * (b.qty ?? 1), 0);
@@ -2107,12 +2201,77 @@ function SortiePanel(props: {
             )}
           </div>
 
-          {/* ② 场景叙事区（当前场景文本，区别于底部滚动日志） */}
+          {/* ② 场景叙事区 + 系统消息日志：整合为同一面板（场景在上，日志在下） */}
           <div className="rounded-lg border border-sky-900/50 bg-zinc-950/70 p-4">
             <div className="mb-2 text-[11px] uppercase tracking-wider text-sky-500/70">— 场景 —</div>
-            <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-sky-100/90">
+            <pre className="mb-3 whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-sky-100/90">
               {run.scene}
             </pre>
+            <div className="border-t border-zinc-800 pt-3">
+              <h2 className="mb-2 text-sm font-medium text-zinc-300">系统消息日志</h2>
+              <div className="max-h-[300px] space-y-1 overflow-y-auto pr-1 font-mono text-[13px] leading-relaxed">
+                {run.log.map((line, i) => {
+                  const m = line.match(/^\[(\d{2}:\d{2})\]\s*/);
+                  const body = m ? line.slice(m[0].length) : line;
+                  const tone =
+                    body.startsWith('⚔') || body.startsWith('⚠') || body.startsWith('⏰')
+                      ? 'text-rose-300'
+                      : body.startsWith('✔') || body.startsWith('🚁') || body.startsWith('❗')
+                        ? 'text-emerald-300'
+                        : body.startsWith('【系统】') || body.startsWith('【生存系统】')
+                          ? 'text-sky-300'
+                          : 'text-zinc-400';
+                  const battle = battleByLogIndex.get(i);
+                  return (
+                    <div key={i}>
+                      <p className={tone}>
+                        {m && <span className="mr-1 text-zinc-600">[{m[1]}]</span>}
+                        {body}
+                      </p>
+                      {battle && (
+                        <details className="my-1 rounded border border-rose-900/60 bg-rose-950/10 px-2 py-1">
+                          <summary className="cursor-pointer select-none text-[11px] text-rose-300/90 hover:text-rose-200">
+                            📊 展开战斗回放（{battle.rounds.length} 回合 · 输出 {battle.dmgDealt} / 承伤 {battle.dmgTaken}
+                            {battle.win ? ' · 胜利' : ' · 战败'}）
+                          </summary>
+                          <div className="mt-1.5 space-y-1.5">
+                            {/* 六维属性交互点评 */}
+                            {battle.attrNotes.length > 0 && (
+                              <div className="rounded bg-zinc-900/70 p-1.5">
+                                <div className="mb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
+                                  六维属性与战斗
+                                </div>
+                                {battle.attrNotes.map((n, ni) => (
+                                  <p key={ni} className="text-[11px] text-sky-300/90">
+                                    ◈ {n}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+                            {/* 逐回合交互 + 掉血 */}
+                            {battle.rounds.map((r) => (
+                              <div key={r.round} className="rounded bg-zinc-900/50 p-1.5">
+                                <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                                  <span>第 {r.round} 回合</span>
+                                  <span className="font-mono">
+                                    ❤ 你 {r.hpSelf} ｜ 敌 {r.hpEnemy}
+                                  </span>
+                                </div>
+                                <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-300">{r.text}</p>
+                              </div>
+                            ))}
+                            {/* 一段战斗描写 */}
+                            <p className="rounded border-l-2 border-rose-700/60 bg-zinc-900/60 p-1.5 text-[11px] italic leading-relaxed text-zinc-300">
+                              {battle.narrative}
+                            </p>
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           {/* ③ 操作按钮组：遭遇抉择 / 撤离点抉择 / 常规行动（三态互斥） */}
@@ -2336,6 +2495,10 @@ function SortiePanel(props: {
                 {carried.length} / {RAID_PACK_CAPACITY} 格 · 估值 {carriedValue}
               </span>
             </h2>
+            <div className="mb-2 flex items-center justify-between rounded border border-amber-900/40 bg-amber-950/10 px-2 py-1 text-[11px]">
+              <span className="text-amber-300">💰 废土币（直接钱财，不占背包格）</span>
+              <span className="font-semibold text-amber-200">×{run.carriedCredits}（撤离后折算入基地货币）</span>
+            </div>
             <p className="mb-2 text-[11px] text-amber-500/80">
               本局搜刮的战利品：撤离成功才入库，阵亡 / 超时将全部清零；安全箱内物资 100% 保留。穿戴装备不在本局背包内。
               回复类物资（绷带/急救包/血清等）可就地「💊 使用」（可消除对应伤势），没用完的撤离成功后自动带回基地医疗背包。
@@ -2513,77 +2676,56 @@ function SortiePanel(props: {
                 )}
               </div>
             </div>
+            {/* ⑤ 临时制作台：用本局背包材料合成医疗品（与基地「医疗·制作台」同源） */}
+            <div className="mt-3 rounded border border-sky-900/50 bg-sky-950/10 p-2">
+              <div className="mb-1.5 flex items-center gap-1 text-[11px] text-sky-400/90">
+                <span>⚗️ 临时制作台</span>
+                <span className="text-zinc-500">（消耗本局背包材料，合成「医疗·制作台」里的物品）</span>
+              </div>
+              {SORTIE_MED_CRAFT.map((r) => {
+                const medName = MEDICINES.find((m) => m.id === r.medicine)?.name ?? r.medicine;
+                const counts: Record<string, number> = {};
+                for (const it of carried) counts[it.id] = (counts[it.id] ?? 0) + (it.qty ?? 1);
+                const ok = r.needs.every((n) => (counts[n.lootId] ?? 0) >= n.qty) && run.carriedCredits >= r.costCoins;
+                return (
+                  <div key={r.id} className="mb-1.5 rounded border border-zinc-800 bg-zinc-950/60 px-2 py-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-zinc-200">合成 {medName}</span>
+                      <button
+                        onClick={() => doCraftInSortie(r.id)}
+                        disabled={!ok || isOver}
+                        className="rounded border border-sky-700/60 px-1.5 py-0.5 text-[10px] text-sky-300 hover:bg-sky-900/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
+                      >
+                        合成
+                      </button>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
+                      {r.needs.map((n) => {
+                        const have = counts[n.lootId] ?? 0;
+                        return (
+                          <span key={n.lootId} className={have >= n.qty ? 'text-emerald-400' : 'text-rose-400'}>
+                            {LOOT_NAME[n.lootId] ?? n.lootId}×{n.qty}
+                            <span className="opacity-70">（持 {have}）</span>
+                          </span>
+                        );
+                      })}
+                      {r.costCoins > 0 && (
+                        <span className={run.carriedCredits >= r.costCoins ? 'text-emerald-400' : 'text-rose-400'}>
+                          废土币×{r.costCoins}
+                          <span className="opacity-70">（持 {run.carriedCredits}）</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
             <p className="mt-3 border-t border-zinc-800 pt-2 text-xs text-zinc-500">
               已入库：<span className="text-emerald-400">{bankedValue}</span> 废土币（{bankedQty} 件）
             </p>
           </div>
 
-          {/* ⑤ 系统消息日志（带对局时间戳） */}
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-            <h2 className="mb-2 text-sm font-medium text-zinc-300">系统消息日志</h2>
-            <div className="max-h-[300px] space-y-1 overflow-y-auto pr-1 font-mono text-[13px] leading-relaxed">
-              {run.log.map((line, i) => {
-                const m = line.match(/^\[(\d{2}:\d{2})\]\s*/);
-                const body = m ? line.slice(m[0].length) : line;
-                const tone =
-                  body.startsWith('⚔') || body.startsWith('⚠') || body.startsWith('⏰')
-                    ? 'text-rose-300'
-                    : body.startsWith('✔') || body.startsWith('🚁') || body.startsWith('❗')
-                      ? 'text-emerald-300'
-                      : body.startsWith('【系统】') || body.startsWith('【生存系统】')
-                        ? 'text-sky-300'
-                        : 'text-zinc-400';
-                const battle = battleByLogIndex.get(i);
-                return (
-                  <div key={i}>
-                    <p className={tone}>
-                      {m && <span className="mr-1 text-zinc-600">[{m[1]}]</span>}
-                      {body}
-                    </p>
-                    {battle && (
-                      <details className="my-1 rounded border border-rose-900/60 bg-rose-950/10 px-2 py-1">
-                        <summary className="cursor-pointer select-none text-[11px] text-rose-300/90 hover:text-rose-200">
-                          📊 展开战斗回放（{battle.rounds.length} 回合 · 输出 {battle.dmgDealt} / 承伤 {battle.dmgTaken}
-                          {battle.win ? ' · 胜利' : ' · 战败'})
-                        </summary>
-                        <div className="mt-1.5 space-y-1.5">
-                          {/* 六维属性交互点评 */}
-                          {battle.attrNotes.length > 0 && (
-                            <div className="rounded bg-zinc-900/70 p-1.5">
-                              <div className="mb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
-                                六维属性与战斗
-                              </div>
-                              {battle.attrNotes.map((n, ni) => (
-                                <p key={ni} className="text-[11px] text-sky-300/90">
-                                  ◈ {n}
-                                </p>
-                              ))}
-                            </div>
-                          )}
-                          {/* 逐回合交互 + 掉血 */}
-                          {battle.rounds.map((r) => (
-                            <div key={r.round} className="rounded bg-zinc-900/50 p-1.5">
-                              <div className="flex items-center justify-between text-[10px] text-zinc-500">
-                                <span>第 {r.round} 回合</span>
-                                <span className="font-mono">
-                                  ❤ 你 {r.hpSelf} ｜ 敌 {r.hpEnemy}
-                                </span>
-                              </div>
-                              <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-300">{r.text}</p>
-                            </div>
-                          ))}
-                          {/* 一段战斗描写 */}
-                          <p className="rounded border-l-2 border-rose-700/60 bg-zinc-900/60 p-1.5 text-[11px] italic leading-relaxed text-zinc-300">
-                            {battle.narrative}
-                          </p>
-                        </div>
-                      </details>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          {/* ⑤ 系统消息日志已上移并整合进「场景叙事区」面板（见 ②），此处不再重复渲染 */}
 
           {isOver && (
             <div
@@ -2600,7 +2742,7 @@ function SortiePanel(props: {
               </h2>
               <p className="mb-3 text-sm text-zinc-300">
                 {run.phase === 'extracted'
-                  ? `物资已安全入库，估值 ${bankedValue} 废土币（已折算进基地货币）。`
+                  ? `撤离结算：本局搜刮废土币 ×${run.carriedCredits} 已 1:1 折算入基地货币；带回物资估值 ⛁${bankedValue}（入库为材料/装备/药品，需贩卖/回收才折算为废土币）。`
                   : run.phase === 'timeout'
                     ? `对局时间耗尽，救援未能抵达。未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中救治。`
                     : `未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中用货币或医疗品救治，否则将离世。`}
