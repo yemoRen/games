@@ -11,8 +11,9 @@
 import type { Attributes } from '@shared/types/cultivator';
 import type { CultivatorCondition } from '@shared/types/condition';
 import type { SurvivorProfile } from '@shared/engine/survival/chargen';
-import type { GearItem } from '@shared/engine/survival/economy';
+import type { GearItem, GearSlot } from '@shared/engine/survival/economy';
 import type { AppliedAffix } from '@shared/engine/survival/affixes';
+import type { Injury } from '@shared/engine/survival/recovery';
 
 /**
  * 搜打撤战斗加成（来自词条 / 装备 / 避难所）。
@@ -141,6 +142,36 @@ export interface SurvivorLoadout {
   bonus?: CombatBonus;
 }
 
+// ===== v1.0.3：本局临时穿戴（支持在临时背包里换装） =====
+
+/** 本局某槽位正在穿戴的装备 */
+export interface RunEquippedGear {
+  slot: GearSlot;
+  gear: GearItem;
+  /** true = 本局在副本里换上的（撤离成功才入库并保留）；false = 出击前从基地带来的 */
+  fromRun: boolean;
+}
+
+/** 六维深化派生值（v1.0.3）：由当前有效六维实时推导，供引擎与 UI 共用 */
+export interface AttrEffects {
+  /** 战局背包总格数 = 基础 12 + floor(力量/5) */
+  packCapacity: number;
+  /** 搜索/潜行等行动的耗时系数（敏捷越高越快） */
+  timeScale: number;
+  /** 潜行成功率加成（敏捷） */
+  sneakBonus: number;
+  /** 续航时限（分钟）= 耐力 × 2 —— 超出后开始判定疲惫 */
+  staminaMinutes: number;
+  /** 遇敌概率削减（感知预警） */
+  encounterAvoid: number;
+  /** 搜刮额外物资概率（感知） */
+  lootExtraChance: number;
+  /** 震伤概率抗性系数（意志） */
+  shockResist: number;
+  /** 失血概率抗性系数（体质） */
+  bleedResist: number;
+}
+
 export interface ExtractionRunState {
   survivor: SurvivorLoadout;
   zone: DangerZone;
@@ -192,6 +223,27 @@ export interface ExtractionRunState {
   quickThrow?: string;
   /** 增益药剂备战次数（UI 使用增益时 +1；每次交战消耗 1 次，属性临时提升） */
   buffCharges: number;
+  // ===== v1.0.3 追加 =====
+  /** 本局累积的伤势（战斗中按血量阶段产生 / 耐力透支产生），实时影响六维与战斗 */
+  injuries: Injury[];
+  /** 本局各槽位正在穿戴的装备（可被副本内临时换装改写） */
+  equipped: RunEquippedGear[];
+  /** 六维之外的固定加成（避难所/势力/词条等），换装时保持不变 */
+  attrBonusFixed: Partial<Attributes>;
+  /** 不含「装备战斗词条」的基础战斗加成（词条 + 避难所），换装时按当前装备重新叠加 */
+  bonusBase: CombatBonus;
+  /** 未经装备/加成的纯基础六维（debuff 削减的基数） */
+  baseAttributes: Attributes;
+  /** 上一次疲惫判定时的对局分钟数（避免同一分钟反复判定） */
+  lastFatigueCheckMin?: number;
+  // ===== v1.0.3 补丁：出击 HP 锚点 =====
+  /** 出击起始「最大血量」= 档案持久 maxHp + 临时驻防加成（medbay 等），仅本局有效 */
+  startMaxHp: number;
+  /** 出击起始「持久 maxHp」（不含临时驻防加成），结算回写基地时以此为准，避免驻防加成泄漏进角色档案 */
+  baseMaxHp: number;
+  /** v1.0.3 新需求：出击途中分配体质点 / 选择带气血词条时，档案最大血量相对出击起点的增量。
+   *  配合本局已穿戴装备的气血加成，作为副本战斗单位最大血量锚点，使加点 / 词条在副本内即时生效。 */
+  profileMaxHpBonus: number;
 }
 
 // ===== 战斗回放（v1.0.2） =====

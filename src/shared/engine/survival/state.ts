@@ -46,6 +46,7 @@ import {
   treatInjury as treatInjuryImpl,
   applyPostSortie as applyPostSortieImpl,
   applyNearDeath as applyNearDeathImpl,
+  deriveMaxHp,
   MED_DURATION_MIN,
 } from './recovery';
 
@@ -725,11 +726,11 @@ export const MEDICINES: MedicineSpec[] = [
   { id: 'bandage', name: '止血绷带', healPct: 0.12, healFlat: 20, costCoins: 15, description: '立即回复 12% 生命 + 20 点，无伤势治疗。' },
   { id: 'antibiotic', name: '抗生素', healPct: 0.10, healFlat: 16, treats: ['infection'], costCoins: 25, description: '立即回复 10% 生命 + 16 点，清除感染。' },
   { id: 'medkit', name: '急救箱', healPct: 0.30, healFlat: 60, treats: ['bleeding', 'shellShock'], costCoins: 60, description: '立即回复 30% 生命 + 60 点，清除失血/震伤。' },
-  // —— 新增恢复道具 ——
-  { id: 'stim', name: '兴奋剂', healPct: 0.20, healFlat: 25, costCoins: 40, description: '立即回复 20% 生命 + 25 点，无伤势治疗（应急续航）。' },
-  { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, costCoins: 35, description: '立即回复 10% 生命 + 50 点，无伤势治疗（厚血兜底）。' },
+  // —— 新增恢复道具 ——（v1.0.3：兴奋剂/营养剂可消除「疲惫」，营养剂兼具厚血兜底）
+  { id: 'stim', name: '兴奋剂', healPct: 0.20, healFlat: 25, treats: ['fatigue'], costCoins: 40, description: '立即回复 20% 生命 + 25 点，消除疲惫（应急续航）。' },
+  { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, treats: ['fatigue'], costCoins: 35, description: '立即回复 10% 生命 + 50 点，消除疲惫（厚血兜底）。' },
   { id: 'serum', name: '血清', healPct: 0.25, healFlat: 50, treats: ['infection', 'bleeding'], costCoins: 70, description: '立即回复 25% 生命 + 50 点，清除感染与失血。' },
-  { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection'], costCoins: 120, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
+  { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection', 'fatigue'], costCoins: 120, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
 ];
 
 export function medicineQty(state: SurvivalGameState, id: MedicineSpec['id']): number {
@@ -988,6 +989,8 @@ export interface SortieResultInput {
   maxHp: number;
   /** 本次出击战斗获得的经验（撤离成功才结算入账） */
   xpGained?: number;
+  /** v1.0.3：本局在副本中累积的伤势（战斗/疲惫产生），撤离成功也带回基地 */
+  injuries?: Injury[];
 }
 
 export function applySortieResult(state: SurvivalGameState, input: SortieResultInput, now: number = Date.now()): SurvivalGameState {
@@ -1004,6 +1007,14 @@ export function applySortieResult(state: SurvivalGameState, input: SortieResultI
     : applyPostSortieImpl(status, finalHp, damageRatio, now);
   // 同步 maxHp
   nextStatus.maxHp = nextMaxHp;
+  // v1.0.3：把副本内累积的伤势（震伤/失血/骨折/疲惫）带回基地
+  if (input.injuries && input.injuries.length > 0) {
+    for (const inj of input.injuries) {
+      if (!nextStatus.injuries.includes(inj)) nextStatus.injuries = [...nextStatus.injuries, inj];
+    }
+  }
+  // 带伤即不能立刻再出击（sortieReady 需「近满血 + 无伤」）
+  nextStatus.sortieReady = finalHp >= nextMaxHp * 0.95 && nextStatus.injuries.length === 0;
   const logEntry: SortieLog = {
     id: `sl-${now}-${Math.random().toString(36).slice(2, 8)}`,
     at: new Date(now).toISOString(),
@@ -1061,10 +1072,19 @@ export function grantSortieXp(state: SurvivalGameState, survivorId: string, xp: 
   if (levels === 0) {
     return { ...state, survivors };
   }
-  // 升级：补满状态（生命拉满到 maxHp）
+  // v1.0.3：升级＝状态全满 + 伤势（debuff）全部清除
   const status = state.survivorStatus[survivorId];
   const survivorStatus = status
-    ? { ...state.survivorStatus, [survivorId]: { ...status, currentHp: status.maxHp } }
+    ? {
+        ...state.survivorStatus,
+        [survivorId]: {
+          ...status,
+          currentHp: status.maxHp,
+          injuries: [],
+          lastRecoveredAt: new Date(Date.now()).toISOString(),
+          sortieReady: true,
+        },
+      }
     : state.survivorStatus;
   // 词条三选一（系统提示）：已有待选则不覆盖（多级连升共用一次选择，点数照常累计）
   if (!p.pendingTraitPick || p.pendingTraitPick.length === 0) {
@@ -1075,9 +1095,35 @@ export function grantSortieXp(state: SurvivalGameState, survivorId: string, xp: 
     survivors,
     survivorStatus,
     log: [
-      `【系统】${p.name} 升至 Lv.${p.level}！状态已补满，获得 ${levels * FREE_POINTS_PER_LEVEL} 点自由属性点与词条强化三选一。`,
+      `【系统】${p.name} 升至 Lv.${p.level}！状态已补满、伤势全清，获得 ${levels * FREE_POINTS_PER_LEVEL} 点自由属性点与词条强化三选一。`,
       ...state.log,
     ].slice(0, 50),
+  };
+}
+
+/**
+ * 按当前六维 + 词条气血重算该成员的最大生命上限（v1.0.3b）。
+ * 体质（vitality）每点 +20 气血，词条气血 hpBonus 直接叠加；
+ * 仅当新上限更高时提升，并把增量同步加到当前生命（加点/升级不掉血）。
+ */
+function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): SurvivalGameState {
+  const p = state.survivors.find((s) => s.id === survivorId);
+  const st = state.survivorStatus[survivorId];
+  if (!p || !st) return state;
+  const traitC = aggregateTraitCombat(p.traits);
+  const newMax = deriveMaxHp(p.attributes, traitC.hpBonus);
+  if (newMax <= st.maxHp) return state;
+  const delta = newMax - st.maxHp;
+  return {
+    ...state,
+    survivorStatus: {
+      ...state.survivorStatus,
+      [survivorId]: {
+        ...st,
+        maxHp: newMax,
+        currentHp: Math.min(newMax, st.currentHp + delta),
+      },
+    },
   };
 }
 
@@ -1099,7 +1145,7 @@ export function allocateFreePoint(
   p.tierName = tierName;
   const survivors = [...state.survivors];
   survivors[idx] = p;
-  return { ...state, survivors };
+  return recomputeMaxHpFor({ ...state, survivors }, survivorId);
 }
 
 /** 升级词条三选一：选定候选 → 词条入库 + 属性增量叠加 + 重算战力段位 */
@@ -1128,11 +1174,13 @@ export function chooseTraitPick(
   p.pendingTraitPick = undefined;
   const survivors = [...state.survivors];
   survivors[idx] = p;
-  return {
+  const next = {
     ...state,
     survivors,
     log: [`【系统】${p.name} 觉醒词条「${trait.name}」！`, ...state.log].slice(0, 50),
   };
+  // v1.0.3b：词条可能改体质/带气血加成，重算最大生命上限
+  return recomputeMaxHpFor(next, survivorId);
 }
 
 // ===== 装备回收 / 装备库辅助 =====

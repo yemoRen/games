@@ -12,11 +12,13 @@ import type { Attributes } from '@shared/types/cultivator';
 import type {
   SurvivalGameState,
   GearSlot,
+  GearItem,
   SurvivorTrait,
 } from '@shared/engine/survival';
 import {
   newGame,
   bankLoot,
+  ALL_ATTR_KEYS,
   addRecruit,
   acceptRecruit,
   dismissRecruit,
@@ -63,6 +65,7 @@ import {
   xpNeededForLevel,
   allocateFreePoint,
   chooseTraitPick,
+  grantSortieXp,
   recycleGear,
   gearAttrBonus,
 } from '@shared/engine/survival';
@@ -77,6 +80,11 @@ import {
   resolveEncounter,
   lootCorpse,
   consumeCarriedItem,
+  equipCarriedGear,
+  unequipRunGear,
+  runEffectiveAttributes,
+  injuryAttrTextOf,
+  cureInjuries,
   advanceBranch,
   goToExtract,
   leaveExtract,
@@ -97,7 +105,14 @@ import {
 } from '@shared/engine/extraction';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
 import { loadGame, saveGame, clearSave } from '@shared/engine/survival';
-import { INJURY_LABEL, INJURY_DESC } from '@shared/engine/survival/recovery';
+import {
+  INJURY_LABEL,
+  INJURY_DESC,
+  hpStage,
+  HP_STAGE_META,
+  applyInjuryToBase,
+  type Injury,
+} from '@shared/engine/survival/recovery';
 import { getCurrentUser } from '@shared/engine/survival/account';
 import { MenuDrawer } from '../menu/MenuDrawer';
 import {
@@ -195,30 +210,95 @@ const DANGER_LABEL: Record<number, string> = {
   6: '危6·禁区',
 };
 
-function attrBars(attrs: Attributes, bonus?: Partial<Attributes>) {
-  const max = Math.max(20, ...Object.values(attrs));
+/**
+ * 六维属性条：最终值（基础值+加成值-减损值）
+ *  - 基础值：白色（角色原始六维）
+ *  - 加成值：绿色（装备 + 词条等正向加成）
+ *  - 减损值：红色（伤势 debuff 对基础六维的削减）
+ *  - 最终值：有减损时呈粉红，否则常规色
+ */
+function attrBars(base: Attributes, bonus?: Partial<Attributes>, reduction?: Partial<Attributes>) {
+  const keys = Object.keys(base) as (keyof Attributes)[];
+  const finals = keys.map((k) => (base[k] ?? 0) + (bonus?.[k] ?? 0) - (reduction?.[k] ?? 0));
+  const maxV = Math.max(20, ...finals);
   return (
     <div className="grid grid-cols-3 gap-x-3 gap-y-1.5 text-[12px]">
-      {(Object.keys(attrs) as (keyof Attributes)[]).map((k) => {
+      {keys.map((k, i) => {
         const b = bonus?.[k] ?? 0;
+        const r = reduction?.[k] ?? 0;
+        const final = finals[i];
+        const reduced = r > 0;
+        const showParen = b !== 0 || r !== 0;
         return (
           <div key={k}>
             <div className="flex justify-between text-zinc-400">
               <span>{attrLabel(k)}</span>
-              <span className="text-zinc-200">
-                {attrs[k]}
-                {b !== 0 && <span className="text-emerald-400">(+{b})</span>}
+              <span className={reduced ? 'font-semibold text-pink-400' : 'text-zinc-200'}>
+                {final}
+                {showParen && (
+                  <span className="ml-0.5 text-[10px]">
+                    {'('}
+                    <span className="text-zinc-100">{base[k]}</span>
+                    {b !== 0 && <span className="text-emerald-400">{b > 0 ? `+${b}` : b}</span>}
+                    {r !== 0 && <span className="text-rose-500">-{r}</span>}
+                    {')'}
+                  </span>
+                )}
               </span>
             </div>
             <div className="mt-0.5 h-1.5 overflow-hidden rounded bg-zinc-800">
               <div
-                className="h-full bg-emerald-500/70"
-                style={{ width: `${Math.min(100, (attrs[k] / max) * 100)}%` }}
+                className={`h-full ${reduced ? 'bg-pink-500/70' : 'bg-emerald-500/70'}`}
+                style={{ width: `${Math.min(100, (final / maxV) * 100)}%` }}
               />
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** 由基础六维与伤势列表推导各属性被削减的数值（六维"减损值"展示用） */
+function injuryReduction(base: Attributes, injuries: Injury[]): Partial<Attributes> {
+  const injured = applyInjuryToBase(base, injuries);
+  const out: Partial<Attributes> = {};
+  for (const k of Object.keys(base) as (keyof Attributes)[]) {
+    out[k] = Math.max(0, (base[k] ?? 0) - (injured[k] ?? base[k] ?? 0));
+  }
+  return out;
+}
+
+/** 装备属性 / 词条加成小标签（出击背包与穿戴面板复用，便于直观对比是否更换） */
+function GearBonusChips({ gear }: { gear: GearItem }) {
+  const chips: { text: string; tone: 'attr' | 'combat' }[] = [];
+  for (const k of Object.keys(gear.modifiers) as (keyof Attributes)[]) {
+    const v = gear.modifiers[k] ?? 0;
+    if (v !== 0) chips.push({ text: `${attrLabel(k)}+${v}`, tone: 'attr' });
+  }
+  const c = gear.combat;
+  if (c) {
+    if (c.hpBonus) chips.push({ text: `气血+${c.hpBonus}`, tone: 'combat' });
+    if (c.critBonus) chips.push({ text: `暴击+${c.critBonus}`, tone: 'combat' });
+    if (c.lootLuck) chips.push({ text: `搜刮+${Math.round((c.lootLuck ?? 0) * 100)}%`, tone: 'combat' });
+    if (c.xpBonus) chips.push({ text: `经验+${Math.round((c.xpBonus ?? 0) * 100)}%`, tone: 'combat' });
+    if (c.coinBonus) chips.push({ text: `金币+${Math.round((c.coinBonus ?? 0) * 100)}%`, tone: 'combat' });
+  }
+  if (chips.length === 0) {
+    return <div className="mt-0.5 text-[11px] text-zinc-600">无属性加成</div>;
+  }
+  return (
+    <div className="mt-0.5 flex flex-wrap gap-1">
+      {chips.map((c, i) => (
+        <span
+          key={i}
+          className={`rounded px-1.5 py-0.5 text-[11px] ${
+            c.tone === 'attr' ? 'bg-emerald-900/40 text-emerald-300' : 'bg-sky-900/40 text-sky-300'
+          }`}
+        >
+          {c.text}
+        </span>
+      ))}
     </div>
   );
 }
@@ -302,6 +382,24 @@ export default function SurvivalHub() {
     if (!user) navigate('/survival/login', { replace: true });
   }, [user, navigate]);
 
+  // ===== 出击（sortie）run 状态提升到 Hub 层：便于「角色 / 背包」页实时同步与编辑锁定 =====
+  // 必须放在未登录 early-return 之前，避免条件调用 Hook（rules-of-hooks）。
+  const [run, setRun] = useState<ExtractionRunState | null>(null);
+  const runRef = useRef<ExtractionRunState | null>(null);
+  const rngRef = useRef<RNG>(Math.random as RNG);
+  const writtenRef = useRef(false);
+  const syncRun = useCallback(
+    () => setRun(runRef.current ? structuredClone(runRef.current) : null),
+    [],
+  );
+
+  // stateRef 始终指向「最新已提交状态」，使连续点击（同一 tick 内）也能基于最新状态累计，避免丢更新。
+  // 必须放在未登录 early-return 之前，避免条件调用 Hook（rules-of-hooks）。
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
   // 未登录闸门：进入避难所前必须先通过幸存者核验（各账号独立存档）
   if (!user) {
     return (
@@ -313,6 +411,65 @@ export default function SurvivalHub() {
 
   const mutate = (fn: (s: SurvivalGameState) => SurvivalGameState) =>
     setState((prev) => fn(prev));
+
+  // 实时同步：档案（角色页 / 出击页共用）的加点与选词条，立即同步进副本血量，实现两边完全一致。
+  // stateRef 已置于 early-return 之前，此处直接复用。
+
+  /** 把档案最大血量的变化量（加点 / 词条引起）同步进副本：profileMaxHpBonus + max 同增；
+   *  当前血量仅当增量 > 0 时同增（体质点 / 带气血词条「最大 + 当前一起提升」）。 */
+  const syncProfileMaxHpDeltaToRun = (
+    prev: SurvivalGameState,
+    next: SurvivalGameState,
+    survivorId: string,
+  ) => {
+    const s = runRef.current;
+    if (!s || s.survivor.profile?.id !== survivorId) return;
+    const before = prev.survivorStatus[survivorId]?.maxHp ?? 0;
+    const after = next.survivorStatus[survivorId]?.maxHp ?? 0;
+    const delta = after - before;
+    if (delta === 0) return;
+    s.profileMaxHpBonus = (s.profileMaxHpBonus ?? 0) + delta;
+    s.condition.resources.hp.max = (s.condition.resources.hp.max ?? 0) + delta;
+    if (delta > 0) {
+      s.condition.resources.hp.current = (s.condition.resources.hp.current ?? 0) + delta;
+    }
+  };
+
+  /** 分配 1 点自由属性点（角色页 / 出击页共用）：档案立即生效，并同步副本血量 / 有效六维 */
+  const onAllocatePoint = (survivorId: string, attr: keyof Attributes) => {
+    const prev = stateRef.current;
+    const next = allocateFreePoint(prev, survivorId, attr);
+    stateRef.current = next;
+    const s = runRef.current;
+    if (s && s.survivor.profile?.id === survivorId) {
+      // 词条 / 属性增量即时映射到副本有效六维（出击途中加点立即影响后续战斗）
+      s.baseAttributes = { ...s.baseAttributes, [attr]: (s.baseAttributes?.[attr] ?? 0) + 1 };
+    }
+    syncProfileMaxHpDeltaToRun(prev, next, survivorId);
+    setState(next);
+    syncRun();
+  };
+
+  /** 升级词条三选一（角色页 / 出击页共用）：档案立即生效，并同步副本血量 / 有效六维 */
+  const onPickTrait = (survivorId: string, index: number) => {
+    const prev = stateRef.current;
+    const p = prev.survivors.find((x) => x.id === survivorId);
+    const trait = p?.pendingTraitPick?.[index];
+    const next = chooseTraitPick(prev, survivorId, index);
+    stateRef.current = next;
+    const s = runRef.current;
+    if (s && s.survivor.profile?.id === survivorId && trait) {
+      // 词条属性增量 → 本局有效六维（及时生效）
+      for (const k of ALL_ATTR_KEYS) {
+        const d = trait.modifiers[k];
+        if (d) s.baseAttributes = { ...s.baseAttributes, [k]: (s.baseAttributes?.[k] ?? 0) + d };
+      }
+      // 词条气血加成已由 chooseTraitPick 抬高档案 maxHp，syncProfileMaxHpDeltaToRun 会把增量同步进副本
+    }
+    syncProfileMaxHpDeltaToRun(prev, next, survivorId);
+    setState(next);
+    syncRun();
+  };
 
   return (
     <div className="flex min-h-[100svh] flex-col bg-zinc-950 text-zinc-200">
@@ -340,16 +497,36 @@ export default function SurvivalHub() {
           这样切到「角色/背包/基地」再切回「出击」时，出击中的 run 状态不会因卸载而丢失 */}
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-4">
         <div className={tab === 'character' ? '' : 'hidden'}>
-          <CharacterPanel state={state} mutate={mutate} rng={Math.random as RNG} />
+          <CharacterPanel
+            state={state}
+            mutate={mutate}
+            rng={Math.random as RNG}
+            run={run}
+            onAllocatePoint={onAllocatePoint}
+            onPickTrait={onPickTrait}
+          />
         </div>
         <div className={tab === 'inventory' ? '' : 'hidden'}>
-          <InventoryPanel state={state} mutate={mutate} rng={Math.random as RNG} />
+          <InventoryPanel state={state} mutate={mutate} rng={Math.random as RNG} run={run} />
         </div>
         <div className={tab === 'base' ? '' : 'hidden'}>
           <BasePanel state={state} mutate={mutate} />
         </div>
         <div className={tab === 'sortie' ? '' : 'hidden'}>
-          <SortiePanel state={state} setState={setState} onExit={() => goToTab('character')} />
+          <SortiePanel
+            state={state}
+            setState={setState}
+            onExit={() => goToTab('character')}
+            run={run}
+            setRun={setRun}
+            runRef={runRef}
+            rngRef={rngRef}
+            writtenRef={writtenRef}
+            syncRun={syncRun}
+            onAllocatePoint={onAllocatePoint}
+            onPickTrait={onPickTrait}
+            stateRef={stateRef}
+          />
         </div>
       </main>
 
@@ -397,8 +574,11 @@ function CharacterPanel(props: {
   state: SurvivalGameState;
   mutate: (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
   rng: RNG;
+  run: ExtractionRunState | null;
+  onAllocatePoint: (survivorId: string, attr: keyof Attributes) => void;
+  onPickTrait: (survivorId: string, index: number) => void;
 }) {
-  const { state, mutate } = props;
+  const { state, mutate, run, onAllocatePoint, onPickTrait } = props;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -406,20 +586,29 @@ function CharacterPanel(props: {
   }, []);
 
   const full = state.survivors.length >= WARBAND_CAP;
+  const sortieId = run?.survivor.profile?.id ?? undefined;
 
   const warbandHp = (id: string) => {
     const st = state.survivorStatus[id];
-    if (!st) return null;
-    const pct = st.maxHp > 0 ? Math.max(0, Math.min(100, (st.currentHp / st.maxHp) * 100)) : 0;
-    const tone = pct > 50 ? 'bg-emerald-500' : pct > 25 ? 'bg-amber-500' : 'bg-rose-600';
+    const inSortie = !!run && run.survivor.profile?.id === id;
+    // 出击实时同步：同一角色正在副本中时，生命条显示副本内当前血量
+    const cur = inSortie ? (run!.condition.resources.hp.current ?? 0) : (st?.currentHp ?? 0);
+    const max = inSortie ? (run!.condition.resources.hp.max ?? 0) : (st?.maxHp ?? 0);
+    if (max <= 0) return null;
+    const pct = Math.max(0, Math.min(100, (cur / max) * 100));
+    const stage = hpStage(pct);
+    const meta = HP_STAGE_META[stage];
     return (
       <div className="mt-2">
         <div className="mb-1 flex justify-between text-[11px] text-zinc-500">
-          <span>生命</span>
-          <span>{st.currentHp} / {st.maxHp}</span>
+          <span>
+            生命 <span className={meta.text}>{meta.label}</span>
+            {inSortie && <span className="ml-1 text-sky-400/80">· 副本同步</span>}
+          </span>
+          <span>{cur} / {max}</span>
         </div>
         <div className="h-2 overflow-hidden rounded bg-zinc-800">
-          <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
+          <div className={`h-full ${meta.bar} transition-all`} style={{ width: `${pct}%` }} />
         </div>
       </div>
     );
@@ -442,6 +631,28 @@ function CharacterPanel(props: {
           const dyingUntil = st?.dyingUntil ? new Date(st.dyingUntil).getTime() : 0;
           const isDying = dyingUntil > now;
           const dyingLeft = isDying ? Math.ceil((dyingUntil - now) / 60000) : 0;
+          // 该角色是否正在副本中（出击实时同步的来源）
+          const inSortie = sortieId === s.id;
+          const liveInjuries = inSortie && run ? (run.injuries ?? []) : (st?.injuries ?? []);
+          // 六维分解（基础值 / 加成值 / 减损值）：出击中实时取副本内有效六维
+          let sixBase: Attributes;
+          let sixBonus: Partial<Attributes>;
+          let sixReduction: Partial<Attributes>;
+          if (inSortie && run) {
+            sixBase = run.baseAttributes ?? s.attributes;
+            const finalAttrs = runEffectiveAttributes(run);
+            sixReduction = injuryReduction(sixBase, run.injuries);
+            sixBonus = {};
+            for (const k of ALL_ATTR_KEYS) {
+              sixBonus[k] = (finalAttrs[k] ?? sixBase[k]) - (sixBase[k] ?? 0) + (sixReduction[k] ?? 0);
+            }
+          } else {
+            sixBase = s.attributes;
+            // 词条（trait）属性加成在升级选取时已并入 s.attributes（基础六维），故绿字仅显示装备加成；
+            // 这样未穿戴装备时不会凭空出现绿字，词条带来的六维算作基础数值（不再被重复计为加成）。
+            sixBonus = gearAttrBonus(state, s.id);
+            sixReduction = st ? injuryReduction(s.attributes, st.injuries) : {};
+          }
           return (
             <div
               key={s.id}
@@ -511,10 +722,13 @@ function CharacterPanel(props: {
                 </div>
               )}
 
-              {st && st.injuries.length > 0 && !isDying && (
+              {/* 伤势 debuff：出击实时同步副本内状态；出击中锁定角色页治疗 */}
+              {!isDying && liveInjuries.length > 0 && (
                 <div className="mt-2 space-y-2">
-                  <div className="text-[11px] text-rose-300/80">当前伤势（debuff）</div>
-                  {st.injuries.map((inj) => {
+                  <div className="text-[11px] text-rose-300/80">
+                    当前伤势（debuff）{inSortie && <span className="text-sky-400/80">· 副本同步</span>}
+                  </div>
+                  {liveInjuries.map((inj) => {
                     const treatMeds = MEDICINES.filter(
                       (m) => m.treats?.includes(inj) && (state.medicines[m.id] ?? 0) > 0,
                     );
@@ -525,7 +739,11 @@ function CharacterPanel(props: {
                           <span className="text-[11px] text-rose-300/70">{INJURY_DESC[inj]}</span>
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
-                          {treatMeds.length > 0 ? (
+                          {inSortie ? (
+                            <span className="rounded border border-sky-800/60 bg-sky-950/30 px-1.5 py-0.5 text-sky-300">
+                              该角色出击中，请在出击页使用道具消除
+                            </span>
+                          ) : treatMeds.length > 0 ? (
                             <>
                               <span className="text-zinc-500">可用药物恢复：</span>
                               {treatMeds.map((m) => (
@@ -548,7 +766,9 @@ function CharacterPanel(props: {
                 </div>
               )}
 
-              <div className="mt-3">{attrBars(s.attributes, gearAttrBonus(state, s.id))}</div>
+              <div className="mt-3">
+                {attrBars(sixBase, sixBonus, sixReduction)}
+              </div>
 
               {/* 等级 / 经验 / 自由属性点 / 升级词条三选一（系统流） */}
               {(() => {
@@ -580,7 +800,7 @@ function CharacterPanel(props: {
                           {(Object.keys(s.attributes) as (keyof Attributes)[]).map((k) => (
                             <button
                               key={k}
-                              onClick={() => mutate((st2) => allocateFreePoint(st2, s.id, k))}
+                              onClick={() => onAllocatePoint(s.id, k)}
                               className="rounded border border-amber-700/60 px-1.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
                             >
                               {attrLabel(k)} +1
@@ -598,7 +818,7 @@ function CharacterPanel(props: {
                           {cands.map((t, i) => (
                             <button
                               key={`${t.id}-${i}`}
-                              onClick={() => mutate((st2) => chooseTraitPick(st2, s.id, i))}
+                              onClick={() => onPickTrait(s.id, i)}
                               className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
                               style={{ borderColor: affixColor(t.quality) }}
                             >
@@ -719,8 +939,9 @@ function InventoryPanel(props: {
   state: SurvivalGameState;
   mutate: (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
   rng: RNG;
+  run: ExtractionRunState | null;
 }) {
-  const { state, mutate, rng } = props;
+  const { state, mutate, rng, run } = props;
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId) ?? null;
   const matPage = usePagination(state.materials, 12);
   // 装备库：已被任意角色穿戴的装备不予显示（穿戴独立性，卸下后回归）；支持分类筛选 + 批量回收
@@ -738,9 +959,20 @@ function InventoryPanel(props: {
   const selectedGear = ownedGear.filter((g) => recycleSel[g.id]);
   const refundTotal = selectedGear.reduce((a, g) => a + g.value, 0);
 
+  // 出击实时同步：若该角色正在副本中，装备栏显示副本内「当前穿戴」并锁定更换
+  const inSortie = !!run && run.survivor.profile?.id === state.activeSurvivorId;
+  const runEquippedMap: Partial<Record<GearSlot, GearItem>> = {};
+  if (run) for (const e of run.equipped) runEquippedMap[e.slot] = e.gear;
+
   return (
     <section className="space-y-4">
       <h2 className="text-sm font-medium text-zinc-300">背包物资</h2>
+
+      {inSortie && (
+        <div className="rounded-lg border border-sky-800/60 bg-sky-950/30 p-3 text-[12px] text-sky-200">
+          ⚠ 该角色正在出击中，装备/道具更换已锁定。副本内状态（装备·生命·伤势）已实时同步至本页，换装请在「出击」页进行。
+        </div>
+      )}
 
       {/* 材料 */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
@@ -815,7 +1047,11 @@ function InventoryPanel(props: {
             <div className="grid grid-cols-3 gap-2">
               {MAIN_EQUIP_SLOTS.map((slot) => {
                 const gid = (state.equipped[active.id] ?? {})[slot.key];
-                const g = gid ? state.gear.find((x) => x.id === gid) : undefined;
+                const g = inSortie
+                  ? runEquippedMap[slot.key]
+                  : gid
+                    ? state.gear.find((x) => x.id === gid)
+                    : undefined;
                 return (
                   <div
                     key={slot.key}
@@ -832,15 +1068,26 @@ function InventoryPanel(props: {
                           title={g.name}
                         >
                           {g.name}
+                          {inSortie && (
+                            <span className="ml-1 text-[10px] text-sky-400/80">
+                              {run!.equipped.find((e) => e.slot === slot.key)?.fromRun ? '·副本' : '·常驻'}
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] text-zinc-500">
                           {g.rarityName ?? g.rarity}阶
                         </div>
+                        <GearBonusChips gear={g} />
                         <button
+                          disabled={inSortie}
                           onClick={() => mutate((s) => unequipGear(s, active.id, slot.key))}
-                          className="mt-1 w-full rounded bg-zinc-700 px-1 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-600"
+                          className={`mt-1 w-full rounded px-1 py-0.5 text-[10px] ${
+                            inSortie
+                              ? 'cursor-not-allowed bg-zinc-800 text-zinc-600'
+                              : 'bg-zinc-700 text-zinc-200 hover:bg-zinc-600'
+                          }`}
                         >
-                          卸下
+                          {inSortie ? '出击中' : '卸下'}
                         </button>
                       </>
                     ) : (
@@ -875,12 +1122,13 @@ function InventoryPanel(props: {
                     </div>
                     <select
                       value={cur ?? ''}
+                      disabled={inSortie}
                       onChange={(e) =>
                         mutate((s) =>
                           setQuickSlot(s, active.id, qs.key, e.target.value || undefined),
                         )
                       }
-                      className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200"
+                      className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200 disabled:opacity-50"
                     >
                       <option value="">—</option>
                       {opts.map((o) => (
@@ -965,10 +1213,15 @@ function InventoryPanel(props: {
                       </div>
                       {active && (
                         <button
+                          disabled={inSortie}
                           onClick={() => mutate((s) => equipGear(s, active.id, g.id))}
-                          className="shrink-0 rounded bg-emerald-700 px-2 py-1 text-xs text-white hover:bg-emerald-600"
+                          className={`shrink-0 rounded px-2 py-1 text-xs text-white ${
+                            inSortie
+                              ? 'cursor-not-allowed bg-zinc-700 text-zinc-500'
+                              : 'bg-emerald-700 hover:bg-emerald-600'
+                          }`}
                         >
-                          装备
+                          {inSortie ? '出击中' : '装备'}
                         </button>
                       )}
                     </div>
@@ -1155,18 +1408,23 @@ function SortiePanel(props: {
   state: SurvivalGameState;
   setState: React.Dispatch<React.SetStateAction<SurvivalGameState>>;
   onExit: () => void;
+  run: ExtractionRunState | null;
+  setRun: React.Dispatch<React.SetStateAction<ExtractionRunState | null>>;
+  runRef: React.MutableRefObject<ExtractionRunState | null>;
+  rngRef: React.MutableRefObject<RNG>;
+  writtenRef: React.MutableRefObject<boolean>;
+  syncRun: () => void;
+  onAllocatePoint: (survivorId: string, attr: keyof Attributes) => void;
+  onPickTrait: (survivorId: string, index: number) => void;
+  stateRef: React.MutableRefObject<SurvivalGameState>;
 }) {
-  const { state, setState, onExit } = props;
+  const { state, setState, onExit, run, setRun, runRef, rngRef, writtenRef, syncRun, onAllocatePoint, onPickTrait, stateRef } = props;
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId) ?? null;
   const [zoneId, setZoneId] = useState(DANGER_ZONES[0].id);
   const [seed, setSeed] = useState('');
-  const [run, setRun] = useState<ExtractionRunState | null>(null);
-  const runRef = useRef<ExtractionRunState | null>(null);
-  const rngRef = useRef<RNG>(Math.random as RNG);
-  // 出击结算是否已写回归档（避免阵亡/撤离两种结局重复写入，也避免漏写）
-  const writtenRef = useRef(false);
+  // 出击（run）状态已提升到 Hub 层，本组件通过 props 读写，确保「角色 / 背包」页可实时同步
 
-  const sync = () => setRun(runRef.current ? structuredClone(runRef.current) : null);
+  const sync = () => syncRun();
 
   /** 把当前 run 的结局写回归档：入库物资 + 救援者入花名册 + 回写 HP/伤势/濒死 */
   const persistRunResult = useCallback(() => {
@@ -1179,27 +1437,19 @@ function SortiePanel(props: {
     // 死亡/超时结算：战局背包清零，但安全箱 100% 保留（搜打撤保底设计）
     if (s.phase === 'dead' || s.phase === 'timeout') bankSecureIntoBanked(s);
     const failed = s.phase === 'dead' || s.phase === 'timeout';
-    // v1.0.2 特殊词条结算：经验获取 / 金币获取加成（仅撤离成功生效）
+    // v1.0.3 新需求①：经验已在「战斗后实时结算」（含装备 xpBonus 加成）直接写入角色档案，
+    // 此处不再重复入账；仅保留拾荒嗅觉的金币加成结算。
     const special = prof ? aggregateGearCombat(state, prof.id) : null;
-    const xpFinal = failed || !special ? s.xpGained : Math.round(s.xpGained * (1 + (special.xpBonus ?? 0)));
     setState((prev) => {
       let next = bankLoot(prev, s.bankedLoot);
-      if (!failed && special && ((special.xpBonus ?? 0) > 0 || (special.coinBonus ?? 0) > 0)) {
-        const notes: string[] = [];
-        if ((special.xpBonus ?? 0) > 0) {
-          notes.push(`实战淬炼生效，经验获取 +${Math.round((special.xpBonus ?? 0) * 100)}%（本次经验 ${s.xpGained} → ${xpFinal}）`);
-        }
-        const coinBonusCoins = (special.coinBonus ?? 0) > 0
-          ? Math.round(
-              s.bankedLoot.reduce((a, b) => a + (b.gear ? 0 : b.value * (b.qty ?? 1)), 0) * (special.coinBonus ?? 0),
-            )
-          : 0;
+      if (!failed && special && (special.coinBonus ?? 0) > 0) {
+        // 拾荒嗅觉：按撤离带回的物资价值额外加成废土币（经验已在战斗中实时结算，此处仅结算金币）
+        const coinBonusCoins = Math.round(
+          s.bankedLoot.reduce((a, b) => a + (b.gear ? 0 : b.value * (b.qty ?? 1)), 0) * (special.coinBonus ?? 0),
+        );
         if (coinBonusCoins > 0) {
           next = { ...next, coins: next.coins + coinBonusCoins };
-          notes.push(`拾荒嗅觉生效，额外 +${coinBonusCoins} 废土币`);
-        }
-        if (notes.length > 0) {
-          next = { ...next, log: [`【词条】${notes.join('；')}。`, ...next.log].slice(0, 50) };
+          next = { ...next, log: [`【词条】拾荒嗅觉生效，额外 +${coinBonusCoins} 废土币。`, ...next.log].slice(0, 50) };
         }
       }
       if (s.bankedNpc) next = addRecruit(next, s.bankedNpc);
@@ -1212,19 +1462,47 @@ function SortiePanel(props: {
         bankedValue: s.bankedLoot.reduce((a, b) => a + b.value * (b.qty ?? 1), 0),
         enemyFaced: s.log.find((l) => l.includes('⚔'))?.match(/【(.+?)】/)?.[1],
         rescued: !!s.bankedNpc,
-        finalHp: s.condition.resources.hp.current,
-        maxHp: s.condition.resources.hp.max ?? 0,
-        // 经验结算：仅撤离成功入账（applySortieResult 内部也会按 outcome 把关）；经验词条已折算
-        xpGained: failed ? 0 : xpFinal,
+        // 经验已在战斗后实时结算（doEncounter 中 grantSortieXp），此处 xpGained 置 0 避免重复入账
+        xpGained: 0,
+        // bug2：结算回写用「持久 baseMaxHp」，剔除临时驻防加成，避免驻防 HP 泄漏进角色档案；
+        // 剩余血量封顶到 baseMaxHp（超出的部分只是本局临时驻防血量，不带回基地）。
+        finalHp: Math.min(s.condition.resources.hp.current, s.baseMaxHp || s.condition.resources.hp.max || 0),
+        maxHp: s.baseMaxHp || s.condition.resources.hp.max || 0,
+        // bug1：把本局（含带入与战斗中产生/治愈的）伤势写回角色档案
+        injuries: s.injuries,
       });
       // 撤离失败 / 阵亡 / 超时：战局背包（carriedLoot）已由 extract 拦下不入库；
       // 身上常驻穿戴的装备还要按概率被搜刮者夺走。
       if (failed) {
         after = applyFailureGearLoss(after, prof.id, rngRef.current).state;
       }
+      // v1.0.3b（修订）：把本局（含副本内换上的掉落装备）的主槽装备写回角色档案，使副本内换装影响后续出击。
+      // 成功撤离：把穿戴中的装备（含副本掉落品）一并入库，确保佩戴状态得以保留；
+      // 撤离失败/阵亡：装备由 applyFailureGearLoss 按概率夺走，此处不再写回（避免「死了还保留装备」）。
+      if (!failed) {
+        const runEquipped = s.equipped ?? [];
+        // 先把穿戴中的装备并入装备库（副本掉落品换上后也应带回基地），避免悬空引用
+        let mergedGear = after.gear;
+        for (const e of runEquipped) {
+          if (!mergedGear.some((g) => g.id === e.gear.id)) mergedGear = [...mergedGear, e.gear];
+        }
+        const ownedIds = new Set(mergedGear.map((g) => g.id));
+        const present = new Map<GearSlot, string>();
+        for (const e of runEquipped) {
+          if (ownedIds.has(e.gear.id)) present.set(e.slot, e.gear.id);
+        }
+        if (present.size > 0 || runEquipped.length > 0) {
+          const slots: Record<string, string | undefined> = { ...(after.equipped[prof.id] ?? {}) };
+          for (const slot of MAIN_EQUIP_SLOTS.map((sl) => sl.key)) {
+            if (present.has(slot)) slots[slot] = present.get(slot);
+            else delete slots[slot];
+          }
+          after = { ...after, gear: mergedGear, equipped: { ...after.equipped, [prof.id]: slots } };
+        }
+      }
       return after;
     });
-  }, [setState, state]);
+  }, [setState, state, runRef, rngRef]);
 
   const start = () => {
     if (!active) return;
@@ -1233,20 +1511,37 @@ function SortiePanel(props: {
     if (!loadout) return;
     const zone = getZone(zoneId);
     const status = state.survivorStatus[active.id];
-    // 持久 HP 作为出击起始；附加词条「初始血量」头领，封顶 persistMax（避难所 HP 加成已并入 bonus.hpBonus 进战斗单位）
-    let startHp = status?.currentHp ?? 1;
+    const baseMax = status?.maxHp ?? 0;
+    // 临时驻防加成（医疗站 startHpBonus 等）：只在本局生效，出击初始「最大血量」与「当前血量」都加上
+    const garrisonHp = computeShelterBonuses(state.facilities, state.factionRep).startHpBonus ?? 0;
+    const startMax = baseMax + garrisonHp;
+    // 持久 HP 作为出击起始；附加词条「初始血量」头领（封顶 baseMax）
+    let startHp = status?.currentHp ?? 0;
     if (status && loadout.bonus) {
-      const persistMax = Math.max(status.maxHp, 1);
-      const headStart = Math.round(persistMax * (loadout.bonus.startHpRatio ?? 0));
-      startHp = Math.min(status.currentHp + headStart, persistMax);
+      const headStart = Math.round(baseMax * (loadout.bonus.startHpRatio ?? 0));
+      startHp = Math.min(startHp + headStart, baseMax);
     }
+    startHp = Math.min(startHp + garrisonHp, startMax);
     // 护甲耐久 / 弹药由穿戴装备推算：护甲阶级→耐久，武器阶级→携弹量
     const eq = state.equipped[active.id] ?? {};
     const armorGear = eq.armor ? state.gear.find((g) => g.id === eq.armor) : undefined;
     const armorMax = armorGear ? 40 + (armorGear.tier ?? 0) * 30 : 0;
     const weaponGear = eq.weapon ? state.gear.find((g) => g.id === eq.weapon) : undefined;
     const startAmmo = 24 + (weaponGear ? (weaponGear.tier ?? 0) * 8 : 0);
-    const r = createRun(loadout, zone, startHp, { current: armorMax, max: armorMax }, startAmmo);
+    // v1.0.3：把出击前已穿戴的装备带入本局（副本内可临时替换）
+    const eqMap = state.equipped[active.id] ?? {};
+    const equippedGear: GearItem[] = (Object.values(eqMap) as (string | undefined)[])
+      .filter((id): id is string => !!id)
+      .map((id) => state.gear.find((g) => g.id === id))
+      .filter((g): g is GearItem => !!g);
+    const r = createRun(loadout, zone, startHp, { current: armorMax, max: armorMax }, startAmmo, {
+      equipped: equippedGear,
+      // bug1：把角色档案已有的伤势（debuff）一并带进本局，六维削弱与加成才会生效
+      injuries: status?.injuries ?? [],
+      // bug2：出击起始 maxHp = 持久 maxHp + 临时驻防加成；baseMaxHp 仅供结算回写时剔除驻防加成
+      startMaxHp: startMax,
+      baseMaxHp: baseMax,
+    });
     // v1.0.2：快捷·投掷槽的伤害类投掷物（无 extractBonus 即手雷类）在自动战斗中概率先手引爆
     const throwId = eq.quickThrow;
     const throwSpec = throwId ? getThrowable(throwId) : undefined;
@@ -1299,6 +1594,24 @@ function SortiePanel(props: {
       if ((state.throwables?.smoke ?? 0) <= 0 && (state.throwables?.flash ?? 0) <= 0) return;
     }
     resolveEncounter(s, action, rngRef.current);
+    // 新需求①：战斗后实时结算经验（含装备 xpBonus 加成），立即写入角色档案；途中升级则副本状态回复全满、伤势清除
+    const xpBefore = s.xpGained ?? 0;
+    const xpDelta = (s.xpGained ?? 0) - xpBefore;
+    if (xpDelta > 0 && active) {
+      const special = buildSortieLoadout(state, active.id)?.bonus;
+      const xpFinal = Math.round(xpDelta * (1 + (special?.xpBonus ?? 0)));
+      const prev = stateRef.current;
+      const prevLvl = prev.survivors.find((x) => x.id === active.id)?.level ?? 1;
+      const next = grantSortieXp(prev, active.id, xpFinal);
+      stateRef.current = next;
+      const newLvl = next.survivors.find((x) => x.id === active.id)?.level ?? 1;
+      if (newLvl > prevLvl && s && s.survivor.profile?.id === active.id) {
+        // 出击途中升级 → 副本状态回复全满、伤势清除（与角色页升级一致）
+        s.condition.resources.hp.current = s.condition.resources.hp.max ?? 0;
+        s.injuries = [];
+      }
+      setState(next);
+    }
     if (action === 'throw') {
       // 扣库存：优先烟雾弹，其次闪光弹
       const used = (state.throwables?.smoke ?? 0) > 0 ? 'smoke' : 'flash';
@@ -1366,7 +1679,23 @@ function SortiePanel(props: {
     sync();
   };
 
-  /** 副本内使用搜到的回复类道具（绷带/急救包/血清等）：立即回血，消耗战局背包中的 1 件 */
+  /** v1.0.3 副本内换装：把临时背包里的装备穿戴上（若同槽已有装备则替换，旧装备回临时背包） */
+  const doEquipCarried = (index: number) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    equipCarriedGear(s, index);
+    sync();
+  };
+
+  /** v1.0.3 副本内卸下本局穿戴的装备（放回临时背包） */
+  const doUnequipRun = (slot: GearSlot) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    unequipRunGear(s, slot);
+    sync();
+  };
+
+  /** 副本内使用搜到的回复类道具（绷带/急救包/血清等）：立即回血并消除对应伤势 */
   const applyCarriedMed = (index: number) => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
@@ -1377,13 +1706,18 @@ function SortiePanel(props: {
     if (!med) return;
     const maxHp = s.condition.resources.hp.max ?? 0;
     const cur = s.condition.resources.hp.current;
-    if (cur >= maxHp) return;
-    const heal = Math.round(med.healPct * maxHp) + med.healFlat;
+    const canTreat = (med.treats ?? []).some((inj) => s.injuries.includes(inj));
+    if (cur >= maxHp && !canTreat) return;
+    const heal = cur >= maxHp ? 0 : Math.round(med.healPct * maxHp) + med.healFlat;
     const consumed = consumeCarriedItem(s, index);
     if (!consumed) return;
-    s.condition.resources.hp.current = Math.min(maxHp, cur + heal);
+    if (heal > 0) s.condition.resources.hp.current = Math.min(maxHp, cur + heal);
+    const cured = cureInjuries(s, med.treats ?? []);
+    const parts: string[] = [];
+    if (heal > 0) parts.push(`恢复 ${heal} 点生命（${s.condition.resources.hp.current}/${maxHp}）`);
+    if (cured.length > 0) parts.push(`消除伤势：${cured.map((i) => INJURY_LABEL[i]).join('、')}`);
     s.log.push(
-      `[${fmtClock(s.elapsedSec)}] 💊 使用战利品【${it.name}】，恢复 ${heal} 点生命（${s.condition.resources.hp.current}/${maxHp}）。`,
+      `[${fmtClock(s.elapsedSec)}] 💊 使用战利品【${it.name}】${parts.length ? '，' + parts.join('；') : '（无效果）'}。`,
     );
     sync();
   };
@@ -1397,7 +1731,7 @@ function SortiePanel(props: {
     // 同时覆盖「撤离成功」与「阵亡/撤离失败」两种结局，避免阵亡时漏写导致血条仍满。
   };
 
-  /** 出击途中使用药物恢复生命——只能使用已装备到「快捷·医疗槽」的药物 */
+  /** 出击途中使用药物恢复生命——只能使用已装备到「快捷·医疗槽」的药物；可同时消除对应伤势 */
   const takeMedicine = () => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching' || !active) return;
@@ -1409,11 +1743,17 @@ function SortiePanel(props: {
     const have = state.medicines[quickMedId] ?? 0;
     if (have <= 0) return;
     const maxHp = s.condition.resources.hp.max ?? 0;
-    const heal = Math.round(spec.healPct * maxHp) + spec.healFlat;
-    const before = s.condition.resources.hp.current ?? 0;
-    s.condition.resources.hp.current = Math.min(maxHp, before + heal);
-    const gained = s.condition.resources.hp.current - before;
-    s.log.push(`💊 使用【${spec.name}】，恢复 ${gained} 生命（${s.condition.resources.hp.current}/${maxHp}）`);
+    const cur = s.condition.resources.hp.current ?? 0;
+    const canTreat = (spec.treats ?? []).some((inj) => s.injuries.includes(inj));
+    if (cur >= maxHp && !canTreat) return;
+    const heal = cur >= maxHp ? 0 : Math.round(spec.healPct * maxHp) + spec.healFlat;
+    if (heal > 0) s.condition.resources.hp.current = Math.min(maxHp, cur + heal);
+    const gained = s.condition.resources.hp.current - cur;
+    const cured = cureInjuries(s, spec.treats ?? []);
+    const parts: string[] = [];
+    if (gained > 0) parts.push(`恢复 ${gained} 生命（${s.condition.resources.hp.current}/${maxHp}）`);
+    if (cured.length > 0) parts.push(`消除伤势：${cured.map((i) => INJURY_LABEL[i]).join('、')}`);
+    s.log.push(`💊 使用【${spec.name}】${parts.length ? '，' + parts.join('；') : '（无效果）'}`);
     sync();
     setState((prev) => ({
       ...prev,
@@ -1455,7 +1795,7 @@ function SortiePanel(props: {
       writtenRef.current = true;
       persistRunResult();
     }
-  }, [run, persistRunResult]);
+  }, [run, persistRunResult, runRef, writtenRef]);
 
   if (!active) {
     return (
@@ -1465,7 +1805,13 @@ function SortiePanel(props: {
     );
   }
 
+  // hp/armor 为战斗引擎状态对象（非 React ref），用 ?? 0 兜底可选字段
   const hp = run?.condition.resources.hp;
+  const hpCur = hp?.current ?? 0;
+  const hpMax = hp?.max ?? 0;
+  const armor = run?.armor;
+  const armorCur = armor?.current ?? 0;
+  const armorMax = armor?.max ?? 0;
   const carried = run?.carriedLoot ?? [];
   const carriedValue = carried.reduce((a, b) => a + b.value * (b.qty ?? 1), 0);
   const banked = run?.bankedLoot ?? [];
@@ -1485,8 +1831,22 @@ function SortiePanel(props: {
   const failed = run?.phase === 'dead' || run?.phase === 'timeout';
   /** ⚔ 摘要行下标 → 战斗回放（日志行内展开用） */
   const battleByLogIndex = new Map((run?.battles ?? []).map((b) => [b.logIndex, b]));
-  const hpPct = hp && (hp.max ?? 0) > 0 ? Math.max(0, (hp.current / (hp.max ?? 0)) * 100) : 0;
-  const hpColor = hpPct > 50 ? 'bg-emerald-500' : hpPct > 25 ? 'bg-amber-500' : 'bg-rose-600';
+  const hpPct = hpMax > 0 ? Math.max(0, (hpCur / hpMax) * 100) : 0;
+  const hpStageNow = hpStage(hpPct);
+  const hpMeta = HP_STAGE_META[hpStageNow];
+  // v1.0.3 本局有效六维 / 基础六维（伤势削减对照，用于红色呈现被削弱的属性）
+  const effAttrs = run ? runEffectiveAttributes(run) : null;
+  const baseAttrs = run
+    ? run.baseAttributes ?? run.survivor.profile?.attributes ?? run.survivor.attributes
+    : null;
+  // 六维分解（基础值 / 加成值 / 减损值），供 attrBars 新格式展示
+  const sortieSixReduction = run && baseAttrs ? injuryReduction(baseAttrs, run.injuries) : {};
+  const sortieSixBonus: Partial<Attributes> = {};
+  if (effAttrs && baseAttrs) {
+    for (const k of ALL_ATTR_KEYS) {
+      sortieSixBonus[k] = (effAttrs[k] ?? baseAttrs[k]) - (baseAttrs[k] ?? 0) + (sortieSixReduction[k] ?? 0);
+    }
+  }
   // 对局状态栏派生值
   const left = run ? timeLeft(run) : 0;
   const urgent = left > 0 && left <= RUN_TIME_LIMIT_SEC * 0.2;
@@ -1612,16 +1972,22 @@ function SortiePanel(props: {
             <div className="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
               <div>
                 <div className="mb-1 flex justify-between text-zinc-500">
-                  <span>❤ 生命</span>
-                  <span className="text-zinc-200">{hp?.current ?? 0} / {hp?.max ?? 0}</span>
+                  <span>❤ 生命 <span className={hpMeta.text}>{hpMeta.label}</span></span>
+                  <span className="text-zinc-200">{hpCur} / {hpMax}</span>
                 </div>
                 <div className="h-2 overflow-hidden rounded bg-zinc-800">
-                  <div className={`h-full ${hpColor} transition-all`} style={{ width: `${hpPct}%` }} />
+                  <div className={`h-full ${hpMeta.bar} transition-all`} style={{ width: `${hpPct}%` }} />
                 </div>
+                {run.startMaxHp > run.baseMaxHp && (
+                  <div className="mt-1 text-[10px] text-emerald-400/80">
+                    含临时驻防加成 +{run.startMaxHp - run.baseMaxHp} 气血（仅本局生效，不计入角色档案）
+                  </div>
+                )}
               </div>
               <div className="flex items-end justify-between text-zinc-500">
                 <span>🛡 护甲耐久</span>
-                <span className="text-zinc-200">{run.armor.current} / {run.armor.max}</span>
+                <span className="text-zinc-200">{armorCur} / {armorMax}</span>
+
               </div>
               <div className="flex items-end justify-between text-zinc-500">
                 <span>🔫 弹药</span>
@@ -1634,6 +2000,111 @@ function SortiePanel(props: {
                 <span className="text-zinc-200">{carried.length} / {RAID_PACK_CAPACITY} 格</span>
               </div>
             </div>
+
+            {/* ①-a 角色等级 / 经验（实时，与角色页同步）：打怪获取经验实时显示；途中升级此处同样提示三选一 */}
+            <div className="mt-3 rounded-lg border border-sky-900/50 bg-sky-950/20 p-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-sky-300">
+                  Lv.{active.level ?? 1}
+                  <span className="ml-2 text-zinc-400">
+                    经验 {(active.xp ?? 0)} / {xpNeededForLevel(active.level ?? 1)}
+                  </span>
+                </span>
+                {(active.freePoints ?? 0) > 0 && (
+                  <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-300">
+                    ⬆ 自由属性点 ×{active.freePoints}
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 h-1.5 overflow-hidden rounded bg-zinc-800">
+                <div
+                  className="h-full bg-sky-500/70"
+                  style={{ width: `${Math.min(100, ((active.xp ?? 0) / xpNeededForLevel(active.level ?? 1)) * 100)}%` }}
+                />
+              </div>
+              {(active.freePoints ?? 0) > 0 && (
+                <div className="mt-2">
+                  <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点（每点 +1，出击途中即时生效）：</div>
+                  <div className="flex flex-wrap gap-1">
+                    {(Object.keys(active.attributes) as (keyof Attributes)[]).map((k) => (
+                      <button
+                        key={k}
+                        onClick={() => onAllocatePoint(active.id, k)}
+                        className="rounded border border-amber-700/60 px-1.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
+                      >
+                        {attrLabel(k)} +1
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(active.pendingTraitPick ?? []).length > 0 && (
+                <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
+                  <div className="text-[11px] text-purple-300">
+                    🔗【系统】检测到宿主等级提升……请选择词条强化（三选一）：
+                  </div>
+                  <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+                    {active.pendingTraitPick!.map((t, i) => (
+                      <button
+                        key={`${t.id}-${i}`}
+                        onClick={() => onPickTrait(active.id, i)}
+                        className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
+                        style={{ borderColor: affixColor(t.quality) }}
+                      >
+                        <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
+                          {affixLabel(t.quality)}·{t.name}
+                        </div>
+                        <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
+                        <div className="mt-0.5 text-[10px] text-emerald-300">
+                          {(Object.keys(t.modifiers) as (keyof Attributes)[])
+                            .filter((k) => (t.modifiers[k] ?? 0) !== 0)
+                            .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
+                            .join(' ')}
+                          {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
+                          {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
+                          {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* v1.0.3 ①-b 角色属性 / 增益 / 伤势：出击途中实时反映伤势削减与换装加成 */}
+            {effAttrs && baseAttrs && (
+              <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
+                <div>
+                  <div className="mb-1 text-[11px] text-zinc-500">角色属性（六维）· 伤势削减以红色显示</div>
+                  {attrBars(baseAttrs, sortieSixBonus, sortieSixReduction)}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  {run.buffCharges > 0 ? (
+                    <span className="rounded bg-sky-900/40 px-2 py-0.5 text-sky-300">
+                      🧪 增益激活（下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2）· 备战 {run.buffCharges} 次
+                    </span>
+                  ) : (
+                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-500">暂无增益 buff</span>
+                  )}
+                  {run.injuries.length > 0 ? (
+                    <>
+                      <span className="text-zinc-500">伤势：</span>
+                      {run.injuries.map((inj) => (
+                        <span
+                          key={inj}
+                          className="rounded border border-rose-800/60 bg-rose-950/30 px-2 py-0.5 text-rose-300"
+                          title={injuryAttrTextOf(run, inj)}
+                        >
+                          ⚠ {INJURY_LABEL[inj]} · {injuryAttrTextOf(run, inj)}
+                        </span>
+                      ))}
+                    </>
+                  ) : (
+                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-500">无伤势 debuff</span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* ② 场景叙事区（当前场景文本，区别于底部滚动日志） */}
@@ -1809,10 +2280,11 @@ function SortiePanel(props: {
               </h2>
               <div className="flex flex-wrap gap-2">
                 {availableMeds.map((m) => {
-                  const maxHp = run?.condition.resources.hp.max ?? 0;
+                  const maxHp = hpMax;
                   const heal = Math.round(m.healPct * maxHp) + m.healFlat;
-                  const cur = run?.condition.resources.hp.current ?? 0;
-                  const disabled = cur >= maxHp;
+                  const cur = hpCur;
+                  const canTreat = (m.treats ?? []).some((inj) => (run?.injuries ?? []).includes(inj));
+                  const disabled = cur >= maxHp && !canTreat;
                   return (
                     <button
                       key={m.id}
@@ -1823,6 +2295,9 @@ function SortiePanel(props: {
                       {m.name}
                       <span className="ml-1 opacity-70">×{state.medicines[m.id]}</span>
                       <span className="ml-1 text-emerald-400">+{heal}</span>
+                      {(m.treats ?? []).length > 0 && (
+                        <span className="ml-1 text-rose-300/80">治:{m.treats!.map((t) => INJURY_LABEL[t]).join('/')}</span>
+                      )}
                       {disabled && <span className="ml-1 text-zinc-500">（已满）</span>}
                     </button>
                   );
@@ -1863,7 +2338,8 @@ function SortiePanel(props: {
             </h2>
             <p className="mb-2 text-[11px] text-amber-500/80">
               本局搜刮的战利品：撤离成功才入库，阵亡 / 超时将全部清零；安全箱内物资 100% 保留。穿戴装备不在本局背包内。
-              回复类物资（绷带/急救包/血清等）可就地「💊 使用」，没用完的撤离成功后自动带回基地医疗背包。
+              回复类物资（绷带/急救包/血清等）可就地「💊 使用」（可消除对应伤势），没用完的撤离成功后自动带回基地医疗背包。
+              搜索有概率翻出【弹药补给】，直接装填进弹匣（不占背包格）；搜到的装备可在此就地「🎽 佩戴」换装。
             </p>
             <div className="mb-2 flex flex-wrap items-center gap-1 text-[11px] text-zinc-500">
               <span>阶级：</span>
@@ -1873,6 +2349,55 @@ function SortiePanel(props: {
                 </span>
               ))}
             </div>
+
+            {/* v1.0.3 本局穿戴：出击途中可临时换装，换装带来的属性/能力变化立即生效 */}
+            <div className="mb-2 rounded border border-sky-900/40 bg-sky-950/15 p-2">
+              <div className="mb-1 flex items-center justify-between text-[11px] text-sky-400/90">
+                <span>🎽 本局穿戴（副本内可换装）</span>
+                <span>
+                  {run.equipped.length
+                    ? `${run.equipped.length} 件 · 气血上限 ${run.condition.resources.hp.max ?? 0}`
+                    : '尚未穿戴'}
+                </span>
+              </div>
+              {run.equipped.length === 0 ? (
+                <div className="text-[11px] text-zinc-600">出击前未携带 / 未穿戴任何装备。</div>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                  {run.equipped.map((e) => {
+                    const gColor = e.gear.tier != null ? tierColor(e.gear.tier) : '#a1a1aa';
+                    return (
+                      <div
+                        key={e.slot}
+                        className="flex items-center justify-between rounded border border-zinc-800 bg-zinc-950/60 px-1.5 py-1"
+                      >
+                        <span className="flex flex-col leading-tight">
+                          <span className="text-[10px] text-zinc-500">{GEAR_SLOT_LABEL[e.slot]}</span>
+                          <span
+                            className="text-[11px]"
+                            style={{ color: e.gear.tier != null ? gColor : '#d4d4d8' }}
+                          >
+                            {e.gear.name}
+                            {e.fromRun && <span className="ml-0.5 text-sky-400/70">·副本</span>}
+                          </span>
+                          <GearBonusChips gear={e.gear} />
+                        </span>
+                        {!isOver && (
+                          <button
+                            onClick={() => doUnequipRun(e.slot)}
+                            disabled={(carried.length >= RAID_PACK_CAPACITY)}
+                            className="rounded border border-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400 hover:border-rose-600 hover:text-rose-300 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
+                            title="卸下放回战局背包"
+                          >
+                            卸下
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             {carried.length === 0 ? (
               <p className="text-sm text-zinc-600">尚未搜到任何物资。</p>
             ) : (
@@ -1880,6 +2405,11 @@ function SortiePanel(props: {
                 {carried.map((it, i) => {
                   const color = it.tier != null ? tierColor(it.tier) : '#a1a1aa';
                   const qty = it.qty ?? 1;
+                  // 预计算该道具对应的医疗品及其可治伤势（避免在渲染闭包里即时调用函数表达式）
+                  const medId = LOOT_MEDICINE_MAP[it.id];
+                  const med = medId ? MEDICINES.find((m) => m.id === medId) : undefined;
+                  const canTreat = med ? (med.treats ?? []).some((inj) => (run?.injuries ?? []).includes(inj)) : false;
+                  const medDisabled = hpCur >= hpMax && !canTreat;
                   return (
                     <li key={`${it.id}-${i}`} className="border-b border-zinc-800/60 py-1">
                       <div className="flex items-center justify-between">
@@ -1908,16 +2438,31 @@ function SortiePanel(props: {
                           ))}
                         </div>
                       )}
+                      {it.gear && <GearBonusChips gear={it.gear} />}
                       {!isOver && (
-                        <div className="mt-1 flex gap-1">
-                          {LOOT_MEDICINE_MAP[it.id] && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {med && (
                             <button
                               onClick={() => applyCarriedMed(i)}
-                              disabled={(hp?.current ?? 0) >= (hp?.max ?? 0)}
+                              disabled={medDisabled}
                               className="rounded border border-emerald-700/60 px-1.5 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-900/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
-                              title="在本局内立即使用，恢复生命"
+                              title="在本局内立即使用，恢复生命；可消除对应伤势"
                             >
                               💊 使用
+                              {(med.treats ?? []).length > 0 && (
+                                <span className="ml-0.5 text-rose-300/80">
+                                  治:{med.treats!.map((t) => INJURY_LABEL[t]).join('/')}
+                                </span>
+                              )}
+                            </button>
+                          )}
+                          {it.gear && (
+                            <button
+                              onClick={() => doEquipCarried(i)}
+                              className="rounded border border-sky-700/60 px-1.5 py-0.5 text-[10px] text-sky-300 hover:bg-sky-900/40"
+                              title="佩戴此装备（同槽已有则替换，旧装备回背包）"
+                            >
+                              🎽 佩戴
                             </button>
                           )}
                           <button

@@ -19,20 +19,22 @@ import { aggregateTraitCombat } from './chargen';
 import type { Attributes } from '@shared/types/cultivator';
 import { computeShelterBonuses } from './economy';
 
-export type Injury = 'fracture' | 'infection' | 'bleeding' | 'shellShock';
+export type Injury = 'fracture' | 'infection' | 'bleeding' | 'shellShock' | 'fatigue';
 
 export const INJURY_LABEL: Record<Injury, string> = {
   fracture: '骨折',
   infection: '感染',
   bleeding: '失血',
   shellShock: '震伤',
+  fatigue: '疲惫',
 };
 
 export const INJURY_DESC: Record<Injury, string> = {
-  fracture: '行动迟缓，恢复速度 -25%',
-  infection: '病毒侵蚀，恢复速度 -50%',
-  bleeding: '持续失血，恢复速度 -35%',
-  shellShock: '精神受创，恢复速度 -15%',
+  fracture: '骨头错位：力量/敏捷/耐力 -1/3，恢复速度 -25%',
+  infection: '病毒侵蚀：体质/意志 -1/4，恢复速度 -50%',
+  bleeding: '血流不止：体质/耐力 -1/3，恢复速度 -35%',
+  shellShock: '耳鸣目眩：感知/意志 -1/3，恢复速度 -15%',
+  fatigue: '体力透支：全六维 -1/4，恢复速度 -10%',
 };
 
 export const INJURY_PENALTY: Record<Injury, number> = {
@@ -40,7 +42,129 @@ export const INJURY_PENALTY: Record<Injury, number> = {
   infection: 0.5,
   bleeding: 0.35,
   shellShock: 0.15,
+  fatigue: 0.1,
 };
+
+// ===== v1.0.3：伤势对「基础六维」的临时削减 =====
+//
+// 设计：伤势削减的是角色**基础六维**（profile.attributes，不含装备/词条/避难所加成），
+// 削减后再叠加装备等外部加成 —— 即「debuff 只削弱底子，不削装备」。
+// UI 上被削减的属性以红色数字呈现。
+
+export interface InjuryAttrDef {
+  /** 受影响的六维键 */
+  attrs: (keyof Attributes)[];
+  /** 削减比例（0.333… = 三分之一） */
+  ratio: number;
+}
+
+export const INJURY_ATTR_PENALTY: Record<Injury, InjuryAttrDef> = {
+  fracture: { attrs: ['strength', 'speed', 'endurance'], ratio: 1 / 3 },
+  bleeding: { attrs: ['vitality', 'endurance'], ratio: 1 / 3 },
+  shellShock: { attrs: ['spirit', 'willpower'], ratio: 1 / 3 },
+  infection: { attrs: ['vitality', 'willpower'], ratio: 1 / 4 },
+  fatigue: { attrs: ['vitality', 'strength', 'spirit', 'endurance', 'speed', 'willpower'], ratio: 1 / 4 },
+};
+
+/** 汇总一组伤势对每个六维的削减比例（叠加但不超过 60%，避免出现 0 属性） */
+export function injuryAttrPenalty(injuries: Injury[]): Partial<Record<keyof Attributes, number>> {
+  const out: Partial<Record<keyof Attributes, number>> = {};
+  for (const inj of injuries) {
+    const def = INJURY_ATTR_PENALTY[inj];
+    if (!def) continue;
+    for (const k of def.attrs) {
+      out[k] = Math.min(0.6, (out[k] ?? 0) + def.ratio);
+    }
+  }
+  return out;
+}
+
+/** 把伤势削减施加到基础六维上，返回「受伤后的基础六维」（每项最低 1） */
+export function applyInjuryToBase(base: Attributes, injuries: Injury[]): Attributes {
+  if (!injuries || injuries.length === 0) return { ...base };
+  const pen = injuryAttrPenalty(injuries);
+  const out: Attributes = { ...base };
+  for (const k of Object.keys(pen) as (keyof Attributes)[]) {
+    const ratio = pen[k] ?? 0;
+    out[k] = Math.max(1, Math.floor((base[k] ?? 0) * (1 - ratio)));
+  }
+  return out;
+}
+
+/** 单条伤势对人类可读的六维影响文本（如「力量 -5」） */
+export function injuryAttrText(base: Attributes, inj: Injury): string {
+  const def = INJURY_ATTR_PENALTY[inj];
+  if (!def) return '';
+  const after = applyInjuryToBase(base, [inj]);
+  return def.attrs
+    .map((k) => `${ATTR_LABEL_CN[k]} -${(base[k] ?? 0) - (after[k] ?? 0)}`)
+    .join('、');
+}
+
+const ATTR_LABEL_CN: Record<keyof Attributes, string> = {
+  vitality: '体质',
+  strength: '力量',
+  spirit: '感知',
+  endurance: '耐力',
+  speed: '敏捷',
+  willpower: '意志',
+};
+
+// ===== v1.0.3：血量三阶段 =====
+
+export type HpStage = 'gray' | 'red' | 'orange' | 'green';
+
+/** 血量百分比（0~100）→ 阶段：1~30 红血 / 31~70 橙血 / 70 以上绿血 / 0 灰（倒地） */
+export function hpStage(hpPct: number): HpStage {
+  if (hpPct <= 0) return 'gray';
+  if (hpPct <= 30) return 'red';
+  if (hpPct <= 70) return 'orange';
+  return 'green';
+}
+
+export const HP_STAGE_META: Record<HpStage, { label: string; bar: string; text: string; hex: string }> = {
+  gray: { label: '倒地', bar: 'bg-zinc-600', text: 'text-zinc-400', hex: '#52525b' },
+  red: { label: '红血·危', bar: 'bg-rose-600', text: 'text-rose-400', hex: '#e11d48' },
+  orange: { label: '橙血·险', bar: 'bg-amber-500', text: 'text-amber-400', hex: '#f59e0b' },
+  green: { label: '绿血·稳', bar: 'bg-emerald-500', text: 'text-emerald-400', hex: '#10b981' },
+};
+
+/**
+ * v1.0.3：战斗后按「战后剩余血量阶段」概率产生伤势。
+ *  - 震伤：全阶段都可能，血量越低概率越高；
+ *  - 失血：血量跌到 70% 以下才可能；
+ *  - 骨折：血量跌到 30% 以下才可能（最凶险的红血阶段专属）。
+ * 意志削减震伤概率，体质削减失血概率（抗毒抗辐射/止血能力）。
+ */
+export function rollCombatInjuries(
+  rng: () => number,
+  hpPct: number, // 0~100
+  attrs: Attributes,
+): Injury[] {
+  const p = Math.max(0, Math.min(100, hpPct)) / 100;
+  const out: Injury[] = [];
+  // 意志抗性：意志 10 → ×1.0；意志 20 → ×0.7（下限 0.55）
+  const willResist = Math.max(0.55, 1 - (attrs.willpower ?? 10) * 0.015);
+  // 体质抗性：体质 10 → ×1.0；体质 25 → ×0.75（下限 0.6）
+  const vitResist = Math.max(0.6, 1 - (attrs.vitality ?? 10) * 0.01);
+
+  // 震伤（全阶段）：血量满 ~12%，血量 30% ~39%，血量 10% ~46%
+  const shockP = (0.12 + 0.38 * (1 - p)) * willResist;
+  if (rng() < shockP) out.push('shellShock');
+
+  // 失血（<70%）：70% → 0%，30% → 约 26%，10% → 约 39%
+  if (p < 0.7) {
+    const bleedP = 0.45 * ((0.7 - p) / 0.7) * vitResist;
+    if (rng() < bleedP) out.push('bleeding');
+  }
+
+  // 骨折（<30%）：30% → 0%，15% → 30%，濒死 → 60%
+  if (p < 0.3) {
+    const fracP = 0.6 * ((0.3 - p) / 0.3);
+    if (rng() < fracP) out.push('fracture');
+  }
+  return out;
+}
 
 export interface SurvivorStatus {
   currentHp: number;
@@ -63,7 +187,7 @@ const MED_MULTIPLIER = 2;
 const MED_DURATION_MIN = 5;
 
 /** 由六维属性推导 battle-v5 气血上限（与 createCombatUnitFromCultivator 同公式） */
-function deriveMaxHp(attrs: Attributes, hpBonus = 0): number {
+export function deriveMaxHp(attrs: Attributes, hpBonus = 0): number {
   return Math.round(400 + attrs.vitality * 20 + attrs.endurance * 3 + hpBonus);
 }
 

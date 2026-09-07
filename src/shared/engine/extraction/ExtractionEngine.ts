@@ -19,7 +19,7 @@
  */
 
 import { Unit } from '@shared/engine/battle-v5/units/Unit';
-import { AttributeType } from '@shared/engine/battle-v5/core/types';
+import { AttributeType, ModifierType } from '@shared/engine/battle-v5/core/types';
 import type { UnitId } from '@shared/engine/battle-v5/core/types';
 import { BattleRuntime } from '@shared/engine/battle-v5/runtime/BattleRuntime';
 import { resolveDuelToCompletion } from '@shared/engine/battle-v5/round/BattleAutoResolver';
@@ -36,9 +36,15 @@ import {
   rollGearDrop,
 } from '@shared/engine/survival/affixes';
 import { RAID_PACK_CAPACITY } from '@shared/engine/survival/equipment';
+import type { GearItem, GearSlot } from '@shared/engine/survival/economy';
+import type { Injury } from '@shared/engine/survival/recovery';
+import { applyInjuryToBase, injuryAttrPenalty, rollCombatInjuries } from '@shared/engine/survival/recovery';
+import { INJURY_LABEL } from '@shared/engine/survival/recovery';
 import type {
+  AttrEffects,
   BattleReplayEntry,
   BattleRoundEntry,
+  CombatBonus,
   DangerZone,
   EncounterAction,
   EnemyArchetype,
@@ -46,6 +52,7 @@ import type {
   ExtractionRunState,
   ExtractionSummary,
   LootItem,
+  RunEquippedGear,
   SurvivorLoadout,
 } from './types';
 import {
@@ -117,6 +124,146 @@ function freshCondition(maxHp: number, maxMp: number): CultivatorCondition {
   };
 }
 
+// ===== v1.0.3：六维深化 + 伤势（debuff）实时生效 =====
+
+/**
+ * 六维深化派生值（引擎与 UI 共用一套口径）：
+ *  - 力量 → 背包容量（每 5 点 +1 格）、近战输出（进 battle-v5）
+ *  - 敏捷 → 行动耗时系数、潜行成功率
+ *  - 耐力 → 续航时限（每 1 点 = 2 分钟），超限开始判定疲惫
+ *  - 体质 → 气血/回血（battle-v5 + recovery）、失血抗性
+ *  - 意志 → 震伤（精神类伤势）抗性
+ *  - 感知 → 预警敌人（降低遇敌率）、搜刮额外物资概率
+ */
+export function deriveAttrEffects(attrs: Attributes): AttrEffects {
+  const strength = attrs.strength ?? 10;
+  const speed = attrs.speed ?? 10;
+  const endurance = attrs.endurance ?? 10;
+  const vitality = attrs.vitality ?? 10;
+  const spirit = attrs.spirit ?? 10;
+  const willpower = attrs.willpower ?? 10;
+  return {
+    packCapacity: RAID_PACK_CAPACITY + Math.floor(strength / 5),
+    // 敏捷 10 → 1.00；敏捷 20 → 0.80（搜索更快）；敏捷 6 → 1.08（更慢）
+    timeScale: Math.max(0.72, Math.min(1.12, 1 - (speed - 10) * 0.02)),
+    sneakBonus: (speed - 10) * 0.03,
+    staminaMinutes: endurance * 2,
+    // 感知 10 → 0；感知 20 → -0.20（遇敌率下降 20 个百分点）
+    encounterAvoid: (spirit - 10) * 0.02,
+    lootExtraChance: Math.min(0.6, spirit * 0.02),
+    shockResist: Math.max(0.55, 1 - willpower * 0.015),
+    bleedResist: Math.max(0.6, 1 - vitality * 0.01),
+  };
+}
+
+/** 本局穿戴装备提供的六维加成 */
+function runEquipAttrBonus(state: ExtractionRunState): Partial<Attributes> {
+  const out: Partial<Attributes> = {};
+  for (const e of state.equipped) {
+    for (const k of Object.keys(e.gear.modifiers) as (keyof Attributes)[]) {
+      out[k] = (out[k] ?? 0) + (e.gear.modifiers[k] ?? 0);
+    }
+  }
+  return out;
+}
+
+/**
+ * 本局「有效六维」= 基础六维 经伤势削减 + 当前穿戴装备 + 固定加成（避难所/势力）。
+ * 换装 / 受伤 / 治疗都会立刻反映到下一次战斗与页面展示。
+ */
+export function runEffectiveAttributes(state: ExtractionRunState): Attributes {
+  const profile = state.survivor.profile;
+  const base: Attributes =
+    state.baseAttributes ?? profile?.attributes ?? state.survivor.attributes;
+  const injured = applyInjuryToBase(base, state.injuries ?? []);
+  const out: Attributes = { ...injured };
+  const equipBonus = runEquipAttrBonus(state);
+  for (const k of Object.keys(equipBonus) as (keyof Attributes)[]) {
+    out[k] += equipBonus[k] ?? 0;
+  }
+  const fixed = state.attrBonusFixed ?? {};
+  for (const k of Object.keys(fixed) as (keyof Attributes)[]) {
+    out[k] += fixed[k] ?? 0;
+  }
+  return out;
+}
+
+/** 本局有效战斗加成 = 基础加成（词条+避难所） + 当前穿戴装备的战斗词条 */
+export function runCombatBonus(state: ExtractionRunState): CombatBonus {
+  const baseBonus = state.bonusBase ?? state.survivor.bonus ?? {
+    hpBonus: 0,
+    critBonus: 0,
+    lootLuck: 0,
+    startHpRatio: 0,
+  };
+  let hpBonus = baseBonus.hpBonus ?? 0;
+  let critBonus = baseBonus.critBonus ?? 0;
+  let lootLuck = baseBonus.lootLuck ?? 0;
+  let xpBonus = baseBonus.xpBonus ?? 0;
+  let coinBonus = baseBonus.coinBonus ?? 0;
+  for (const e of state.equipped) {
+    const c = e.gear.combat;
+    if (!c) continue;
+    hpBonus += c.hpBonus ?? 0;
+    critBonus += c.critBonus ?? 0;
+    lootLuck += c.lootLuck ?? 0;
+    xpBonus += c.xpBonus ?? 0;
+    coinBonus += c.coinBonus ?? 0;
+  }
+  return { ...baseBonus, hpBonus, critBonus, lootLuck, xpBonus, coinBonus };
+}
+
+/** 给定穿戴列表的气血加成之和（用于副本最大血量锚点） */
+function equippedHpBonus(equipped: RunEquippedGear[]): number {
+  let s = 0;
+  for (const e of equipped) s += e.gear.combat?.hpBonus ?? 0;
+  return s;
+}
+
+/**
+ * 副本有效最大血量 = 出击起点 maxHp + 当前穿戴装备气血加成 + 出击途中档案增量（体质点 / 带气血词条）。
+ * 这是副本内最大血量的唯一权威来源：换装、加点、选词条都只改它的构成项，不破坏当前血量语义。
+ */
+export function effectiveRunMaxHp(state: ExtractionRunState): number {
+  return (state.startMaxHp ?? 0) + equippedHpBonus(state.equipped) + (state.profileMaxHpBonus ?? 0);
+}
+
+/**
+ * 换装 / 加点 / 选词条后重算副本最大血量：仅改 max，current = min(max, 现有 current)。
+ *  —— 满血时减 max 则 current 同减、加 max 则 current 不变；非满时 current 不超过 max（符合「不影响当前血量」）。
+ */
+export function recomputeRunMaxHp(state: ExtractionRunState): void {
+  const newMax = effectiveRunMaxHp(state);
+  const hp = state.condition.resources.hp;
+  hp.max = newMax;
+  hp.current = Math.min(newMax, hp.current ?? 0);
+}
+
+/** 本局战局背包容量（受力量影响） */
+export function runPackCapacity(state: ExtractionRunState): number {
+  return deriveAttrEffects(runEffectiveAttributes(state)).packCapacity;
+}
+
+/** 伤势文本（UI 展示用）：给出该伤势削减了哪些基础六维、各减多少点 */
+export function injuryAttrTextOf(state: ExtractionRunState, inj: Injury): string {
+  const base: Attributes =
+    state.baseAttributes ?? state.survivor.profile?.attributes ?? state.survivor.attributes;
+  const after = applyInjuryToBase(base, [inj]);
+  const def = injuryAttrPenalty([inj]);
+  return (Object.keys(def) as (keyof Attributes)[])
+    .map((k) => `${ATTR_LABEL_CN[k]} -${(base[k] ?? 0) - (after[k] ?? 0)}`)
+    .join('、');
+}
+
+const ATTR_LABEL_CN: Record<keyof Attributes, string> = {
+  vitality: '体质',
+  strength: '力量',
+  spirit: '感知',
+  endurance: '耐力',
+  speed: '敏捷',
+  willpower: '意志',
+};
+
 function sumValue(items: LootItem[]): number {
   return items.reduce((acc, it) => acc + it.value * (it.qty ?? 1), 0);
 }
@@ -150,7 +297,7 @@ export function timeLeft(state: ExtractionRunState): number {
  * 消耗对局时间。时间耗尽且尚未撤离 → phase='timeout'（等同阵亡结算）。
  * 只在 searching 阶段生效，避免覆盖 dead/extracted 等终态。
  */
-function spendTime(state: ExtractionRunState, sec: number): void {
+function spendTime(state: ExtractionRunState, sec: number, rng: () => number = Math.random): void {
   if (state.phase !== 'searching') return;
   state.elapsedSec += sec;
   if (state.elapsedSec >= RUN_TIME_LIMIT_SEC) {
@@ -160,7 +307,42 @@ function spendTime(state: ExtractionRunState, sec: number): void {
     state.scene =
       '⏰ 对局时间耗尽！\n封锁区外墙永久关闭，救援频道一片死寂……\n你没能赶上撤离窗口，未入库物资与本次行动全部作废（安全箱除外）。';
     plog(state, '⏰ 警告：对局时间耗尽，未能撤离，判定阵亡！');
+    return;
   }
+  // 时间推进后判定耐力透支（疲惫）
+  checkFatigue(state, rng);
+}
+
+/** 行动耗时：受「敏捷」影响（敏捷越高，搜索/潜行/转移越快） */
+function actionCost(state: ExtractionRunState, base: number): number {
+  return Math.max(5, Math.round(base * deriveAttrEffects(runEffectiveAttributes(state)).timeScale));
+}
+
+/**
+ * v1.0.3 耐力·续航：超过「耐力 × 2 分钟」的行动时限后，越拖越容易疲惫。
+ * 疲惫 = 全六维 -1/4 的 debuff；可用兴奋剂 / 营养剂消除。
+ * 每次时间推进后判定一次，概率 = 5% × 超时分钟数（上限 60%）。
+ */
+function checkFatigue(state: ExtractionRunState, rng: () => number): void {
+  if (state.phase !== 'searching') return;
+  if ((state.injuries ?? []).includes('fatigue')) return;
+  const capMin = deriveAttrEffects(runEffectiveAttributes(state)).staminaMinutes;
+  const elapsedMin = state.elapsedSec / 60;
+  if (elapsedMin <= capMin) return;
+  const over = elapsedMin - capMin;
+  if (rng() < Math.min(0.6, 0.05 * over)) {
+    state.injuries = [...(state.injuries ?? []), 'fatigue'];
+    plog(
+      state,
+      `😮‍💨 连续行动 ${Math.floor(elapsedMin)} 分钟（耐力续航上限 ${capMin} 分钟）——体力透支，陷入【疲惫】：全六维 -1/4。`,
+    );
+    state.scene = `😮‍💨 你的双腿开始打颤，呼吸带着铁锈味。\n连续行动已超过耐力续航上限（${capMin} 分钟），【疲惫】debuff 生效：全六维 -1/4。\n使用兴奋剂 / 营养剂可以消除疲惫。`;
+  }
+}
+
+/** 手动推进对局时间（供 UI 调用，例如等待 / 强行消耗时间） */
+export function tickTime(state: ExtractionRunState, sec: number, rng: () => number = Math.random): void {
+  spendTime(state, sec, rng);
 }
 
 /** 当前区域剩余搜索次数 */
@@ -184,7 +366,8 @@ export function addCarriedLoot(state: ExtractionRunState, item: LootItem): boole
     existing.qty = (existing.qty ?? 1) + 1;
     return true;
   }
-  if (state.carriedLoot.length >= RAID_PACK_CAPACITY) return false;
+  // v1.0.3：背包格数受「力量」影响（每 5 点 +1 格）
+  if (state.carriedLoot.length >= runPackCapacity(state)) return false;
   state.carriedLoot.push({ ...item, qty: item.qty ?? 1 });
   return true;
 }
@@ -223,7 +406,7 @@ export function takeFromSecure(state: ExtractionRunState, slot: number): boolean
   if (state.phase !== 'searching') return false;
   const it = state.secureBox[slot];
   if (!it) return false;
-  if (state.carriedLoot.length >= RAID_PACK_CAPACITY) {
+  if (state.carriedLoot.length >= runPackCapacity(state)) {
     plog(state, '🎒 战局背包已满，无法从安全箱取回。');
     return false;
   }
@@ -276,14 +459,86 @@ export function isBossBranch(state: ExtractionRunState): boolean {
  * startArmor / startAmmo：由 caller 依据穿戴装备推算（护甲槽阶级→耐久，武器阶级→弹药）。
  * 入局即位于大地图第 1 分支区；用 advanceBranch 逐区深入。
  */
+/** v1.0.3 建局可选参数（换装 / 固定加成 / 继承伤势） */
+export interface CreateRunOptions {
+  /** 出击前已穿戴的装备（fromRun=false），副本内可被临时换装覆盖 */
+  equipped?: GearItem[];
+  /** 不含「装备战斗词条」的基础战斗加成（词条 + 避难所） */
+  bonusBase?: CombatBonus;
+  /** 避难所 / 势力等不随换装变化的六维加成 */
+  attrBonusFixed?: Partial<Attributes>;
+  /** 出击时从基地带出的伤势（带伤出击） */
+  injuries?: Injury[];
+  /** 出击起始最大血量：持久 maxHp + 临时驻防加成（medbay 等）。不传则由战斗单位派生。 */
+  startMaxHp?: number;
+  /** 持久 maxHp（不含临时驻防加成），结算回写基地时以此为准。不传则回落到 startMaxHp。 */
+  baseMaxHp?: number;
+}
+
 export function createRun(
   survivor: SurvivorLoadout,
   zone: DangerZone,
   startHp?: number,
   startArmor?: { current: number; max: number },
   startAmmo?: number,
+  opts: CreateRunOptions = {},
 ): ExtractionRunState {
   const runtime = new BattleRuntime();
+  // v1.0.3：本局穿戴列表（可被副本内临时换装改写）
+  const equipped: RunEquippedGear[] = (opts.equipped ?? []).map((g) => ({
+    slot: g.slot,
+    gear: g,
+    fromRun: false,
+  }));
+  // 基础六维（不含装备/避难所加成）——debuff 削减的基数
+  const baseAttributes: Attributes = { ...(survivor.profile?.attributes ?? survivor.attributes) };
+  // 装备战斗词条单独结算（换装时重算），bonusBase 只保留词条/避难所部分
+  let bonusBase: CombatBonus = opts.bonusBase ?? survivor.bonus ?? {
+    hpBonus: 0,
+    critBonus: 0,
+    lootLuck: 0,
+    startHpRatio: 0,
+  };
+  if (!opts.bonusBase && survivor.bonus) {
+    let gHp = 0;
+    let gCrit = 0;
+    let gLoot = 0;
+    let gXp = 0;
+    let gCoin = 0;
+    for (const e of equipped) {
+      const c = e.gear.combat;
+      if (!c) continue;
+      gHp += c.hpBonus ?? 0;
+      gCrit += c.critBonus ?? 0;
+      gLoot += c.lootLuck ?? 0;
+      gXp += c.xpBonus ?? 0;
+      gCoin += c.coinBonus ?? 0;
+    }
+    bonusBase = {
+      ...survivor.bonus,
+      hpBonus: (survivor.bonus.hpBonus ?? 0) - gHp,
+      critBonus: (survivor.bonus.critBonus ?? 0) - gCrit,
+      lootLuck: (survivor.bonus.lootLuck ?? 0) - gLoot,
+      xpBonus: (survivor.bonus.xpBonus ?? 0) - gXp,
+      coinBonus: (survivor.bonus.coinBonus ?? 0) - gCoin,
+    };
+  }
+  // 固定六维加成（避难所/势力等）：未显式传入时，由「总属性 - 基础属性 - 原装备加成」反推，
+  // 保证旧调用方（不传 opts）的有效六维与出击前完全一致。
+  const attrBonusFixed: Partial<Attributes> = opts.attrBonusFixed ?? (() => {
+    const out: Partial<Attributes> = {};
+    if (!survivor.profile) return out;
+    for (const k of Object.keys(survivor.attributes) as (keyof Attributes)[]) {
+      const delta = (survivor.attributes[k] ?? 0) - (baseAttributes[k] ?? 0);
+      if (delta !== 0) out[k] = delta;
+    }
+    for (const e of equipped) {
+      for (const k of Object.keys(e.gear.modifiers) as (keyof Attributes)[]) {
+        out[k] = (out[k] ?? 0) - (e.gear.modifiers[k] ?? 0);
+      }
+    }
+    return out;
+  })();
   // 有完整档案+战斗加成时，走正式 battle-v5 战斗单元；否则退化为属性直转。
   let unit: Unit;
   if (survivor.profile && survivor.bonus) {
@@ -291,9 +546,13 @@ export function createRun(
   } else {
     unit = buildUnit(runtime, 'survivor', survivor.name, survivor.attributes);
   }
-  const condition = freshCondition(unit.getMaxHp(), unit.getMaxMp());
+  const startMaxHp = opts.startMaxHp ?? unit.getMaxHp();
+  const baseMaxHp = opts.baseMaxHp ?? startMaxHp;
+  // 副本初始最大血量 = 起点 maxHp + 出击前已穿戴装备的气血加成（新需求②：装备气血计入副本上限）
+  const runMaxHp = startMaxHp + equippedHpBonus(equipped);
+  const condition = freshCondition(runMaxHp, unit.getMaxMp());
   if (typeof startHp === 'number') {
-    condition.resources.hp.current = Math.max(0, Math.min(unit.getMaxHp(), Math.round(startHp)));
+    condition.resources.hp.current = Math.max(0, Math.min(runMaxHp, Math.round(startHp)));
   }
   const armor = startArmor ?? { current: 0, max: 0 };
   const map = zone;
@@ -319,6 +578,15 @@ export function createRun(
     battles: [],
     xpGained: 0,
     buffCharges: 0,
+    // ===== v1.0.3 =====
+    injuries: [...(opts.injuries ?? [])],
+    equipped,
+    attrBonusFixed,
+    bonusBase,
+    baseAttributes,
+    startMaxHp,
+    baseMaxHp,
+    profileMaxHpBonus: 0,
     scene: [
       '【生存系统】任务简报：',
       `目标区域【${startZone.name}】—— ${startZone.flavor}`,
@@ -326,6 +594,9 @@ export function createRun(
       `对局时长 ${Math.round(RUN_TIME_LIMIT_SEC / 60)} 分钟，时间耗尽未撤离将判定阵亡。`,
       '每次搜索 / 深入都会消耗时间；越接近封锁，遭遇越频繁。',
       '安全箱内的物资即使阵亡也会保留，撤离成功才能带走背包物资。',
+      ...(opts.injuries && opts.injuries.length > 0
+        ? [`⚠ 带伤出击：${opts.injuries.map((i) => INJURY_LABEL[i]).join('、')}（六维已被临时削减）。`]
+        : []),
     ].join('\n'),
   };
 }
@@ -334,6 +605,10 @@ export function createRun(
 
 /** 战利品 id=ammo 时直接装填进弹匣（不占背包格） */
 const AMMO_LOOT_GRANT = 10;
+/** v1.0.3 弹药补给：搜索时额外翻出弹药箱的概率 / 数量区间（不占背包，直接进弹匣） */
+const AMMO_CACHE_CHANCE = 0.15; // 搜刮翻出弹药箱的概率（v1.0.3：下调以减缓弹药获取）
+const AMMO_CACHE_MIN = 3; // 个位数
+const AMMO_CACHE_MAX = 15; // 十几个
 
 /**
  * 把一张战利品表条目实际发放到对局（弹药→弹匣；装备→带阶级掉落；其余入背包）。
@@ -364,17 +639,26 @@ export function search(state: ExtractionRunState, rng: () => number = Math.rando
     plog(state, `本区域已搜刮干净（${MAX_ZONE_SEARCHES}/${MAX_ZONE_SEARCHES}），请前往下一区域。`);
     return;
   }
-  spendTime(state, ACTION_COST.search);
+  spendTime(state, actionCost(state, ACTION_COST.search), rng);
   if (state.phase !== 'searching') return;
 
   // 搜刮运势（词条/装备/避难所聚合）：整数保底额外次数 + 小数部分概率额外一次
+  // v1.0.3：感知越高，搜出额外物资的概率越大（与装备搜刮运势叠加）
+  const eff = deriveAttrEffects(runEffectiveAttributes(state));
+  const percepExtra = rng() < eff.lootExtraChance ? 1 : 0;
   const base = 1 + Math.floor(rng() * 2);
-  const extra = Math.floor(luck) + (rng() < luck % 1 ? 1 : 0);
+  const extra = Math.floor(luck) + (rng() < luck % 1 ? 1 : 0) + percepExtra;
   const gained: string[] = [];
   for (let i = 0; i < base + extra; i++) {
     const raw = state.zone.lootTable[Math.floor(rng() * state.zone.lootTable.length)];
     const text = grantLoot(state, raw, rng, luck);
     if (text) gained.push(text);
+  }
+  // v1.0.3 弹药补给：搜索有概率翻出弹药箱，直接装填进弹匣，不占用战局背包
+  if (rng() < AMMO_CACHE_CHANCE) {
+    const amount = AMMO_CACHE_MIN + Math.floor(rng() * (AMMO_CACHE_MAX - AMMO_CACHE_MIN + 1));
+    state.ammo += amount;
+    gained.push(`【弹药补给】×${amount}（已装填进弹匣，余 ${state.ammo} 发）`);
   }
   // 装备掉落：危险度越高，越可能搜到带阶级词缀的装备（白-绿-蓝-紫-黄-橙-红）
   const gearChance = 0.25 + state.zone.dangerLevel * 0.04;
@@ -460,9 +744,11 @@ export function rollEncounter(state: ExtractionRunState, rng: () => number = Mat
   const timePressure = 0.18 * (state.elapsedSec / RUN_TIME_LIMIT_SEC);
   // 霸主区：遭遇率显著提升（且敌人池已替换为霸主）
   const bossFloor = isBossBranch(state);
+  // v1.0.3 感知·预警：感知越高越不容易被敌人逮到（最多削减 20 个百分点）
+  const avoid = bossFloor ? 0 : Math.min(0.2, deriveAttrEffects(runEffectiveAttributes(state)).encounterAvoid);
   const chance = bossFloor
     ? Math.min(0.95, 0.6 + state.zone.dangerLevel * 0.04 + timePressure)
-    : Math.min(0.85, 0.22 + state.zone.dangerLevel * 0.11 + timePressure);
+    : Math.max(0.05, Math.min(0.85, 0.22 + state.zone.dangerLevel * 0.11 + timePressure - avoid));
   if (rng() >= chance) return null;
   return pickEnemy(state, rng);
 }
@@ -483,10 +769,11 @@ export function resolveEncounter(state: ExtractionRunState, action: EncounterAct
       break;
     }
     case 'sneak': {
-      spendTime(state, ACTION_COST.sneak);
+      spendTime(state, actionCost(state, ACTION_COST.sneak), rng);
       if (state.phase !== 'searching') return;
-      // 精英/Boss 更难绕开
-      const successP = enc.enemy.boss ? 0.35 : 0.72;
+      // 精英/Boss 更难绕开；v1.0.3 敏捷加成潜行成功率
+      const sneakBonus = deriveAttrEffects(runEffectiveAttributes(state)).sneakBonus;
+      const successP = Math.max(0.1, Math.min(0.95, (enc.enemy.boss ? 0.35 : 0.72) + sneakBonus));
       if (rng() < successP) {
         state.encounter = undefined;
         state.scene = `你贴着断墙，压低呼吸从侧翼绕行……\n【${enc.enemy.name}】在废墟间逡巡片刻，最终没有发现你的踪迹。\n危险暂时解除，但时间已悄悄流逝。`;
@@ -499,7 +786,7 @@ export function resolveEncounter(state: ExtractionRunState, action: EncounterAct
       break;
     }
     case 'throw': {
-      spendTime(state, ACTION_COST.throwEscape);
+      spendTime(state, actionCost(state, ACTION_COST.throwEscape), rng);
       if (state.phase !== 'searching') return;
       state.encounter = undefined;
       state.scene = '烟雾弹炸开，浓白的烟雾瞬间吞没了敌人的视野。\n你借着烟幕低姿疾走，甩开了纠缠。\n（投掷物已消耗）';
@@ -507,7 +794,7 @@ export function resolveEncounter(state: ExtractionRunState, action: EncounterAct
       break;
     }
     case 'extract': {
-      spendTime(state, ACTION_COST.travel);
+      spendTime(state, actionCost(state, ACTION_COST.travel), rng);
       if (state.phase !== 'searching') return;
       state.encounter = undefined;
       state.atExtract = true;
@@ -678,10 +965,11 @@ function buildBattleReplay(
     : `第 ${duel.turns} 回合，你的枪声永远停在了这片废墟。`;
   const narrative = [intro, mid, taken, end].filter(Boolean).join(' ');
 
-  // 六维属性交互点评
+  // 六维属性交互点评（v1.0.3：用「本局有效六维」对比，debuff 会真实反映在点评里）
   const notes: string[] = [];
+  const effAttrs = runEffectiveAttributes(state);
   for (const def of ATTR_NOTE_DEFS) {
-    const mine = state.survivor.attributes[def.key] ?? 0;
+    const mine = effAttrs[def.key] ?? 0;
     const theirs = enemy.attributes[def.key] ?? 0;
     const diff = mine - theirs;
     if (Math.abs(diff) >= 3) {
@@ -733,26 +1021,35 @@ export function fight(
   const hpBeforeFight = state.condition.resources.hp.current;
 
   const runtime = new BattleRuntime();
+  // v1.0.3：战斗属性 = 本局有效六维（基础 − 伤势削减 + 当前穿戴装备 + 固定加成）
+  let effAttrs = runEffectiveAttributes(state);
   // v1.0.2 增益药剂：出战前使用了增益补给（buffCharges>0）时，本场交战六维临时强化，消耗 1 次
-  let effAttrs = state.survivor.attributes;
   if (state.buffCharges > 0) {
     state.buffCharges -= 1;
     effAttrs = {
-      ...state.survivor.attributes,
-      strength: (state.survivor.attributes.strength ?? 0) + 5,
-      speed: (state.survivor.attributes.speed ?? 0) + 5,
-      endurance: (state.survivor.attributes.endurance ?? 0) + 3,
-      willpower: (state.survivor.attributes.willpower ?? 0) + 2,
+      ...effAttrs,
+      strength: (effAttrs.strength ?? 0) + 5,
+      speed: (effAttrs.speed ?? 0) + 5,
+      endurance: (effAttrs.endurance ?? 0) + 3,
+      willpower: (effAttrs.willpower ?? 0) + 2,
     };
     plog(state, '🧪 增益药剂生效：力量/敏捷/耐力/意志临时提升（剩余备战 ' + state.buffCharges + ' 次）。');
   }
-  // 有完整档案+战斗加成时走正式 battle-v5 战斗单元（装备/词条生效）；否则属性直转。
+  // 本局实时战斗加成（换装后立即生效）
+  const runBonus = runCombatBonus(state);
+  if ((state.injuries ?? []).length > 0) {
+    plog(
+      state,
+      `⚠ 带伤作战：${state.injuries.map((i) => INJURY_LABEL[i]).join('、')}（有效六维已被削减）。`,
+    );
+  }
+  // 有完整档案时走正式 battle-v5 战斗单元（装备/词条生效）；否则属性直转。
   let survivorUnit: Unit;
-  if (state.survivor.profile && state.survivor.bonus) {
+  if (state.survivor.profile) {
     survivorUnit = buildSurvivorUnit(
       state.survivor.profile,
       effAttrs,
-      state.survivor.bonus,
+      runBonus,
       runtime,
       state.condition.resources.hp.current,
     );
@@ -764,6 +1061,23 @@ export function fight(
       effAttrs,
       state.condition.resources.hp.current,
     );
+  }
+  // v1.0.3 新需求：把战斗单位的最大血量锚定到「副本有效最大血量」（起点 + 装备气血 + 途中加点/词条增量），
+  // 保证副本内换装带气血装备、以及出击途中分配体质点 / 选择带气血词条时，最大血量即时、一致地生效。
+  const anchorMax = effectiveRunMaxHp(state);
+  if (anchorMax > 0) {
+    const naturalMax = survivorUnit.getMaxHp();
+    if (naturalMax !== anchorMax) {
+      survivorUnit.attributes.addModifier({
+        id: 'sortie-start-maxhp',
+        attrType: AttributeType.MAX_HP,
+        type: ModifierType.FIXED,
+        value: anchorMax - naturalMax,
+        source: { sourceType: 'survivalBonus', carrierId: 'survival' },
+      });
+      survivorUnit.updateDerivedStats();
+      survivorUnit.initializeResources({ hp: state.condition.resources.hp.current });
+    }
   }
   const enemyUnit = buildEnemyUnit(runtime, enemy);
   // v1.0.2 伤害类投掷物自动使用：快捷·投掷槽装备了破片手雷时，45% 概率战斗先手引爆
@@ -811,6 +1125,23 @@ export function fight(
   }
 
   state.phase = 'searching';
+  // ===== v1.0.3 战后伤势判定：按战后剩余血量阶段概率挂上 debuff =====
+  const hpNow = state.condition.resources.hp.current;
+  const hpMaxNow = state.condition.resources.hp.max ?? Math.max(1, hpNow);
+  const hpPctNow = hpMaxNow > 0 ? (hpNow / hpMaxNow) * 100 : 0;
+  const newInjuries = rollCombatInjuries(rng, hpPctNow, runEffectiveAttributes(state));
+  if (newInjuries.length > 0) {
+    for (const inj of newInjuries) {
+      if (!state.injuries.includes(inj)) {
+        state.injuries = [...state.injuries, inj];
+        plog(
+          state,
+          `🩹 战后负伤【${INJURY_LABEL[inj]}】（剩余血量 ${Math.round(hpPctNow)}%）——${injuryAttrTextOf(state, inj)}。`,
+        );
+      }
+    }
+    state.scene = `🩹 硝烟散去，你才感觉到疼。\n战后判定附加伤势：${newInjuries.map((i) => INJURY_LABEL[i]).join('、')}（基础六维已被临时削减，使用对应药物可消除）。`;
+  }
   const armorNote =
     absorbed > 0
       ? `防弹甲承受了大部分冲击（护甲耐久 -${absorbed}，余 ${state.armor.current}/${state.armor.max}）`
@@ -855,6 +1186,104 @@ export function fight(
   spendTime(state, ACTION_COST.fight + Math.floor(rng() * 20));
 }
 
+// ===== v1.0.3：副本内临时换装 + 伤势治疗 =====
+
+/** 把一件装备（GearItem）包成战局背包条目（换下来的旧装备回流用） */
+function gearToLoot(gear: GearItem): LootItem {
+  return {
+    id: `loot-${gear.id}`,
+    name: gear.name,
+    kind: 'gear',
+    value: gear.value,
+    tier: gear.tier ?? 0,
+    rarityName: gear.rarityName ?? gear.rarity,
+    gear,
+  };
+}
+
+/**
+ * 在副本里穿戴临时背包中的装备。
+ *  - 同槽位已有装备 → 换下的旧装备回到临时背包（若背包已满则拒绝换装）；
+ *  - 穿戴后，六维 / 战斗加成立即生效，影响接下来的战斗与搜刮。
+ * 返回是否成功。
+ */
+export function equipCarriedGear(state: ExtractionRunState, index: number): boolean {
+  if (state.phase !== 'searching') return false;
+  const it = state.carriedLoot[index];
+  if (!it || !it.gear) return false;
+  const gear = it.gear;
+  const prev = state.equipped.find((e) => e.slot === gear.slot);
+  const cap = runPackCapacity(state);
+  // 换下的旧装备需要占一格：若背包已满（且换下后无处安放）则拒绝
+  if (prev && state.carriedLoot.length - 1 >= cap) {
+    plog(state, `🎒 战局背包已满，无法换下【${prev.gear.name}】。`);
+    return false;
+  }
+  // 从临时背包移除（整格移除，装备不堆叠）
+  state.carriedLoot.splice(index, 1);
+  if (prev) {
+    state.equipped = state.equipped.filter((e) => e.slot !== gear.slot);
+    state.carriedLoot.push(gearToLoot(prev.gear));
+    plog(state, `🎽 换装：卸下【${prev.gear.name}】，改穿【${gear.name}】（旧装备已回临时背包）。`);
+  } else {
+    plog(state, `🎽 换装：穿上了【${gear.name}】（${GEAR_SLOT_LABEL_CN[gear.slot] ?? gear.slot}槽）。`);
+  }
+  state.equipped = [...state.equipped, { slot: gear.slot, gear, fromRun: true }];
+  // 新需求②：换装后按「副本有效最大血量」重算 max（仅改 max，current 用 min 夹取——满血减 max 则当前同减、加 max 则当前不变）
+  recomputeRunMaxHp(state);
+  return true;
+}
+
+/** 卸下本局某槽位装备，放回临时背包（背包满则失败） */
+export function unequipRunGear(state: ExtractionRunState, slot: GearSlot): boolean {
+  if (state.phase !== 'searching') return false;
+  const cur = state.equipped.find((e) => e.slot === slot);
+  if (!cur) return false;
+  if (state.carriedLoot.length >= runPackCapacity(state)) {
+    plog(state, '🎒 战局背包已满，无法卸下装备。');
+    return false;
+  }
+  state.equipped = state.equipped.filter((e) => e.slot !== slot);
+  state.carriedLoot.push(gearToLoot(cur.gear));
+  plog(state, `🎽 卸下【${cur.gear.name}】，已放入战局背包。`);
+  // 新需求②：卸下带气血装备后按「副本有效最大血量」重算 max（仅改 max，current 用 min 夹取）
+  recomputeRunMaxHp(state);
+  return true;
+}
+
+/** 取本局某槽位正在穿戴的装备 */
+export function runGearOf(state: ExtractionRunState, slot: GearSlot): RunEquippedGear | undefined {
+  return state.equipped.find((e) => e.slot === slot);
+}
+
+const GEAR_SLOT_LABEL_CN: Record<GearSlot, string> = {
+  weapon: '主武器',
+  offWeapon: '副武器',
+  head: '头部',
+  armor: '躯干护甲',
+  legs: '腿部',
+  accessory: '饰品',
+};
+
+/**
+ * 使用恢复用品消除指定伤势（UI 依据药品的 treats 列表调用）。
+ * 返回实际被消除的伤势；已不带该伤势则忽略。
+ */
+export function cureInjuries(state: ExtractionRunState, injuries: Injury[]): Injury[] {
+  if (state.phase !== 'searching') return [];
+  const cured: Injury[] = [];
+  for (const inj of injuries) {
+    if (state.injuries.includes(inj)) cured.push(inj);
+  }
+  if (cured.length === 0) return [];
+  state.injuries = state.injuries.filter((i) => !cured.includes(i));
+  plog(
+    state,
+    `💊 伤势已处理：${cured.map((i) => INJURY_LABEL[i]).join('、')} 消除，六维恢复（当前伤势 ${state.injuries.length} 项）。`,
+  );
+  return cured;
+}
+
 /**
  * 从战局背包消耗一件道具（qty-1 或整格移除）。
  * 供 UI 实现「副本内使用搜到的回复类道具」；返回被消耗的物品。
@@ -872,7 +1301,7 @@ export function consumeCarriedItem(state: ExtractionRunState, index: number): Lo
 /** 搜刮敌方尸体：战斗胜利后的额外战利品机会（霸主尸体必掉高阶装备） */
 export function lootCorpse(state: ExtractionRunState, rng: () => number = Math.random): void {
   if (!state.corpse || state.phase !== 'searching') return;
-  spendTime(state, ACTION_COST.corpseLoot);
+  spendTime(state, actionCost(state, ACTION_COST.corpseLoot), rng);
   if (state.phase !== 'searching') return;
   const enemyName = state.corpse.enemyName;
   const wasBoss = !!state.corpse.boss;
@@ -905,10 +1334,10 @@ export function lootCorpse(state: ExtractionRunState, rng: () => number = Math.r
 // ===== 转移与撤离 =====
 
 /** 前往下一区域：消耗时间、改变风险等级（zoneSearches 按区域独立累计，回来仍是搜干净的） */
-export function moveToZone(state: ExtractionRunState, zone: DangerZone): void {
+export function moveToZone(state: ExtractionRunState, zone: DangerZone, rng: () => number = Math.random): void {
   if (state.phase !== 'searching' || state.encounter || state.atExtract) return;
   if (zone.id === state.zone.id) return;
-  spendTime(state, ACTION_COST.move);
+  spendTime(state, actionCost(state, ACTION_COST.move), rng);
   if (state.phase !== 'searching') return;
   state.zone = zone;
   state.scene = [
@@ -958,7 +1387,7 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
       return;
     }
   }
-  spendTime(state, ACTION_COST.move);
+  spendTime(state, actionCost(state, ACTION_COST.move), rng);
   if (state.phase !== 'searching') return;
   state.branchIndex += 1;
   const nz = branchZone(state.map, state.branchIndex);
@@ -974,9 +1403,9 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
 }
 
 /** 主动奔赴撤离点：消耗时间 */
-export function goToExtract(state: ExtractionRunState): void {
+export function goToExtract(state: ExtractionRunState, rng: () => number = Math.random): void {
   if (state.phase !== 'searching' || state.encounter || state.atExtract) return;
-  spendTime(state, ACTION_COST.travel);
+  spendTime(state, actionCost(state, ACTION_COST.travel), rng);
   if (state.phase !== 'searching') return;
   state.atExtract = true;
   state.scene = '🚁 你已抵达撤离信号区，救援直升机正在接近。\n【确认撤离】结束本局，背包物资全部入库。\n【继续搜刮】放弃本次机会——贪心者自负风险。';
@@ -984,9 +1413,9 @@ export function goToExtract(state: ExtractionRunState): void {
 }
 
 /** 放弃本次撤离，返回地图继续搜刮 */
-export function leaveExtract(state: ExtractionRunState): void {
+export function leaveExtract(state: ExtractionRunState, rng: () => number = Math.random): void {
   if (state.phase !== 'searching' || !state.atExtract) return;
-  spendTime(state, ACTION_COST.leaveExtract);
+  spendTime(state, actionCost(state, ACTION_COST.leaveExtract), rng);
   if (state.phase !== 'searching') return;
   state.atExtract = false;
   state.scene = `你咬了咬牙，退出了撤离信号区。\n时间不等人——剩余 ${fmtClock(timeLeft(state))}。`;
