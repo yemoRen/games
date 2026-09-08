@@ -27,6 +27,8 @@ const DANGER_LABEL: Record<number, string> = {
   3: '危3·凶险',
   4: '危4·高危',
   5: '危5·死地',
+  6: '危6·禁区',
+  7: '危7·绝境',
 };
 
 export default function SortiePage() {

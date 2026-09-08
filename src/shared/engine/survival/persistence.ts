@@ -9,6 +9,7 @@ import type { SurvivalGameState } from './state';
 import type { ExtractionRunState } from '../extraction/types';
 import { emptyGardenPlots } from './state';
 import { getCurrentUser } from './account';
+import { DEPRECATED_PROTAGONIST_TRAIT_IDS } from './chargen';
 
 const SAVE_PREFIX = 'wqqs-survival-save-v1:';
 const RUN_PREFIX = 'wqqs-survival-run-v1:';
@@ -50,6 +51,12 @@ export function loadGame(): SurvivalGameState | null {
       if (!data.gardenPlots || data.gardenPlots.length === 0) {
         data.gardenPlots = emptyGardenPlots();
       }
+      // v1.0.10：主角不再附带「退役兵 / 战地医护」，旧存档读取时剥离（已计入的六维保留）
+      data.survivors = data.survivors.map((sv) =>
+        sv.isProtagonist && Array.isArray(sv.traits)
+          ? { ...sv, traits: sv.traits.filter((t) => !DEPRECATED_PROTAGONIST_TRAIT_IDS.includes(t.id)) }
+          : sv,
+      );
       return data;
     }
   } catch {

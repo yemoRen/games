@@ -7,6 +7,7 @@
  * 否则保持轻量占位（拍卖/赌战等需后端支持的项）。
  */
 import { useEffect, useMemo, useState } from 'react';
+import { ResetSaveDialog } from '../components/ResetSaveDialog';
 import { attrLabel, rarityLabel } from '@shared/engine/survival/chargen';
 import type { Attributes } from '@shared/types/cultivator';
 import type { SurvivalGameState, SortieLog } from '@shared/engine/survival/state';
@@ -954,7 +955,14 @@ export const ViewFeedback: React.FC = () => (
 
 // ===== 23. 系统设置 =====
 export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
-  const [confirmReset, setConfirmReset] = useState(false);
+  // v1.0.10：重置存档不再沿用「玩家代号」，改为弹窗输入重生者姓名
+  const [resetOpen, setResetOpen] = useState(false);
+  const suggestedName = (
+    (state.playerCodename as string | undefined) ||
+    state.survivors.find((s) => s.isProtagonist)?.name ||
+    state.survivors[0]?.name ||
+    ''
+  ).trim();
   const seed = ((state as { worldSeed?: number }).worldSeed ?? new Date(state.createdAt).getTime()) || 1;
   return (
     <Section title="系统设置">
@@ -962,30 +970,24 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
         <h3 className="font-semibold text-zinc-100">存档</h3>
         <div className="mt-2 text-xs text-zinc-400">本存档创建于 {new Date(state.createdAt).toLocaleString()}。</div>
         <div className="mt-3 flex gap-2">
-          {confirmReset ? (
-            <>
-              <span className="self-center text-xs text-rose-300">确认重置？将清空并重建以玩家代号命名的主角（不可撤销）</span>
-              <button
-                onClick={() => {
-                  const codename = ((state.playerCodename as string | undefined) || state.survivors[0]?.name || '').trim();
-                  if (!codename) { alert('未找到玩家代号，请先登录或建立档案再重置。'); return; }
-                  mutate(() => createProtagonistGame(codename));
-                  setConfirmReset(false);
-                }}
-                className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
-              >确认</button>
-              <button
-                onClick={() => setConfirmReset(false)}
-                className="rounded bg-stone-600 px-3 py-1 text-xs text-white hover:bg-stone-700"
-              >取消</button>
-            </>
-          ) : (
-            <button
-              onClick={() => setConfirmReset(true)}
-              className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
-            >重置存档</button>
-          )}
+          <button
+            onClick={() => setResetOpen(true)}
+            className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
+          >重置存档</button>
+          <span className="self-center text-xs text-zinc-500">
+            清空当前避难所，重建一名新的主角（需输入重生者姓名，不可撤销）
+          </span>
         </div>
+        {resetOpen ? (
+          <ResetSaveDialog
+            defaultName={suggestedName}
+            onCancel={() => setResetOpen(false)}
+            onConfirm={(name) => {
+              mutate(() => createProtagonistGame(name));
+              setResetOpen(false);
+            }}
+          />
+        ) : null}
       </Card>
       <Card>
         <h3 className="font-semibold text-zinc-100">世界种子</h3>

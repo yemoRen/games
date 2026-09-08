@@ -182,6 +182,72 @@ const GEAR_SLOT_BASE: Record<GearSlot, Partial<Attributes>> = {
 
 // ===== 阶级抽取（随副本难度提升） =====
 
+// ===== v1.0.10：装备掉落品质权重表（按副本危险度 危1..危7）=====
+//
+// 语义：一旦「判定掉落装备」，按下表抽品质。行 = 危1..危7，列 = 白/绿/蓝/紫/黄/橙/红（单位 %）。
+// 小怪（普通敌人 / 翻箱倒柜）并非必爆装备，先过 mobGearDropChance；霸主必定爆装备，走 BOSS 表。
+// 这是「基础概率权重」，实际还会被感知 / 搜刮运势（luckBias）向高阶拉动。
+
+/** 小怪掉落分布（掉落装备时品质权重，%） */
+export const MOB_GEAR_QUALITY_WEIGHTS: readonly (readonly number[])[] = [
+  //        白   绿   蓝   紫   黄   橙   红
+  /* 危1 */ [70, 22, 7, 1, 0, 0, 0],
+  /* 危2 */ [58, 28, 11, 2.5, 0.5, 0, 0],
+  /* 危3 */ [45, 30, 18, 5.5, 1, 0.5, 0],
+  /* 危4 */ [32, 28, 24, 11, 3.5, 1.5, 0],
+  /* 危5 */ [20, 24, 26, 18, 8, 3.5, 0.5],
+  /* 危6 */ [10, 18, 24, 24, 14, 8, 2],
+  /* 危7 */ [4, 10, 18, 26, 20, 16, 6],
+];
+
+/** BOSS 掉落分布（掉落装备时品质权重，%） */
+export const BOSS_GEAR_QUALITY_WEIGHTS: readonly (readonly number[])[] = [
+  //        白   绿   蓝   紫   黄   橙   红
+  /* 危1 */ [40, 38, 18, 4, 0, 0, 0],
+  /* 危2 */ [30, 35, 24, 9, 2, 0, 0],
+  /* 危3 */ [20, 28, 30, 16, 5, 1, 0],
+  /* 危4 */ [12, 22, 28, 24, 10, 4, 0],
+  /* 危5 */ [6, 14, 24, 28, 16, 10, 2],
+  /* 危6 */ [3, 8, 18, 26, 22, 16, 7],
+  /* 危7 */ [1, 4, 12, 22, 24, 24, 13],
+];
+
+/** 危险度归一到 1..7（副本难度统一为危1~危7） */
+export function clampDanger(dangerLevel: number): number {
+  const d = Math.round(Number.isFinite(dangerLevel) ? dangerLevel : 1);
+  return Math.max(1, Math.min(7, d));
+}
+
+/**
+ * 小怪掉落装备的基础概率：并不是每只小怪都会爆装备。
+ * 危1 20% → 危7 44%，受搜刮运势（luck，0.2 = +20%）线性放大，上限 90%。
+ */
+export function mobGearDropChance(dangerLevel: number, luck = 0): number {
+  const d = clampDanger(dangerLevel);
+  const base = 0.2 + 0.04 * (d - 1);
+  return Math.max(0, Math.min(0.9, base * (1 + Math.max(0, luck))));
+}
+
+/**
+ * 按危险度 + 是否霸主，抽掉落装备的品质阶级（0..6）。
+ * luckBias（感知 / 搜刮运势）会把权重整体向高阶推移：weight *= (1 + gamma * tier)。
+ */
+export function rollGearTier(
+  rng: RNG,
+  dangerLevel: number,
+  boss = false,
+  luckBias = 0,
+): number {
+  const d = clampDanger(dangerLevel);
+  const table = (boss ? BOSS_GEAR_QUALITY_WEIGHTS : MOB_GEAR_QUALITY_WEIGHTS)[d - 1];
+  const gamma = Math.max(-0.5, Math.min(1, luckBias)) * 0.35;
+  const candidates = table.map((base, tier) => ({
+    value: tier,
+    weight: Math.max(0, base * (1 + gamma * tier)),
+  }));
+  return weightedPick(rng, candidates);
+}
+
 /**
  * 依副本危险度抽一个阶级。
  * 危险度越高，可达最高阶越高，且权重分布整体向高阶偏移（gamma 随危险度增大），
@@ -315,8 +381,13 @@ export function rollGearDrop(
   dangerLevel: number,
   luckBias = 0.1,
   minTier = 0,
+  boss = false,
 ): LootItemGear {
-  const tier = Math.max(rollTier(rng, dangerLevel, luckBias), Math.max(0, Math.min(6, minTier)));
+  // v1.0.10：改为查表（危1~危7 的小怪 / 霸主品质权重），保底品阶仍可叠加
+  const tier = Math.max(
+    rollGearTier(rng, dangerLevel, boss, luckBias),
+    Math.max(0, Math.min(6, minTier)),
+  );
   const t = tierByTier(tier);
   // 全 6 槽位加权：武器/护甲是核心输出与减伤位，权重更高；其余四槽均分剩余权重
   const slot = weightedPick(rng, [

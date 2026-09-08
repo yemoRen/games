@@ -175,7 +175,7 @@ const ENEMIES: Record<string, EnemyArchetype> = {
   },
 };
 
-/** 危险区域（对应原「秘境」）。危险度 1..6，越高产出越豪华、敌人词缀越狠。 */
+/** 危险区域（对应原「秘境」）。v1.0.10：7 张图依次对应危险度 危1..危7，越高产出越豪华、敌人词缀越狠。 */
 export const DANGER_ZONES: DangerZone[] = [
   {
     id: 'apartment',
@@ -246,7 +246,7 @@ export const DANGER_ZONES: DangerZone[] = [
   {
     id: 'military',
     name: '军事检查站',
-    dangerLevel: 3,
+    dangerLevel: 4,
     flavor: '军械与防具，掠夺者重兵把守。',
     lootTable: [LOOT.gear, LOOT.ammo, LOOT.parts, LOOT.credits, LOOT.grenade],
     enemies: [ENEMIES.raider, ENEMIES.drone, ENEMIES.mutant],
@@ -268,7 +268,7 @@ export const DANGER_ZONES: DangerZone[] = [
   {
     id: 'subway',
     name: '地铁隧道',
-    dangerLevel: 4,
+    dangerLevel: 5,
     flavor: '幽暗迷宫，重装暴徒与变异生物伏击。',
     lootTable: [LOOT.parts, LOOT.battery, LOOT.meds, LOOT.ration, LOOT.credits, LOOT.coolant, LOOT.nutrient],
     enemies: [ENEMIES.brute, ENEMIES.mutant, ENEMIES.zombie],
@@ -290,7 +290,7 @@ export const DANGER_ZONES: DangerZone[] = [
   {
     id: 'research',
     name: '地下研究所',
-    dangerLevel: 5,
+    dangerLevel: 6,
     flavor: '高危区，传说有变异巨兽与顶级科技。',
     lootTable: [LOOT.serum, LOOT.nanogel, LOOT.chempack, LOOT.parts, LOOT.gear, LOOT.credits, LOOT.blueprint, LOOT.smoke],
     enemies: [ENEMIES.raider, ENEMIES.boss, ENEMIES.drone],
@@ -312,7 +312,7 @@ export const DANGER_ZONES: DangerZone[] = [
   {
     id: 'nuclear',
     name: '核爆禁区',
-    dangerLevel: 6,
+    dangerLevel: 7,
     flavor: '废土尽头，战争领主坐镇，掉宝最丰也最致命。',
     lootTable: [LOOT.alloy, LOOT.blueprint, LOOT.gear, LOOT.credits, LOOT.medkit, LOOT.nanogel, LOOT.serum, LOOT.chempack, LOOT.flash],
     enemies: [ENEMIES.warlord, ENEMIES.brute, ENEMIES.drone, ENEMIES.mutant],
@@ -367,7 +367,7 @@ export const ZONE_POOL: { id: string; name: string; flavor: string }[] = [
 /**
  * 生成本局分支图：从固定 16 区池构建节点 + 随机连边，保证连通（起点可达全部节点）。
  *  - 深度：随机生成树 + 少量冗余边，得到每个节点距起点的深度。
- *  - 危险度：由深度线性推导（1..6），保证"越深越危险"。
+ *  - 危险度：v1.0.10 起按「本图难度」推导——最深处 = 该图危险度（危1..危7），入口恒为 危1，保证"越深越危险"。
  *  - 霸主：深度最大的节点（并列随机取一），敌人池替换为地图霸主。
  *  - 撤离点：深度 [2, maxDepth-1] 范围内随机取 EXTRACT_POINT_COUNT 个（排除起点/霸主）。
  */
@@ -425,8 +425,12 @@ export function generateZoneGraph(theme: DangerZone, rng: () => number): ZoneGra
   };
   const extractIdx = pick(EXTRACT_POINT_COUNT, (i) => depth[i] >= 2 && depth[i] <= maxDepth - 1 && i !== bossIdx);
 
+  // v1.0.10：区域危险度与「本图难度」绑定——入口 危1，最深处 = 本图危险度（危1..危7）。
+  // 例：废弃公寓全图 危1；核爆禁区由入口 危1 递增到最深处 危7。
+  const baseDanger = Math.max(1, Math.min(7, Math.round(theme.dangerLevel ?? 1)));
+  const span = Math.max(0, baseDanger - 1);
   const nodes: ZoneNode[] = ids.map((_, i) => {
-    const danger = Math.max(1, Math.min(6, 1 + Math.round((depth[i] * 5) / Math.max(1, maxDepth))));
+    const danger = Math.max(1, Math.min(7, 1 + Math.round((depth[i] * span) / Math.max(1, maxDepth))));
     const isBoss = i === bossIdx;
     return {
       id: ids[i],

@@ -405,14 +405,21 @@ const PROTAGONIST_TRAIT: SurvivorTrait = {
   quality: 'purple',
 };
 
-/** 按 id 取词条池中的词条（用于给主角固定配置真实词条天赋） */
-function traitById(id: string): SurvivorTrait {
+/** 按 id 取词条池中的词条（升级三选一 / 主角固定天赋等场景复用） */
+export function traitById(id: string): SurvivorTrait {
   const t = TRAIT_POOL.find((x) => x.id === id);
   if (!t) throw new Error(`未知词条: ${id}`);
   return t;
 }
 
 export const PROTAGONIST_BASE_ATTR = 15;
+
+/**
+ * v1.0.10：创建主角时已移除的附加词条（退役兵 / 战地医护）。
+ * 旧存档读取时据此从主角身上剥离，避免历史角色仍带着两条额外天赋。
+ * 注意：仅作用于主角（isProtagonist），普通幸存者随机到这些词条不受影响。
+ */
+export const DEPRECATED_PROTAGONIST_TRAIT_IDS: readonly string[] = ['ex-soldier', 'field-medic'];
 
 // ===== 升级词条三选一（系统流设定） =====
 
@@ -450,8 +457,8 @@ export function rollTraitCandidates(rng: RNG, excludeIds: string[] = [], count =
 export function makeProtagonist(name: string): SurvivorProfile {
   const attributes = emptyAttributes();
   for (const k of ALL_ATTR_KEYS) attributes[k] = PROTAGONIST_BASE_ATTR;
-  // 主角固定配置两条真实词条天赋（若未设置则补齐），其属性增量叠加进基础属性
-  const traits = [PROTAGONIST_TRAIT, traitById('ex-soldier'), traitById('field-medic')];
+  // v1.0.10：主角只保留「末世主角」一条身份词条，不再附带退役兵 / 战地医护
+  const traits = [PROTAGONIST_TRAIT];
   for (const t of traits) {
     for (const k of ALL_ATTR_KEYS) {
       const delta = (t.modifiers as Record<string, number | undefined>)[k];

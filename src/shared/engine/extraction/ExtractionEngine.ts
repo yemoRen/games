@@ -34,6 +34,7 @@ import {
   rollEnemyAffixes,
   aggregateEnemyAffixes,
   rollGearDrop,
+  mobGearDropChance,
 } from '@shared/engine/survival/affixes';
 import { RAID_PACK_CAPACITY } from '@shared/engine/survival/equipment';
 import type { GearItem, GearSlot } from '@shared/engine/survival/economy';
@@ -799,7 +800,8 @@ export function search(state: ExtractionRunState, rng: () => number = Math.rando
     ammoGained += AMMO_CACHE_MIN + Math.floor(rng() * (AMMO_CACHE_MAX - AMMO_CACHE_MIN + 1));
   }
   // 装备掉落：危险度越高，越可能搜到带阶级词缀的装备（白-绿-蓝-紫-黄-橙-红）
-  const gearChance = 0.25 + state.zone.dangerLevel * 0.04;
+  // v1.0.10：改为统一的小怪爆率（危1 20% → 危7 44%），并受搜刮运势加成
+  const gearChance = mobGearDropChance(state.zone.dangerLevel, luck);
   if (rng() < gearChance) {
     gained.push(rollGearDrop(rng, state.zone.dangerLevel, luck * 0.2));
   }
@@ -1395,23 +1397,13 @@ export function fight(
     // v1.0.6：击败霸主后，若当前位于霸主区域，原地直接可撤离（按之前设定）。
     if (isBossZone(state)) state.atExtract = true;
     plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理——所有霸主战利品已自动入库，你可随时撤离。`);
-    // 红阶「霸主战利品」
-    const bonus = rollGearDrop(
-      rng,
-      Math.min(9, state.zone.dangerLevel + 3),
-      0.8,
-      Math.min(6, Math.max(2, state.zone.dangerLevel)),
-    );
+    // 红阶「霸主战利品」：霸主必定爆装备，品质走 BOSS 表（危1~危7）
+    const bonus = rollGearDrop(rng, state.zone.dangerLevel, 0.8, 0, true);
     if (addCarriedLoot(state, bonus)) {
       plog(state, `👑 霸主战利品：【${bonus.name}】（${bonus.rarityName}阶，估值 ${bonus.value}）。`);
     }
     // 橙阶「霸主遗物」（从 lootCorpse 提取到此处，一次性发放完，不再由搜刮尸体获得）
-    const relic = rollGearDrop(
-      rng,
-      Math.min(9, state.zone.dangerLevel + 2),
-      0.6,
-      Math.min(6, Math.max(1, state.zone.dangerLevel - 1)),
-    );
+    const relic = rollGearDrop(rng, state.zone.dangerLevel, 0.6, 0, true);
     if (addCarriedLoot(state, relic)) {
       plog(state, `👑 霸主遗物：【${relic.name}】（${relic.rarityName}阶，估值 ${relic.value}）。`);
     }
@@ -1561,6 +1553,16 @@ export function lootCorpse(state: ExtractionRunState, rng: () => number = Math.r
   }
   // v1.0.9 补充：boss 尸体的「霸主遗物」已在击败分支一次性发放，这里跳过 boss 额外掉落；普通敌尸仍走原随机奖励
   // wasBoss 块已移除（保留变量以避免破坏上方 enum/log 文本）
+  if (!wasBoss) {
+    // v1.0.10：小怪并非必定爆装备——按危险度 + 搜刮运势判定一次额外装备掉落
+    const luck = runCombatBonus(state).lootLuck ?? 0;
+    if (rng() < mobGearDropChance(state.zone.dangerLevel, luck)) {
+      const bonus = rollGearDrop(rng, state.zone.dangerLevel, 0.1 + luck * 0.2);
+      if (addCarriedLoot(state, bonus)) {
+        gained.push(`【${bonus.name}】(${bonus.rarityName}阶 · 估值 ${bonus.value})`);
+      }
+    }
+  }
   state.corpse = undefined;
   const lootText = gained.length > 0 ? gained.join('\n') : '尸体上只有弹壳与血迹，一无所获。';
   state.scene = `你翻检【${enemyName}】的尸体……\n🩸 搜刮结果：\n${lootText}`;

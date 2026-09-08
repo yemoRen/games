@@ -117,6 +117,7 @@ import {
 } from '@shared/engine/extraction';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
 import { loadGame, saveGame, clearSave, saveRun, loadRun, clearRun } from '@shared/engine/survival';
+import { ResetSaveDialog } from '../components/ResetSaveDialog';
 import {
   INJURY_LABEL,
   INJURY_DESC,
@@ -270,6 +271,7 @@ const DANGER_LABEL: Record<number, string> = {
   4: '危4·高危',
   5: '危5·死地',
   6: '危6·禁区',
+  7: '危7·绝境',
 };
 
 /**
@@ -1453,43 +1455,38 @@ function BasePanel(props: {
   mutate: (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
 }) {
   const { state, mutate } = props;
-  const [confirmReset, setConfirmReset] = useState(false);
+  // v1.0.10：重置存档不再沿用「玩家代号」，改为弹窗输入重生者姓名
+  const [resetOpen, setResetOpen] = useState(false);
+  const suggestedName = (
+    state.playerCodename ||
+    state.survivors.find((s) => s.isProtagonist)?.name ||
+    state.survivors[0]?.name ||
+    ''
+  ).trim();
   const bonuses = computeShelterBonuses(state.facilities, state.factionRep);
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-zinc-300">避难所</h2>
-        {confirmReset ? (
-          <span className="flex items-center gap-2">
-            <span className="text-xs text-rose-300">确认重置？将清空并重建以玩家代号命名的主角（不可撤销）</span>
-            <button
-              onClick={() => {
-                const codename = (state.playerCodename || state.survivors[0]?.name || '').trim();
-                if (!codename) {
-                  setConfirmReset(false);
-                  alert('未找到玩家代号，请先登录或建立档案再重置。');
-                  return;
-                }
-                clearSave();
-                mutate(() => createProtagonistGame(codename));
-                setConfirmReset(false);
-              }}
-              className="rounded border border-rose-600 px-2 py-1 text-xs text-rose-300 hover:bg-rose-900/40"
-            >确认</button>
-            <button
-              onClick={() => setConfirmReset(false)}
-              className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
-            >取消</button>
-          </span>
-        ) : (
-          <button
-            onClick={() => setConfirmReset(true)}
-            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
-          >
-            重置存档
-          </button>
-        )}
+        <button
+          onClick={() => setResetOpen(true)}
+          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+        >
+          重置存档
+        </button>
       </div>
+
+      {resetOpen ? (
+        <ResetSaveDialog
+          defaultName={suggestedName}
+          onCancel={() => setResetOpen(false)}
+          onConfirm={(name) => {
+            clearSave();
+            mutate(() => createProtagonistGame(name));
+            setResetOpen(false);
+          }}
+        />
+      ) : null}
 
       {/* 设施 */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
