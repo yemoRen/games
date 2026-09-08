@@ -967,7 +967,9 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
               <span className="self-center text-xs text-rose-300">确认重置？将清空并重建以玩家代号命名的主角（不可撤销）</span>
               <button
                 onClick={() => {
-                  mutate((s) => createProtagonistGame(s.playerCodename || s.survivors[0]?.name || '幸存者'));
+                  const codename = ((state.playerCodename as string | undefined) || state.survivors[0]?.name || '').trim();
+                  if (!codename) { alert('未找到玩家代号，请先登录或建立档案再重置。'); return; }
+                  mutate(() => createProtagonistGame(codename));
                   setConfirmReset(false);
                 }}
                 className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"

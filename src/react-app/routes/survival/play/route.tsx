@@ -1176,13 +1176,26 @@ function InventoryPanel(props: {
             <p className="mt-2 text-[11px] text-zinc-600">
               主槽装备常驻生效，撤离失败时有概率被夺走；快捷槽供战斗中一键使用。
             </p>
-            {/* 已穿戴装备属性增益统计（出击/副本内临时换装时实时同步） */}
+            {/* 已穿戴装备属性增益统计（出击/副本内临时换装时实时同步）——v1.0.9 补充：六维属性 + 气血/暴击/搜刮/经验/金币 等 CombatBonus 词条 */}
             {(() => {
               const eb: Partial<Attributes> = {};
+              let hpBonus = 0;
+              let critBonus = 0;
+              let lootLuck = 0;
+              let xpBonus = 0;
+              let coinBonus = 0;
               if (inSortie && run) {
                 for (const e of run.equipped) {
                   for (const k of Object.keys(e.gear.modifiers) as (keyof Attributes)[]) {
                     eb[k] = (eb[k] ?? 0) + (e.gear.modifiers[k] ?? 0);
+                  }
+                  const c = e.gear.combat;
+                  if (c) {
+                    hpBonus += c.hpBonus ?? 0;
+                    critBonus += c.critBonus ?? 0;
+                    lootLuck += c.lootLuck ?? 0;
+                    xpBonus += c.xpBonus ?? 0;
+                    coinBonus += c.coinBonus ?? 0;
                   }
                 }
               } else {
@@ -1190,16 +1203,33 @@ function InventoryPanel(props: {
                 for (const k of Object.keys(g) as (keyof Attributes)[]) {
                   eb[k] = (eb[k] ?? 0) + (g[k] ?? 0);
                 }
+                const gc = aggregateGearCombat(state, active.id);
+                hpBonus = gc.hpBonus ?? 0;
+                critBonus = gc.critBonus ?? 0;
+                lootLuck = gc.lootLuck ?? 0;
+                xpBonus = gc.xpBonus ?? 0;
+                coinBonus = gc.coinBonus ?? 0;
               }
               const entries = (Object.keys(eb) as (keyof Attributes)[]).filter((k) => (eb[k] ?? 0) !== 0);
-              if (entries.length === 0) return null;
+              const affixEntries: { label: string; value: string }[] = [];
+              if (hpBonus !== 0) affixEntries.push({ label: '气血', value: `${hpBonus > 0 ? '+' : ''}${hpBonus}` });
+              if (critBonus !== 0) affixEntries.push({ label: '暴击', value: `+${(critBonus * 100).toFixed(1)}%` });
+              if (lootLuck !== 0) affixEntries.push({ label: '搜刮运势', value: `+${(lootLuck * 100).toFixed(1)}%` });
+              if (xpBonus !== 0) affixEntries.push({ label: '经验加成', value: `+${(xpBonus * 100).toFixed(1)}%` });
+              if (coinBonus !== 0) affixEntries.push({ label: '金币加成', value: `+${(coinBonus * 100).toFixed(1)}%` });
+              if (entries.length === 0 && affixEntries.length === 0) return null;
               return (
                 <div className="mt-3 rounded border border-emerald-900/40 bg-emerald-950/20 p-2">
-                  <div className="mb-1 text-[11px] uppercase tracking-wider text-emerald-300/70">已穿戴属性增益</div>
+                  <div className="mb-1 text-[11px] uppercase tracking-wider text-emerald-300/70">已穿戴装备属性增益</div>
                   <div className="flex flex-wrap gap-1.5">
                     {entries.map((k) => (
                       <span key={k} className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[11px] text-emerald-300">
                         {attrLabel(k)}+{eb[k]}
+                      </span>
+                    ))}
+                    {affixEntries.map((a) => (
+                      <span key={a.label} className="rounded bg-amber-900/40 px-1.5 py-0.5 text-[11px] text-amber-200">
+                        {a.label}{a.value}
                       </span>
                     ))}
                   </div>
@@ -1434,7 +1464,12 @@ function BasePanel(props: {
             <span className="text-xs text-rose-300">确认重置？将清空并重建以玩家代号命名的主角（不可撤销）</span>
             <button
               onClick={() => {
-                const codename = state.playerCodename || state.survivors[0]?.name || '幸存者';
+                const codename = (state.playerCodename || state.survivors[0]?.name || '').trim();
+                if (!codename) {
+                  setConfirmReset(false);
+                  alert('未找到玩家代号，请先登录或建立档案再重置。');
+                  return;
+                }
                 clearSave();
                 mutate(() => createProtagonistGame(codename));
                 setConfirmReset(false);
@@ -1473,7 +1508,7 @@ function BasePanel(props: {
                   </div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">{f.description}</div>
                   <div className="mt-0.5 text-[11px] text-emerald-400/80">
-                    每级：{[f.lootPerLevel > 0 ? `搜刮运势 +${(f.lootPerLevel * 100).toFixed(0)}%` : null, f.recoveryPerLevel > 0 ? `恢复速率 +${f.recoveryPerLevel}%` : null, f.discountPerLevel > 0 ? `改装折扣 -${(f.discountPerLevel * 100).toFixed(0)}%` : null, ...(Object.keys(f.attrPerLevel).map((k) => `${attrLabel(k as keyof Attributes)} +${f.attrPerLevel[k as keyof Attributes]}/级`))].filter(Boolean).join(' · ') || '暂无数值加成'}
+                    每级：{[f.lootPerLevel > 0 ? `搜刮运势 +${(f.lootPerLevel * 100).toFixed(0)}%` : null, f.recoveryPerLevel > 0 ? `恢复速率 +${(f.recoveryPerLevel * 100).toFixed(0)}%` : null, f.discountPerLevel > 0 ? `改装折扣 -${(f.discountPerLevel * 100).toFixed(0)}%` : null, ...(Object.keys(f.attrPerLevel).map((k) => `${attrLabel(k as keyof Attributes)} +${f.attrPerLevel[k as keyof Attributes]}/级`))].filter(Boolean).join(' · ') || '暂无数值加成'}
                   </div>
                 </div>
                 {maxed ? (
@@ -2504,6 +2539,55 @@ function SortiePanel(props: {
             </div>
           </div>
 
+
+
+
+
+          {isOver && (
+            <div
+              className={`rounded-lg border p-5 ${
+                failed ? 'border-rose-800 bg-rose-900/30' : 'border-emerald-700 bg-emerald-900/30'
+              }`}
+            >
+              <h2 className={`mb-1 text-lg font-semibold ${failed ? 'text-rose-300' : 'text-emerald-300'}`}>
+                {run.phase === 'extracted'
+                  ? '✔ 撤离成功'
+                  : run.phase === 'timeout'
+                    ? '⏰ 时间耗尽 · 未能撤离'
+                    : '✘ 撤离失败 · 幸存者濒死'}
+              </h2>
+              <p className="mb-3 text-sm text-zinc-300">
+                {run.phase === 'extracted'
+                  ? `撤离结算：本局搜刮废土币 ×${run.carriedCredits} 已 1:1 折算入基地货币；带回物资估值 ⛁${bankedValue}（入库为材料/装备/药品，需贩卖/回收才折算为废土币）。`
+                  : run.phase === 'timeout'
+                    ? `对局时间耗尽，救援未能抵达。未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中救治。`
+                    : `未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中用货币或医疗品救治，否则将离世。`}
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={start}
+                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500"
+                >
+                  再次出击
+                </button>
+                <button
+                  onClick={() => {
+                    // 兜底：若 effect 尚未写回归档（极端时序），先补写再退出
+                    const s = runRef.current;
+                    if (s && (s.phase === 'dead' || s.phase === 'extracted' || s.phase === 'timeout') && !writtenRef.current) {
+                      persistRunResult();
+                    }
+                    reset();
+                    onExit();
+                  }}
+                  className="rounded-lg border border-zinc-700 px-4 py-3 text-zinc-300 hover:bg-zinc-800"
+                >
+                  返回
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ③ 操作按钮组：遭遇抉择 / 撤离点抉择 / 常规行动（三态互斥） */}
           {run.encounter ? (
             <div className="rounded-lg border border-rose-800 bg-rose-950/20 p-4">
@@ -2965,53 +3049,9 @@ function SortiePanel(props: {
             </p>
           </div>
 
-          {/* ⑤ 系统消息日志已上移并整合进「场景叙事区」面板（见 ②），此处不再重复渲染 */}
-
-          {isOver && (
-            <div
-              className={`rounded-lg border p-5 ${
-                failed ? 'border-rose-800 bg-rose-900/30' : 'border-emerald-700 bg-emerald-900/30'
-              }`}
-            >
-              <h2 className={`mb-1 text-lg font-semibold ${failed ? 'text-rose-300' : 'text-emerald-300'}`}>
-                {run.phase === 'extracted'
-                  ? '✔ 撤离成功'
-                  : run.phase === 'timeout'
-                    ? '⏰ 时间耗尽 · 未能撤离'
-                    : '✘ 撤离失败 · 幸存者濒死'}
-              </h2>
-              <p className="mb-3 text-sm text-zinc-300">
-                {run.phase === 'extracted'
-                  ? `撤离结算：本局搜刮废土币 ×${run.carriedCredits} 已 1:1 折算入基地货币；带回物资估值 ⛁${bankedValue}（入库为材料/装备/药品，需贩卖/回收才折算为废土币）。`
-                  : run.phase === 'timeout'
-                    ? `对局时间耗尽，救援未能抵达。未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中救治。`
-                    : `未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中用货币或医疗品救治，否则将离世。`}
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={start}
-                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500"
-                >
-                  再次出击
-                </button>
-                <button
-                  onClick={() => {
-                    // 兜底：若 effect 尚未写回归档（极端时序），先补写再退出
-                    const s = runRef.current;
-                    if (s && (s.phase === 'dead' || s.phase === 'extracted' || s.phase === 'timeout') && !writtenRef.current) {
-                      persistRunResult();
-                    }
-                    reset();
-                    onExit();
-                  }}
-                  className="rounded-lg border border-zinc-700 px-4 py-3 text-zinc-300 hover:bg-zinc-800"
-                >
-                  返回
-                </button>
-              </div>
-            </div>
-          )}
         </>
+
+
       )}
     </section>
   );

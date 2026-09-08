@@ -1388,13 +1388,14 @@ export function fight(
   );
   state.xpGained += xpGain;
   plog(state, `📈 击败【${enemy.name}】获得经验 +${xpGain}（已实时结算入角色档案）。`);
-  // 霸主击杀奖励：额外掉落一件高阶装备（v1.0.2：保底品阶 ≥ 蓝，品阶概率向高阶偏移）
+  // 霸主击杀奖励：v1.0.9 补充——一次性发放完所有 boss 战利品（红阶「霸主战利品」+ 橙阶「霸主遗物」），不再保留 boss 尸体可搜刮，避免「放弃撤离→再搜一次 boss」额外刷装备
   if (enemy.boss) {
     state.bossDefeated = true;
     state.extractRevealed = true; // 击破霸主即开放撤离
     // v1.0.6：击败霸主后，若当前位于霸主区域，原地直接可撤离（按之前设定）。
     if (isBossZone(state)) state.atExtract = true;
-    plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理——你可随时撤离，或继续搜刮。`);
+    plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理——所有霸主战利品已自动入库，你可随时撤离。`);
+    // 红阶「霸主战利品」
     const bonus = rollGearDrop(
       rng,
       Math.min(9, state.zone.dangerLevel + 3),
@@ -1404,6 +1405,18 @@ export function fight(
     if (addCarriedLoot(state, bonus)) {
       plog(state, `👑 霸主战利品：【${bonus.name}】（${bonus.rarityName}阶，估值 ${bonus.value}）。`);
     }
+    // 橙阶「霸主遗物」（从 lootCorpse 提取到此处，一次性发放完，不再由搜刮尸体获得）
+    const relic = rollGearDrop(
+      rng,
+      Math.min(9, state.zone.dangerLevel + 2),
+      0.6,
+      Math.min(6, Math.max(1, state.zone.dangerLevel - 1)),
+    );
+    if (addCarriedLoot(state, relic)) {
+      plog(state, `👑 霸主遗物：【${relic.name}】（${relic.rarityName}阶，估值 ${relic.value}）。`);
+    }
+    // v1.0.9 补充：boss 尸体不再可搜刮，避免「放弃撤离→再搜一次 boss」额外刷装备
+    state.corpse = undefined;
   }
   state.scene = [
     '⚔ 战斗爆发！',
@@ -1546,19 +1559,8 @@ export function lootCorpse(state: ExtractionRunState, rng: () => number = Math.r
     const text = grantLoot(state, raw, rng, 0.1);
     if (text) gained.push(text);
   }
-  // 霸主尸体：额外必掉一件高阶装备（保底品阶随地图危险度提升）
-  if (wasBoss) {
-    const drop = rollGearDrop(
-      rng,
-      Math.min(9, state.zone.dangerLevel + 2),
-      0.6,
-      Math.min(6, Math.max(1, state.zone.dangerLevel - 1)),
-    );
-    if (addCarriedLoot(state, drop)) {
-      gained.push(`【${drop.name}】(${drop.rarityName}阶，估值 ${drop.value}) —— 霸主遗物！`);
-      plog(state, `👑 霸主遗物：【${drop.name}】（${drop.rarityName}阶，估值 ${drop.value}）。`);
-    }
-  }
+  // v1.0.9 补充：boss 尸体的「霸主遗物」已在击败分支一次性发放，这里跳过 boss 额外掉落；普通敌尸仍走原随机奖励
+  // wasBoss 块已移除（保留变量以避免破坏上方 enum/log 文本）
   state.corpse = undefined;
   const lootText = gained.length > 0 ? gained.join('\n') : '尸体上只有弹壳与血迹，一无所获。';
   state.scene = `你翻检【${enemyName}】的尸体……\n🩸 搜刮结果：\n${lootText}`;
