@@ -203,7 +203,7 @@ export const SHELTER_FACILITIES: ShelterFacilitySpec[] = [
     lootPerLevel: 0,
     hpPerLevel: 0,
     discountPerLevel: 0,
-    recoveryPerLevel: 0.05,
+    recoveryPerLevel: 0.2, // 单一来源：医疗站恢复加成只走 recoveryBonus（Lv5 = +100%，即 ×2，翻倍恢复）；原先另有硬编码 1+0.5×级 已移除
     attrPerLevel: {},
   },
   {

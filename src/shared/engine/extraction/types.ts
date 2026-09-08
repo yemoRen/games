@@ -53,7 +53,7 @@ export const SECURE_BOX_SLOTS = 2;
 export const ACTION_COST = {
   search: 30, // 搜索当前区域
   move: 45, // 前往下一区域
-  sneak: 180, // 潜行绕行（固定 3 分钟，制造紧迫感，不受敏捷系数影响）
+  sneak: 180, // 潜行绕行（基础 3 分钟，受敏捷系数缩放，制造紧迫感）
   throwEscape: 20, // 投掷物脱离
   fight: 60, // 一场交战
   corpseLoot: 15, // 搜刮敌方尸体
@@ -249,7 +249,7 @@ export interface AttrEffects {
   timeScale: number;
   /** 潜行成功率加成（敏捷） */
   sneakBonus: number;
-  /** 续航时限（分钟）= 耐力 × 2 —— 超出后开始判定疲惫 */
+  /** 续航时限（分钟）= 耐力 × 1.5 —— 超出后开始判定疲惫 */
   staminaMinutes: number;
   /** 遇敌概率削减（感知预警） */
   encounterAvoid: number;

@@ -4,10 +4,12 @@
  * 设计目标：让受伤的幸存者「不能立刻再出击」。
  *
  * 恢复公式（每分钟）：
- *   rate = (5 + 体质 * 0.3) * (1 + 医疗站等级 * 0.5)
- *   rate *= (1 + 战团/避难所恢复加成)
+ *   base  = maxHp * 0.005 + 体质 * 0.4             // 基础：最大生命 0.5%/分 + 体质每点 +0.4/分（叠加 maxHp 间接 0.1 ≈ +0.5/分）
+ *   rate  = base * (1 + recoveryBonus)             // recoveryBonus 由 computeShelterBonuses 统一给出（医疗站等设施的 recoveryPerLevel），单一来源
  *   rate *= max(0.1, 1 - 累加伤势惩罚)
- *   若医疗消耗品激活中：rate *= 2
+ *   若医疗消耗品激活中：rate *= 2（MED_MULTIPLIER）
+ *   设计：2026-09-08 重做——移除原先「×0.1 全局缩放」与「医疗站等级硬编码 1+0.5×级」的双重问题。
+ *        医疗站恢复改为只走 recoveryBonus（recoveryPerLevel=0.2，Lv5=+100% 即 ×2 翻倍），体质项重新标定（VITALITY_PER_POINT=0.4，每点体质约 +0.5/分）。
  *
  * 时间戳驱动恢复：UI 加载/切换 tab 时按 now - lastRecoveredAt 计算
  * 一次性结算，避免每帧 setState。
@@ -181,8 +183,8 @@ export interface SurvivorStatus {
 /** 撤离失败后的濒死宽限期（分钟）：超时未救治则成员真正离世 */
 export const NEAR_DEATH_GRACE_MIN = 10;
 
-const BASE_REGEN_RATIO = 0.04; // 4% maxHp/min（百分比回血，随角色血量放大，明显更快）
-const VITALITY_PER_POINT = 0.5; // 每点体质 +0.5 HP/min（百分比之外的固定补足）
+const BASE_REGEN_RATIO = 0.005; // 基础回血：最大生命的 0.5% / 分钟（无设施加成时的底速）
+const VITALITY_PER_POINT = 0.4; // 每点体质 +0.4 气血 / 分钟（固定补足；叠加 maxHp 间接 20×0.005=0.1 后约 +0.5/分）
 const MED_MULTIPLIER = 2;
 const MED_DURATION_MIN = 5;
 
@@ -207,11 +209,11 @@ export function freshStatus(survivor: SurvivorProfile, now: number, baseMaxHp = 
 
 /** 计算单人恢复速率（HP/分钟）。UI 显示用。 */
 export function regenPerMinute(survivor: SurvivorProfile, status: SurvivorStatus, state: SurvivalGameState, now: number): number {
-  const medLevel = state.facilities['medbay'] ?? 0;
   const bonuses = computeShelterBonuses(state.facilities, state.factionRep);
 
+  // 单一来源：医疗站等设施的恢复加成只来自 recoveryBonus（computeShelterBonuses），
+  // 不再在 regenPerMinute 内硬编码「1 + 0.5 × 医疗站等级」，避免与 recoveryBonus 重复叠加。
   let rate = status.maxHp * BASE_REGEN_RATIO + survivor.attributes.vitality * VITALITY_PER_POINT;
-  rate *= 1 + 0.5 * medLevel;
   rate *= 1 + bonuses.recoveryBonus;
   const injuryPenalty = status.injuries.reduce((acc, inj) => acc + INJURY_PENALTY[inj], 0);
   rate *= Math.max(0.1, 1 - injuryPenalty);

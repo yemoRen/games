@@ -138,7 +138,7 @@ function freshCondition(maxHp: number, maxMp: number): CultivatorCondition {
  * 六维深化派生值（引擎与 UI 共用一套口径）：
  *  - 力量 → 背包容量（每 5 点 +1 格）、近战输出（进 battle-v5）
  *  - 敏捷 → 行动耗时系数、潜行成功率
- *  - 耐力 → 续航时限（每 1 点 = 2 分钟），超限开始判定疲惫
+ *  - 耐力 → 续航时限（每 1 点 = 1.5 分钟），超限开始判定疲惫
  *  - 体质 → 气血/回血（battle-v5 + recovery）、失血抗性
  *  - 意志 → 震伤（精神类伤势）抗性
  *  - 感知 → 预警敌人（降低遇敌率）、搜刮额外物资概率
@@ -156,7 +156,7 @@ export function deriveAttrEffects(attrs: Attributes): AttrEffects {
     // 敏捷 10 → 1.00；敏捷 20 → 0.80（搜索更快）；敏捷 6 → 1.08（更慢）
     timeScale: Math.max(0.72, Math.min(1.12, 1 - (speed - 10) * 0.02)),
     sneakBonus: (speed - 10) * 0.03,
-    staminaMinutes: endurance * 2,
+    staminaMinutes: endurance * 1.5,
     // 感知 10 → 0；感知 20 → -0.20（遇敌率下降 20 个百分点）
     encounterAvoid: (spirit - 10) * 0.02,
     lootExtraChance: Math.min(0.6, spirit * 0.02),
@@ -414,7 +414,7 @@ function actionCost(state: ExtractionRunState, base: number): number {
 }
 
 /**
- * v1.0.3 耐力·续航：超过「耐力 × 2 分钟」的行动时限后，越拖越容易疲惫。
+ * v1.0.3 耐力·续航：超过「耐力 × 1.5 分钟」的行动时限后，越拖越容易疲惫。
  * 疲惫 = 全六维 -1/4 的 debuff；可用兴奋剂 / 营养剂消除。
  * 每次时间推进后判定一次，概率 = 5% × 超时分钟数（上限 60%）。
  */
@@ -1008,7 +1008,7 @@ export function resolveEncounter(state: ExtractionRunState, action: EncounterAct
       break;
     }
     case 'sneak': {
-      spendTime(state, ACTION_COST.sneak, rng); // v1.0.7：潜行绕行固定耗时 3 分钟，制造紧迫感
+      spendTime(state, actionCost(state, ACTION_COST.sneak), rng); // 潜行绕行：基础 3 分钟，受敏捷 timeScale 缩放（敏捷越高越快），制造紧迫感
       if (state.phase !== 'searching') return;
       // 精英/Boss 更难绕开；v1.0.3 敏捷加成潜行成功率
       const sneakBonus = deriveAttrEffects(runEffectiveAttributes(state)).sneakBonus;

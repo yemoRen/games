@@ -2518,7 +2518,7 @@ function SortiePanel(props: {
                   className="rounded-lg border border-zinc-600 px-4 py-3 text-sm text-zinc-200 hover:bg-zinc-800"
                 >
                   🌫 潜行绕行
-                  <span className="ml-1 text-[11px] text-zinc-500">（固定耗时 3 分钟，可能暴露）</span>
+                  <span className="ml-1 text-[11px] text-zinc-500">（耗费大量时间潜行通过，可能暴露）</span>
                 </button>
                 <button
                   onClick={(e) => { doEncounter('throw'); e.currentTarget.blur(); }}
