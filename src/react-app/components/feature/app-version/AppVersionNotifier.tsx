@@ -44,10 +44,11 @@ export function AppVersionNotifier() {
 
         promptedBuildIdRef.current = latestBuildId;
         promptToastIdRef.current = pushToast({
-          message: '天地法则已有更新，刷新后即可继续当前旅程。',
+          // v1.0.11：废土叙事风（替换「天地法则」修仙风）
+          message: '通讯台重新收到总部短波——幸存者档案已更新版本。刷新页面即可重返废土，旧档无缝衔接。',
           tone: 'warning',
           duration: 0,
-          actionLabel: '刷新进入新版本',
+          actionLabel: '重新接入新版图',
           onAction: reloadIntoLatestVersion,
         });
       } finally {

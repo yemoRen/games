@@ -136,6 +136,17 @@ import {
   affixLabel,
 } from '@shared/engine/survival/affixes';
 
+// v1.0.11：副本等级门槛（危N → 最低等级）。危1 不限（主角恒 ≥ Lv1，恒满足）。
+const DANGER_LEVEL_REQ: Record<number, number> = {
+  1: 1,
+  2: 3,
+  3: 5,
+  4: 8,
+  5: 10,
+  6: 12,
+  7: 15,
+};
+
 // ===== 出击临时制作台（v1.0.3c）=====
 // 材料大类 → 本局背包内对应的 loot id（用于把「医疗制作台」配方映射到副本内可搜到的物资）
 const MATERIAL_TO_LOOT: Record<string, string> = {
@@ -931,7 +942,14 @@ function CharacterPanel(props: {
                   <TraitChip key={t.id} trait={t} />
                 ))}
                 {!s.isProtagonist && (
-                  confirmDismissId === s.id ? (
+                  isDying ? (
+                    <span
+                      className="ml-auto rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-600"
+                      title="成员正处于濒死状态，无法遣散，请先救治"
+                    >
+                      濒死·不可遣散
+                    </span>
+                  ) : confirmDismissId === s.id ? (
                     <span className="ml-auto flex items-center gap-1.5">
                       <span className="text-[11px] text-rose-300">确认遣散？</span>
                       <button
@@ -1725,6 +1743,12 @@ function SortiePanel(props: {
 
   const start = () => {
     if (!active) return;
+    // v1.0.11：等级门槛 —— 低于目标危险度要求等级禁止出击
+    const reqLv = DANGER_LEVEL_REQ[getZone(zoneId).dangerLevel] ?? 1;
+    if ((active.level ?? 1) < reqLv) return;
+    // v1.0.11：濒死角色禁止出击
+    const st0 = state.survivorStatus[active.id];
+    if (st0?.dyingUntil && new Date(st0.dyingUntil).getTime() > Date.now()) return;
     writtenRef.current = false;
     const loadout = buildSortieLoadout(state, active.id);
     if (!loadout) return;
@@ -2014,6 +2038,14 @@ function SortiePanel(props: {
   const doExtract = () => {
     const s = runRef.current;
     if (!s || s.phase === 'dead' || s.phase === 'extracted') return;
+    // v1.0.11：boss 深7 区域撤离守卫——必须在撤离点（atExtract=true）才能撤离。
+    // 修复原因：之前仅有 UI 层 disabled 拦截（被 React 渲染节流/状态时序可能绕过），
+    // 逻辑层缺少 atExtract 校验，极端路径会绕过撤离条件直接结算为撤离成功。
+    if (!s.atExtract) {
+      s.log.push(`[${fmtClock(s.elapsedSec)}] ⛔ 此处尚未触发撤离信号——继续搜刮或击败本区霸主。`);
+      sync();
+      return;
+    }
     extract(s);
     sync();
     // 结算（入库物资 + 救援者入花名册 + 回写 HP/濒死）由 isOver 的 useEffect 统一写入，
@@ -2201,6 +2233,8 @@ function SortiePanel(props: {
   const sortieBonus = active ? buildSortieLoadout(state, active.id)?.bonus : undefined;
   const activeStatus = active ? state.survivorStatus[active.id] : undefined;
   const activeDying = !!activeStatus?.dyingUntil;
+  const selReqForSortie = DANGER_LEVEL_REQ[getZone(zoneId).dangerLevel] ?? 1;
+  const selLocked = (active.level ?? 1) < selReqForSortie;
 
   return (
     <section className="space-y-4">
@@ -2237,14 +2271,27 @@ function SortiePanel(props: {
                 <button
                   key={z.id}
                   onClick={() => setZoneId(z.id)}
+                  disabled={(active.level ?? 1) < (DANGER_LEVEL_REQ[z.dangerLevel] ?? 1)}
+                  title={(active.level ?? 1) < (DANGER_LEVEL_REQ[z.dangerLevel] ?? 1) ? `需等级 Lv.${DANGER_LEVEL_REQ[z.dangerLevel] ?? 1} 才能进入（当前 Lv.${active.level ?? 1}）` : undefined}
                   className={`rounded-lg border p-3 text-left transition ${
-                    zoneId === z.id ? 'border-emerald-500 bg-emerald-500/10' : 'border-zinc-700 hover:border-zinc-500'
+                    (active.level ?? 1) < (DANGER_LEVEL_REQ[z.dangerLevel] ?? 1)
+                      ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 opacity-50'
+                      : zoneId === z.id
+                        ? 'border-emerald-500 bg-emerald-500/10'
+                        : 'border-zinc-700 hover:border-zinc-500'
                   }`}
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-zinc-100">{z.name}</span>
-                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-amber-300">
-                      {DANGER_LABEL[z.dangerLevel] ?? `危${z.dangerLevel}`}
+                    <span className="flex items-center gap-1">
+                      {(DANGER_LEVEL_REQ[z.dangerLevel] ?? 1) > 1 && (
+                        <span className={`rounded px-1.5 py-0.5 text-[11px] ${(active.level ?? 1) < (DANGER_LEVEL_REQ[z.dangerLevel] ?? 1) ? 'bg-rose-900/60 text-rose-300' : 'bg-zinc-800 text-zinc-400'}`}>
+                          需 Lv.{(DANGER_LEVEL_REQ[z.dangerLevel] ?? 1)}
+                        </span>
+                      )}
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-amber-300">
+                        {DANGER_LABEL[z.dangerLevel] ?? `危${z.dangerLevel}`}
+                      </span>
                     </span>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-zinc-500">{z.flavor}</p>
@@ -2262,11 +2309,18 @@ function SortiePanel(props: {
             />
             <button
               onClick={start}
-              className="ml-auto rounded-lg bg-emerald-600 px-6 py-2.5 font-medium text-white hover:bg-emerald-500"
+              disabled={selLocked || activeDying}
+              className="ml-auto rounded-lg bg-emerald-600 px-6 py-2.5 font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               出击 ▶
             </button>
           </div>
+          {selLocked && (
+            <p className="text-xs text-rose-300">⚠ 等级不足：进入「{getZone(zoneId).name}」需 Lv.{selReqForSortie}（当前 Lv.{active.level ?? 1}）。</p>
+          )}
+          {activeDying && (
+            <p className="text-xs text-rose-300">⚠ 你正处于濒死状态，无法出击，请先在「战团成员」中救治。</p>
+          )}
         </div>
       )}
 
@@ -2359,6 +2413,51 @@ function SortiePanel(props: {
                   style={{ width: `${Math.min(100, ((active.xp ?? 0) / xpNeededForLevel(active.level ?? 1)) * 100)}%` }}
                 />
               </div>
+              {/* 角色属性 / 增益 / 伤势 —— 整合进经验条卡片，随经验条一同固定滑动（v1.0.11） */}
+              {effAttrs && baseAttrs && (
+                <div className="mt-2 space-y-1.5 border-t border-sky-900/40 pt-2">
+                  <div className="scale-[0.92] origin-left">{attrBars(baseAttrs, sortieSixBonus, sortieSixReduction)}</div>
+                  <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                    {garrisonBonusPerAttr > 0 && (
+                      <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-300" title="避难所设施提供的属性加成（取每属性的最小值，已并入有效六维）">
+                        🏰 驻防·全属性+{garrisonBonusPerAttr}
+                      </span>
+                    )}
+                    {FACTIONS.filter((fac) => (state.factionRep[fac.id] ?? 0) > 0).map((fac) => (
+                      <span key={fac.id} className="rounded bg-purple-900/40 px-2 py-0.5 text-purple-300" title="势力声望提供的全属性加成（已并入有效六维）">
+                        🤝 {fac.name} Lv{state.factionRep[fac.id]}
+                      </span>
+                    ))}
+                    <span
+                      className={
+                        run.buffCharges > 0
+                          ? "rounded bg-sky-900/40 px-2 py-0.5 text-sky-300"
+                          : "rounded bg-zinc-800 px-2 py-0.5 text-zinc-500"
+                      }
+                      title="备战可叠加：下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2"
+                    >
+                      🧪 增益 buff · 备战 {run.buffCharges} 次
+                    </span>
+                    {run.injuries.length > 0 ? (
+                      <>
+                        <span className="text-zinc-500">伤势：</span>
+                        {run.injuries.map((inj) => (
+                          <span
+                            key={inj}
+                            className="rounded border border-rose-800/60 bg-rose-950/30 px-2 py-0.5 text-rose-300"
+                            title={injuryAttrTextOf(run, inj)}
+                          >
+                            ⚠ {INJURY_LABEL[inj]} · {injuryAttrTextOf(run, inj)}
+                          </span>
+                        ))}
+                      </>
+                    ) : (
+                      <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-500">无伤势 debuff</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {(active.freePoints ?? 0) > 0 && (
                 <div className="mt-2">
                   <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点（每点 +1，出击途中即时生效）：</div>
@@ -2409,56 +2508,6 @@ function SortiePanel(props: {
             </div>
           </div>
 
-          {/* v1.0.3 ①-b 角色属性 / 增益 / 伤势（随页面滚动，不固定） */}
-          {effAttrs && baseAttrs && (
-            <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-              <div className="space-y-2">
-                <div>
-                  <div className="mb-1 text-[11px] text-zinc-500">角色属性（六维）· 伤势削减以红色显示</div>
-                  {attrBars(baseAttrs, sortieSixBonus, sortieSixReduction)}
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                  {garrisonBonusPerAttr > 0 && (
-                    <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-300" title="避难所设施提供的属性加成（取每属性的最小值，已并入有效六维）">
-                      🏰 驻防·全属性+{garrisonBonusPerAttr}
-                    </span>
-                  )}
-                  {FACTIONS.filter((fac) => (state.factionRep[fac.id] ?? 0) > 0).map((fac) => (
-                    <span key={fac.id} className="rounded bg-purple-900/40 px-2 py-0.5 text-purple-300" title="势力声望提供的全属性加成（已并入有效六维）">
-                      🤝 {fac.name} Lv{state.factionRep[fac.id]}
-                    </span>
-                  ))}
-                  <span
-                    className={
-                      run.buffCharges > 0
-                        ? "rounded bg-sky-900/40 px-2 py-0.5 text-sky-300"
-                        : "rounded bg-zinc-800 px-2 py-0.5 text-zinc-500"
-                    }
-                    title="备战可叠加：下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2"
-                  >
-                    🧪 增益 buff · 备战 {run.buffCharges} 次
-                  </span>
-                  {run.injuries.length > 0 ? (
-                    <>
-                      <span className="text-zinc-500">伤势：</span>
-                      {run.injuries.map((inj) => (
-                        <span
-                          key={inj}
-                          className="rounded border border-rose-800/60 bg-rose-950/30 px-2 py-0.5 text-rose-300"
-                          title={injuryAttrTextOf(run, inj)}
-                        >
-                          ⚠ {INJURY_LABEL[inj]} · {injuryAttrTextOf(run, inj)}
-                        </span>
-                      ))}
-                    </>
-                  ) : (
-                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-500">无伤势 debuff</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* v1.0.5：背包已满弹窗（放弃 / 取消 抉择） */}
           {run.bagFullPrompt && !isOver && (
             <div className="rounded-lg border border-amber-700 bg-amber-950/30 p-4">
@@ -2483,15 +2532,17 @@ function SortiePanel(props: {
             </div>
           )}
 
-          {/* ② 场景叙事区 + 系统消息日志：整合为同一面板（场景在上，日志在下） */}
-          <div className="rounded-lg border border-sky-900/50 bg-zinc-950/70 p-4">
-            <div className="mb-2 text-[11px] uppercase tracking-wider text-sky-500/70">— 场景 —</div>
-            <pre className="mb-3 whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-sky-100/90">
+          {/* v1.0.11：② 场景叙事区 + 系统消息日志 —— 整合为同一面板。
+              场景区整体字号 / 行距再压缩 1/3（13→9.5px 行距 1.625→1.375）；
+              日志区高度减半（300→150px）、字号同步缩 1/3。 */}
+          <div className="rounded-lg border border-sky-900/50 bg-zinc-950/70 p-3">
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-sky-500/70">— 场景 —</div>
+            <pre className="mb-2 whitespace-pre-wrap font-mono text-[10px] leading-snug text-sky-100/90">
               {run.scene}
             </pre>
-            <div className="border-t border-zinc-800 pt-3">
-              <h2 className="mb-2 text-sm font-medium text-zinc-300">系统消息日志</h2>
-              <div ref={logScrollRef} className="max-h-[300px] space-y-1 overflow-y-auto pr-1 font-mono text-[13px] leading-relaxed">
+            <div className="border-t border-zinc-800 pt-2">
+              <h2 className="mb-1 text-[11px] font-medium text-zinc-400">系统消息日志</h2>
+              <div ref={logScrollRef} className="max-h-[150px] space-y-0.5 overflow-y-auto pr-1 font-mono text-[10px] leading-snug">
                 {run.log.map((line, i) => {
                   const m = line.match(/^\[(\d{2}:\d{2})\]\s*/);
                   const body = m ? line.slice(m[0].length) : line;
@@ -2580,10 +2631,15 @@ function SortiePanel(props: {
                     ? `对局时间耗尽，救援未能抵达。未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中救治。`
                     : `未撤离的 ${carriedValue} 废土币物资已遗失（安全箱 ${secureUsed} 格物资已保底入库）；${active?.name ?? '出击者'} 重伤濒死，需在战团中用货币或医疗品救治，否则将离世。`}
               </p>
+              {activeDying && (
+                <p className="mb-3 text-sm text-rose-300">⚠ 你正处于濒死状态，无法再次出击。请在「战团成员」中用货币或医疗品救治后再战。</p>
+              )}
               <div className="flex gap-3">
                 <button
                   onClick={start}
-                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500"
+                  disabled={activeDying}
+                  title={activeDying ? '当前角色处于濒死状态，无法再次出击，请先救治' : undefined}
+                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
                 >
                   再次出击
                 </button>
@@ -2702,11 +2758,7 @@ function SortiePanel(props: {
                   🏃 撤离
                 </button>
               </div>
-              {searchLeft <= 0 && (
-                <p className="text-center text-xs text-amber-500">
-                  此地已被搜刮干净，请前往下一区域。
-                </p>
-              )}
+              {/* v1.0.11：搜刮 3 次后的独立黄字提示已合并到上方「当前区域名（已搜尽）」，此处移除 */}
               <div>
                 <div className="mb-1.5 flex items-center justify-between text-[11px] uppercase tracking-wider text-zinc-500">
                   <span>区域图（共 {run.graph.nodes.length} 区 · 数字=本区深度，越深遇敌越凶）</span>
@@ -2715,7 +2767,13 @@ function SortiePanel(props: {
                 {/* 当前所在区域 */}
                 <div className="mb-2 rounded border border-emerald-500/60 bg-emerald-500/5 p-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-emerald-300">📍 {curNode?.name}</span>
+                    <span className="text-sm text-emerald-300">
+                      📍 {curNode?.name}
+                      {/* v1.0.11：搜刮 3 次后，把「已搜尽」紧凑地紧贴在区域名后（）内 */}
+                      {searchLeft <= 0 && (
+                        <span className="ml-1 text-[11px] text-amber-400/90">（已搜尽）</span>
+                      )}
+                    </span>
                     <span
                       className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px]"
                       style={{ color: tierDef.color }}

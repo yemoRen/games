@@ -72,7 +72,7 @@ import {
   threatTierOf,
 } from './types';
 import type { Attributes } from '@shared/types/cultivator';
-import { generateZoneGraph } from './content';
+import { generateZoneGraph, ENEMY_DANGER_SCALE } from './content';
 
 const ATTRIBUTE_MAP: Array<[keyof Attributes, AttributeType]> = [
   ['vitality', AttributeType.VITALITY],
@@ -1322,7 +1322,21 @@ export function fight(
       survivorUnit.initializeResources({ hp: state.condition.resources.hp.current });
     }
   }
-  const enemyUnit = buildEnemyUnit(runtime, enemy);
+  // v1.0.11：按区域危险度放大敌人数值（恢复「越深越险」梯度）
+  const dScale = ENEMY_DANGER_SCALE[state.zone.dangerLevel] ?? 1;
+  const scaledEnemy: EnemyArchetype = dScale === 1
+    ? enemy
+    : {
+        ...enemy,
+        attributes: (Object.keys(enemy.attributes) as (keyof Attributes)[]).reduce(
+          (acc, k) => {
+            acc[k] = Math.max(1, Math.round((enemy.attributes[k] ?? 0) * dScale));
+            return acc;
+          },
+          { ...enemy.attributes } as Attributes,
+        ),
+      };
+  const enemyUnit = buildEnemyUnit(runtime, scaledEnemy);
   // v1.0.2 伤害类投掷物自动使用：快捷·投掷槽装备了破片手雷时，45% 概率战斗先手引爆
   if (state.quickThrow === 'grenade' && rng() < 0.45) {
     const dmg = Math.max(10, Math.round(enemyUnit.getMaxHp() * 0.2));

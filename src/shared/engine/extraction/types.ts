@@ -168,6 +168,8 @@ export interface DangerZone {
   branches?: ZoneBranch[];
   /** 本图霸主（第 MAP_BRANCH_COUNT 区强制遭遇） */
   bossEnemy?: EnemyArchetype;
+  /** v1.0.11：本图专属「区域图 16 区」池（贴合主题）；不传则用全局 ZONE_POOL */
+  subZones?: ZoneBranch[];
 }
 
 /** 每张大地图的分支区域数量（最后一区为霸主巢穴） */

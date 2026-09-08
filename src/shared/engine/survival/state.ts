@@ -955,6 +955,14 @@ export function dismissSurvivor(
       log: [`【遣散】主角 ${member.name} 是避难所的核心，不可遣散。`, ...state.log].slice(0, 50),
     };
   }
+  // v1.0.11：濒死成员不可遣散（避免带伤成员被悄悄移除，需先救治）
+  const st = state.survivorStatus[survivorId];
+  if (st?.dyingUntil && new Date(st.dyingUntil).getTime() > Date.now()) {
+    return {
+      ...state,
+      log: [`【遣散】${member.name} 正处于濒死状态，无法遣散，请先救治。`, ...state.log].slice(0, 50),
+    };
+  }
   const refund = Math.floor((member.recruitValue ?? 0) / 3);
   const survivors = state.survivors.filter((s) => s.id !== survivorId);
   const survivorStatus = { ...state.survivorStatus };
