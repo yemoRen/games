@@ -69,6 +69,7 @@ import {
   grantSortieXp,
   recycleGear,
   gearAttrBonus,
+  aggregateGearCombat,
 } from '@shared/engine/survival';
 import {
   createRun,
@@ -83,6 +84,7 @@ import {
   consumeCarriedItem,
   equipCarriedGear,
   unequipRunGear,
+  effectiveRunMaxHp,
   runEffectiveAttributes,
   injuryAttrTextOf,
   cureInjuries,
@@ -746,16 +748,17 @@ function CharacterPanel(props: {
                 </div>
                 <button
                   onClick={() => mutate((st2) => ({ ...st2, activeSurvivorId: s.id }))}
-                  disabled={isDying}
+                  disabled={isDying || !!sortieId}
+                  title={sortieId && !isActive ? '另一成员正在副本中，请先撤离或返回基地' : undefined}
                   className={`rounded px-3 py-1 text-xs ${
                     isActive
                       ? 'bg-emerald-600 text-white'
-                      : isDying
+                      : isDying || !!sortieId
                         ? 'cursor-not-allowed bg-zinc-800 text-zinc-600'
                         : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
                   }`}
                 >
-                  {isActive ? '出战中' : isDying ? '濒死' : '选为出击'}
+                  {isActive ? '出战中' : isDying ? '濒死' : sortieId ? (s.id === sortieId ? '副本中' : '暂不可选') : '选为出击'}
                 </button>
               </div>
 
@@ -1639,18 +1642,24 @@ function SortiePanel(props: {
     const zone = getZone(zoneId);
     const status = state.survivorStatus[active.id];
     const baseMax = status?.maxHp ?? 0;
+    // v1.0.6：扣除出击前已穿戴装备的 hpBonus，避免 createRun 内部 equippedHpBonus(state.equipped) 重复叠加。
+    // status.maxHp 由 recomputeMaxHpIncludingGear 算出，本身已 = base+traits+gear；副本 runMaxHp 又额外加 equippedHpBonus，
+    // 若不剥离会导致 in-mission maxHp 多出 gear 的 hpBonus（如 750）。这里把 gear HP 剥出，副本起始仅保留 base+traits+garrison。
+    const gearHpBonusPreSortie = aggregateGearCombat(state, active.id).hpBonus ?? 0;
+    const baseNoGear = baseMax - gearHpBonusPreSortie;
     // 驻防全属性加成（避难所设施 + 势力声望）折算为气血增益：体质×20 + 耐力×3
     const garrisonBonuses = computeShelterBonuses(state.facilities, state.factionRep);
     const garrisonAttrHp =
       ((garrisonBonuses.attrBonus.vitality ?? 0) + (garrisonBonuses.factionAttrBonus.vitality ?? 0)) * 20 +
       ((garrisonBonuses.attrBonus.endurance ?? 0) + (garrisonBonuses.factionAttrBonus.endurance ?? 0)) * 3;
     // 驻防全属性带来的气血提升：同时加到出击起始「最大血量」与「当前血量」（仅本局生效）
-    const startMax = baseMax + garrisonAttrHp;
+    // baseNoGear 已剥离装备 HP，副本 createRun 会再叠 equippedHpBonus(state.equipped) —— 与出击前装机一致。
+    const startMax = baseNoGear + garrisonAttrHp;
     // 持久 HP 作为出击起始；附加词条「初始血量」头领（封顶 baseMax）
     let startHp = status?.currentHp ?? 0;
     if (status && loadout.bonus) {
-      const headStart = Math.round(baseMax * (loadout.bonus.startHpRatio ?? 0));
-      startHp = Math.min(startHp + headStart, baseMax);
+      const headStart = Math.round(baseNoGear * (loadout.bonus.startHpRatio ?? 0));
+      startHp = Math.min(startHp + headStart, baseNoGear);
     }
     startHp = Math.min(startHp + garrisonAttrHp, startMax);
     // 护甲耐久 / 弹药由穿戴装备推算：护甲阶级→耐久，武器阶级→携弹量
@@ -1826,7 +1835,16 @@ function SortiePanel(props: {
   const doEquipCarried = (index: number) => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
+    const maxBefore = s.condition.resources.hp.max ?? 0;
     equipCarriedGear(s, index);
+    // v1.0.6：穿上有「气血」装备后，按 effectiveRunMaxHp 重算副本上限（与 createRun 同口径）。
+    const newMax = effectiveRunMaxHp(s);
+    const delta = newMax - maxBefore;
+    if (delta !== 0) {
+      s.condition.resources.hp.max = newMax;
+      if (delta > 0) s.condition.resources.hp.current = (s.condition.resources.hp.current ?? 0) + delta;
+      else s.condition.resources.hp.current = Math.max(0, Math.min(newMax, s.condition.resources.hp.current ?? 0));
+    }
     sync();
   };
 
@@ -1834,7 +1852,15 @@ function SortiePanel(props: {
   const doUnequipRun = (slot: GearSlot) => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
+    const maxBefore = s.condition.resources.hp.max ?? 0;
     unequipRunGear(s, slot);
+    // v1.0.6：卸下有「气血」装备后，同步副本上限（满血减最大则当前同减）
+    const newMax = effectiveRunMaxHp(s);
+    const delta = newMax - maxBefore;
+    if (delta !== 0) {
+      s.condition.resources.hp.max = newMax;
+      s.condition.resources.hp.current = Math.max(0, Math.min(newMax, s.condition.resources.hp.current ?? 0));
+    }
     sync();
   };
 

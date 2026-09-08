@@ -1386,6 +1386,8 @@ export function fight(
   if (enemy.boss) {
     state.bossDefeated = true;
     state.extractRevealed = true; // 击破霸主即开放撤离
+    // v1.0.6：击败霸主后，若当前位于霸主区域，原地直接可撤离（按之前设定）。
+    if (isBossZone(state)) state.atExtract = true;
     plog(state, `👑 区域霸主【${enemy.name}】已被击倒！本图最深处宣告清理——你可随时撤离，或继续搜刮。`);
     const bonus = rollGearDrop(
       rng,
@@ -1590,7 +1592,12 @@ export function moveToNode(state: ExtractionRunState, targetId: string, rng: () 
   state.currentZoneId = targetId;
   state.zone = nodeToZone(currentZoneOf(state));
   // 霸主区不再于「进入」时强制遭遇；霸主改由本区最后一次搜刮触发（v1.0.5 修复）
-  if (state.graph.extractZones.includes(targetId) && state.extractRevealed) {
+  const reachedBossAfterDefeat =
+    targetId === state.graph.bossZoneId && state.bossDefeated;
+  if (
+    (state.graph.extractZones.includes(targetId) && state.extractRevealed) ||
+    reachedBossAfterDefeat
+  ) {
     state.atExtract = true;
     plog(state, `🚁 你抵达撤离点【${state.zone.name}】，救援就在眼前。`);
   } else {
@@ -1662,6 +1669,8 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
   const nz = branchZone(state.map, state.branchIndex);
   state.zone = nz;
   const bossFloor = state.branchIndex >= len - 1;
+  // v1.0.6：深入到霸主分支时，若霸主已被击败，原地可撤离
+  state.atExtract = !!(nz.id === state.graph.bossZoneId && state.bossDefeated);
   state.scene = [
     `你翻过残垣、沿废弃通道一路深入，抵达【${nz.name}】。`,
     nz.flavor,
