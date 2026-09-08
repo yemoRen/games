@@ -222,10 +222,16 @@ export function runCombatBonus(state: ExtractionRunState): CombatBonus {
   return { ...baseBonus, hpBonus, critBonus, lootLuck, xpBonus, coinBonus };
 }
 
-/** 给定穿戴列表的气血加成之和（用于副本最大血量锚点） */
+/** 给定穿戴列表的气血加成之和（用于副本最大血量锚点）。
+ *  除战斗词条气血(hpBonus)外，还计入装备六维属性带来的气血：体质×20 + 耐力×3，
+ *  使副本内换装有体质/耐力词条的装备时，最大血量随之正确变化（修复仅改气血词条才生效的问题）。 */
 function equippedHpBonus(equipped: RunEquippedGear[]): number {
   let s = 0;
-  for (const e of equipped) s += e.gear.combat?.hpBonus ?? 0;
+  for (const e of equipped) {
+    const m = e.gear.modifiers ?? {};
+    s += (m.vitality ?? 0) * 20 + (m.endurance ?? 0) * 3;
+    s += e.gear.combat?.hpBonus ?? 0;
+  }
   return s;
 }
 
@@ -1002,7 +1008,7 @@ export function resolveEncounter(state: ExtractionRunState, action: EncounterAct
       break;
     }
     case 'sneak': {
-      spendTime(state, actionCost(state, ACTION_COST.sneak), rng);
+      spendTime(state, ACTION_COST.sneak, rng); // v1.0.7：潜行绕行固定耗时 3 分钟，制造紧迫感
       if (state.phase !== 'searching') return;
       // 精英/Boss 更难绕开；v1.0.3 敏捷加成潜行成功率
       const sneakBonus = deriveAttrEffects(runEffectiveAttributes(state)).sneakBonus;

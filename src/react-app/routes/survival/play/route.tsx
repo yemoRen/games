@@ -640,6 +640,7 @@ function CharacterPanel(props: {
   onPickTrait: (survivorId: string, index: number) => void;
 }) {
   const { state, mutate, run, onAllocatePoint, onPickTrait } = props;
+  const [confirmDismissId, setConfirmDismissId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -911,12 +912,33 @@ function CharacterPanel(props: {
                   <TraitChip key={t.id} trait={t} />
                 ))}
                 {!s.isProtagonist && (
-                  <button
-                    onClick={() => mutate((st2) => dismissSurvivor(st2, s.id))}
-                    className="ml-auto rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:border-rose-600 hover:text-rose-300"
-                  >
-                    遣散{typeof s.recruitValue === 'number' && s.recruitValue > 0 ? `（返还 ⛁${Math.floor(s.recruitValue / 3)}）` : ''}
-                  </button>
+                  confirmDismissId === s.id ? (
+                    <span className="ml-auto flex items-center gap-1.5">
+                      <span className="text-[11px] text-rose-300">确认遣散？</span>
+                      <button
+                        onClick={() => {
+                          mutate((st2) => dismissSurvivor(st2, s.id));
+                          setConfirmDismissId(null);
+                        }}
+                        className="rounded border border-rose-600 px-2 py-1 text-[11px] text-rose-300 hover:bg-rose-900/40"
+                      >
+                        确认
+                      </button>
+                      <button
+                        onClick={() => setConfirmDismissId(null)}
+                        className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800"
+                      >
+                        取消
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDismissId(s.id)}
+                      className="ml-auto rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:border-rose-600 hover:text-rose-300"
+                    >
+                      遣散{typeof s.recruitValue === 'number' && s.recruitValue > 0 ? `（返还 ⛁${Math.floor(s.recruitValue / 3)}）` : ''}
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -1642,38 +1664,41 @@ function SortiePanel(props: {
     const zone = getZone(zoneId);
     const status = state.survivorStatus[active.id];
     const baseMax = status?.maxHp ?? 0;
-    // v1.0.6：扣除出击前已穿戴装备的 hpBonus，避免 createRun 内部 equippedHpBonus(state.equipped) 重复叠加。
-    // status.maxHp 由 recomputeMaxHpIncludingGear 算出，本身已 = base+traits+gear；副本 runMaxHp 又额外加 equippedHpBonus，
-    // 若不剥离会导致 in-mission maxHp 多出 gear 的 hpBonus（如 750）。这里把 gear HP 剥出，副本起始仅保留 base+traits+garrison。
-    const gearHpBonusPreSortie = aggregateGearCombat(state, active.id).hpBonus ?? 0;
-    const baseNoGear = baseMax - gearHpBonusPreSortie;
     // 驻防全属性加成（避难所设施 + 势力声望）折算为气血增益：体质×20 + 耐力×3
     const garrisonBonuses = computeShelterBonuses(state.facilities, state.factionRep);
     const garrisonAttrHp =
       ((garrisonBonuses.attrBonus.vitality ?? 0) + (garrisonBonuses.factionAttrBonus.vitality ?? 0)) * 20 +
       ((garrisonBonuses.attrBonus.endurance ?? 0) + (garrisonBonuses.factionAttrBonus.endurance ?? 0)) * 3;
-    // 驻防全属性带来的气血提升：同时加到出击起始「最大血量」与「当前血量」（仅本局生效）
-    // baseNoGear 已剥离装备 HP，副本 createRun 会再叠 equippedHpBonus(state.equipped) —— 与出击前装机一致。
-    const startMax = baseNoGear + garrisonAttrHp;
-    // 持久 HP 作为出击起始；附加词条「初始血量」头领（封顶 baseMax）
-    let startHp = status?.currentHp ?? 0;
-    if (status && loadout.bonus) {
-      const headStart = Math.round(baseNoGear * (loadout.bonus.startHpRatio ?? 0));
-      startHp = Math.min(startHp + headStart, baseNoGear);
-    }
-    startHp = Math.min(startHp + garrisonAttrHp, startMax);
-    // 护甲耐久 / 弹药由穿戴装备推算：护甲阶级→耐久，武器阶级→携弹量
-    const eq = state.equipped[active.id] ?? {};
-    const armorGear = eq.armor ? state.gear.find((g) => g.id === eq.armor) : undefined;
-    const armorMax = armorGear ? 40 + (armorGear.tier ?? 0) * 30 : 0;
-    const weaponGear = eq.weapon ? state.gear.find((g) => g.id === eq.weapon) : undefined;
-    const startAmmo = 24 + (weaponGear ? (weaponGear.tier ?? 0) * 8 : 0);
-    // v1.0.3：把出击前已穿戴的装备带入本局（副本内可临时替换）
+    // 出击前已穿戴装备（带入本局）；用于把其「完整气血贡献」从持久最大血中剥离，
+    // 副本 createRun 会依据「当前实穿装备」重新累加 equippedHpBonus（含体质×20/耐力×3 + 气血词条），
+    // 换装有体质词条的装备时副本最大血量才会随之变化（修复仅改气血词条才生效的问题）。
     const eqMap = state.equipped[active.id] ?? {};
     const equippedGear: GearItem[] = (Object.values(eqMap) as (string | undefined)[])
       .filter((id): id is string => !!id)
       .map((id) => state.gear.find((g) => g.id === id))
       .filter((g): g is GearItem => !!g);
+    const preSortieGearHp = equippedGear.reduce(
+      (sum, g) =>
+        sum + ((g.modifiers?.vitality ?? 0) * 20 + (g.modifiers?.endurance ?? 0) * 3) + (g.combat?.hpBonus ?? 0),
+      0,
+    );
+    // 彻底剥离出击前装备气血后，只剩「基础 + 特质 + 驻防」；副本起始最大血量 = 此基础 + 临时驻防气血
+    const baseNoGear = Math.max(0, baseMax - preSortieGearHp);
+    const startMax = baseNoGear + garrisonAttrHp;
+    // 持久 HP 作为出击起始；附加词条「初始血量」头领（封顶 baseMax，不叠加装备）
+    let startHp = status?.currentHp ?? 0;
+    if (status && loadout.bonus) {
+      const headStart = Math.round(baseMax * (loadout.bonus.startHpRatio ?? 0));
+      startHp = Math.min(startHp + headStart, baseMax);
+    }
+    // v1.0.7：当前血进入副本 = 持久当前血 + 驻防气血，封顶为「副本最大血量」(baseMax+garrisonAttrHp)；
+    // 不可封顶到 startMax（startMax 仅含基础无装备，会凭空削掉装备气血，导致 yemo 1935→1415）。
+    startHp = Math.min(startHp + garrisonAttrHp, baseMax + garrisonAttrHp);
+    // 护甲耐久 / 弹药由穿戴装备推算：护甲阶级→耐久，武器阶级→携弹量
+    const armorGear = eqMap.armor ? state.gear.find((g) => g.id === eqMap.armor) : undefined;
+    const armorMax = armorGear ? 40 + (armorGear.tier ?? 0) * 30 : 0;
+    const weaponGear = eqMap.weapon ? state.gear.find((g) => g.id === eqMap.weapon) : undefined;
+    const startAmmo = 24 + (weaponGear ? (weaponGear.tier ?? 0) * 8 : 0);
     // v1.0.5：本局 RNG 由种子字符串决定（同种子可复现本局分支图/撤离点/霸主）；不填则用随机种子。
     const seedInput = seed.trim();
     const seedNum = seedInput ? hashSeed(seedInput) : Math.floor(Math.random() * 2147483647);
@@ -1690,7 +1715,7 @@ function SortiePanel(props: {
       seed: seedNum,
     });
     // v1.0.2：快捷·投掷槽的伤害类投掷物（无 extractBonus 即手雷类）在自动战斗中概率先手引爆
-    const throwId = eq.quickThrow;
+    const throwId = eqMap.quickThrow;
     const throwSpec = throwId ? getThrowable(throwId) : undefined;
     if (throwId && throwSpec && !throwSpec.extractBonus && (state.throwables?.[throwId] ?? 0) > 0) {
       r.quickThrow = throwId;
@@ -1835,16 +1860,10 @@ function SortiePanel(props: {
   const doEquipCarried = (index: number) => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
-    const maxBefore = s.condition.resources.hp.max ?? 0;
+    // equipCarriedGear 内部会调用 recomputeRunMaxHp：hp.max 按 effectiveRunMaxHp 重算、
+    // hp.current = min(hp.max, hp.current)——只改最大血，不叠加当前血。
+    // v1.0.7：移除旧版「delta>0 时把 hpBonus 直接加到 current」的回血分支，防止反复穿脱气血装备回血。
     equipCarriedGear(s, index);
-    // v1.0.6：穿上有「气血」装备后，按 effectiveRunMaxHp 重算副本上限（与 createRun 同口径）。
-    const newMax = effectiveRunMaxHp(s);
-    const delta = newMax - maxBefore;
-    if (delta !== 0) {
-      s.condition.resources.hp.max = newMax;
-      if (delta > 0) s.condition.resources.hp.current = (s.condition.resources.hp.current ?? 0) + delta;
-      else s.condition.resources.hp.current = Math.max(0, Math.min(newMax, s.condition.resources.hp.current ?? 0));
-    }
     sync();
   };
 
@@ -1852,15 +1871,10 @@ function SortiePanel(props: {
   const doUnequipRun = (slot: GearSlot) => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
-    const maxBefore = s.condition.resources.hp.max ?? 0;
+    // unequipRunGear 内部会调用 recomputeRunMaxHp：hp.max 按 effectiveRunMaxHp 重算、
+    // hp.current = min(hp.max, hp.current)——卸下气血装备只让 max 降低、current 跟随夹取上限。
+    // v1.0.7：移除冗余的 max 重算块，避免与引擎内部状态相互覆盖。
     unequipRunGear(s, slot);
-    // v1.0.6：卸下有「气血」装备后，同步副本上限（满血减最大则当前同减）
-    const newMax = effectiveRunMaxHp(s);
-    const delta = newMax - maxBefore;
-    if (delta !== 0) {
-      s.condition.resources.hp.max = newMax;
-      s.condition.resources.hp.current = Math.max(0, Math.min(newMax, s.condition.resources.hp.current ?? 0));
-    }
     sync();
   };
 
@@ -2504,7 +2518,7 @@ function SortiePanel(props: {
                   className="rounded-lg border border-zinc-600 px-4 py-3 text-sm text-zinc-200 hover:bg-zinc-800"
                 >
                   🌫 潜行绕行
-                  <span className="ml-1 text-[11px] text-zinc-500">（耗时，可能暴露）</span>
+                  <span className="ml-1 text-[11px] text-zinc-500">（固定耗时 3 分钟，可能暴露）</span>
                 </button>
                 <button
                   onClick={(e) => { doEncounter('throw'); e.currentTarget.blur(); }}

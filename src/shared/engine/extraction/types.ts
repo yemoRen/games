@@ -53,7 +53,7 @@ export const SECURE_BOX_SLOTS = 2;
 export const ACTION_COST = {
   search: 30, // 搜索当前区域
   move: 45, // 前往下一区域
-  sneak: 35, // 潜行绕行
+  sneak: 180, // 潜行绕行（固定 3 分钟，制造紧迫感，不受敏捷系数影响）
   throwEscape: 20, // 投掷物脱离
   fight: 60, // 一场交战
   corpseLoot: 15, // 搜刮敌方尸体
