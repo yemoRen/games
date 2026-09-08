@@ -188,6 +188,8 @@ export interface SurvivalGameState {
   mirageUnlocked?: boolean;
   premiumCoins?: number;
   redeemedCodes?: string[];
+  /** 玩家注册代号；重置存档后用于重生同名主角（可选，兼容旧存档） */
+  playerCodename?: string;
 }
 
 export interface SortieLog {
@@ -258,6 +260,7 @@ export function newGame(): SurvivalGameState {
     recruits: [],
     sortieHistory: [],
     log: ['【系统】避难所已建立，开始末世求生。'],
+    playerCodename: '',
   };
 }
 
@@ -280,6 +283,7 @@ export function createProtagonistGame(name: string, now: number = Date.now()): S
     survivors: [hero],
     activeSurvivorId: hero.id,
     survivorStatus: status,
+    playerCodename: name,
     log: [`【系统】代号「${name}」已在避难所登记，开启末世求生。`, ...base.log].slice(0, 50),
   };
 }
@@ -1121,10 +1125,12 @@ function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): Surviv
   const st = state.survivorStatus[survivorId];
   if (!p || !st) return state;
   const traitC = aggregateTraitCombat(p.traits);
-  // 用含装备六维加成的有效属性重算（与 recomputeMaxHpIncludingGear 保持一致），
-  // 避免装备提供体质/耐力时 newMax < st.maxHp 导致守护早退、加点不掉血。
+  // 与 recomputeMaxHpIncludingGear 同口径：有效六维（含装备六维词条）+ 词条气血 + 装备气血(hpBonus)。
+  // 之前漏算装备 flat combat.hpBonus，导致穿戴气血装备时 newMax 反被低估、
+  // `if (newMax <= st.maxHp) return` 提前返回吞掉加点增量（表现为「体质加点偶而不加血」）。
+  const gearC = aggregateGearCombat(state, survivorId);
   const eff = effectiveAttributes(state, survivorId);
-  const newMax = deriveMaxHp(eff, traitC.hpBonus);
+  const newMax = deriveMaxHp(eff, traitC.hpBonus + gearC.hpBonus);
   if (newMax <= st.maxHp) return state;
   const delta = newMax - st.maxHp;
   return {

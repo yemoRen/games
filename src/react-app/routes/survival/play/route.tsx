@@ -70,6 +70,7 @@ import {
   recycleGear,
   gearAttrBonus,
   aggregateGearCombat,
+  createProtagonistGame,
 } from '@shared/engine/survival';
 import {
   createRun,
@@ -1422,20 +1423,37 @@ function BasePanel(props: {
   mutate: (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
 }) {
   const { state, mutate } = props;
+  const [confirmReset, setConfirmReset] = useState(false);
   const bonuses = computeShelterBonuses(state.facilities, state.factionRep);
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-zinc-300">避难所</h2>
-        <button
-          onClick={() => {
-            clearSave();
-            mutate(() => newGame());
-          }}
-          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
-        >
-          重置存档
-        </button>
+        {confirmReset ? (
+          <span className="flex items-center gap-2">
+            <span className="text-xs text-rose-300">确认重置？将清空并重建以玩家代号命名的主角（不可撤销）</span>
+            <button
+              onClick={() => {
+                const codename = state.playerCodename || state.survivors[0]?.name || '幸存者';
+                clearSave();
+                mutate(() => createProtagonistGame(codename));
+                setConfirmReset(false);
+              }}
+              className="rounded border border-rose-600 px-2 py-1 text-xs text-rose-300 hover:bg-rose-900/40"
+            >确认</button>
+            <button
+              onClick={() => setConfirmReset(false)}
+              className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+            >取消</button>
+          </span>
+        ) : (
+          <button
+            onClick={() => setConfirmReset(true)}
+            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+          >
+            重置存档
+          </button>
+        )}
       </div>
 
       {/* 设施 */}

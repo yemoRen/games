@@ -37,6 +37,7 @@ import {
   harvestGardenPlot,
   clearGardenPlot,
   emptyGardenPlots,
+  createProtagonistGame,
 } from '@shared/engine/survival/state';
 import type { RNG } from '@shared/engine/survival/rng';
 import {
@@ -953,6 +954,7 @@ export const ViewFeedback: React.FC = () => (
 
 // ===== 23. 系统设置 =====
 export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
+  const [confirmReset, setConfirmReset] = useState(false);
   const seed = ((state as { worldSeed?: number }).worldSeed ?? new Date(state.createdAt).getTime()) || 1;
   return (
     <Section title="系统设置">
@@ -960,14 +962,27 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
         <h3 className="font-semibold text-zinc-100">存档</h3>
         <div className="mt-2 text-xs text-zinc-400">本存档创建于 {new Date(state.createdAt).toLocaleString()}。</div>
         <div className="mt-3 flex gap-2">
-          <button
-            onClick={() => {
-              if (!confirm('重置后将清空当前存档，确定吗？')) return;
-              localStorage.removeItem('wasteland-save-v1');
-              location.reload();
-            }}
-            className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
-          >重置存档</button>
+          {confirmReset ? (
+            <>
+              <span className="self-center text-xs text-rose-300">确认重置？将清空并重建以玩家代号命名的主角（不可撤销）</span>
+              <button
+                onClick={() => {
+                  mutate((s) => createProtagonistGame(s.playerCodename || s.survivors[0]?.name || '幸存者'));
+                  setConfirmReset(false);
+                }}
+                className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
+              >确认</button>
+              <button
+                onClick={() => setConfirmReset(false)}
+                className="rounded bg-stone-600 px-3 py-1 text-xs text-white hover:bg-stone-700"
+              >取消</button>
+            </>
+          ) : (
+            <button
+              onClick={() => setConfirmReset(true)}
+              className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
+            >重置存档</button>
+          )}
         </div>
       </Card>
       <Card>
