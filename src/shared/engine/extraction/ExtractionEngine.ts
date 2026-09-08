@@ -352,6 +352,15 @@ export function nearestExtractZone(state: ExtractionRunState): string | null {
   return null;
 }
 
+/**
+ * v1.0.10：本区「深度」1..7 —— 只驱动**遇怪难度 / 遇怪概率**（威胁查表、敌人词缀、伏击率、经验）。
+ * 与 `state.zone.dangerLevel`（= 本图难度 危1..危7，全图恒定，只驱动装备基础爆率）彻底解耦。
+ */
+function zoneDepth(state: ExtractionRunState): number {
+  const d = currentZoneOf(state)?.depth ?? 1;
+  return Math.max(1, Math.min(7, Math.round(d)));
+}
+
 /** 把分支图节点转换为战斗/搜刮用的 DangerZone */
 function nodeToZone(node: ZoneNode): DangerZone {
   return {
@@ -951,7 +960,8 @@ function encounterIntro(state: ExtractionRunState, enemy: EnemyArchetype, rng: (
 function pickEnemy(state: ExtractionRunState, rng: () => number, pool?: EnemyArchetype[]): EnemyArchetype {
   const list = pool && pool.length > 0 ? pool : state.zone.enemies;
   const base = list[Math.floor(rng() * list.length)];
-  const affixes = rollEnemyAffixes(rng, state.zone.dangerLevel);
+  // v1.0.10：敌人词缀强度由「深度」驱动（越深越硬），与装备爆率（本图危N）解耦
+  const affixes = rollEnemyAffixes(rng, zoneDepth(state));
   const { attributes, hpBonus, critBonus } = aggregateEnemyAffixes(affixes);
   const effectiveAttributes: Attributes = { ...base.attributes };
   for (const k of Object.keys(attributes) as (keyof Attributes)[]) {
@@ -1052,7 +1062,8 @@ export function rollRescue(
   if (state.rescuedThisRun) return null;
   if (state.phase !== 'searching') return null;
   // 低概率 + 危险度越高救援越容易（因为更危险的地方遇难者也越多）
-  const chance = 0.10 + state.zone.dangerLevel * 0.04;
+  // v1.0.10：越深遇难者越多（深度驱动，非本图危险度）
+  const chance = 0.1 + zoneDepth(state) * 0.04;
   if (rng() >= chance) return null;
   const npc = npcGenerator();
   state.rescuedThisRun = true;
@@ -1386,7 +1397,7 @@ export function fight(
   state.corpse = { enemyName: enemy.name, boss: !!enemy.boss };
   // 击杀经验：与敌人强度/区域危险度挂钩（撤离成功才结算入角色）
   const xpGain = Math.round(
-    (12 + state.zone.dangerLevel * 8) * (enemy.boss ? 3 : 1) * (0.8 + rng() * 0.4),
+    (12 + zoneDepth(state) * 8) * (enemy.boss ? 3 : 1) * (0.8 + rng() * 0.4),
   );
   state.xpGained += xpGain;
   plog(state, `📈 击败【${enemy.name}】获得经验 +${xpGain}（已实时结算入角色档案）。`);
@@ -1583,6 +1594,7 @@ export function moveToZone(state: ExtractionRunState, zone: DangerZone, rng: () 
     `${zone.flavor}`,
     `本区剩余搜索机会：${MAX_ZONE_SEARCHES}/${MAX_ZONE_SEARCHES}。`,
   ].join('\n');
+  // 注：moveToZone 为旧版（非分支图）入口，不更新 currentZoneId，故此处不打印深度
   plog(state, `📍 转移至【${zone.name}】（危${zone.dangerLevel}）。`);
 }
 
@@ -1616,20 +1628,21 @@ export function moveToNode(state: ExtractionRunState, targetId: string, rng: () 
   // 转移伏击：当前区未搜满就转移，有概率被残余敌人纠缠
   const searched = state.zoneSearches[state.currentZoneId] ?? 0;
   const residualChance = searched < MAX_ZONE_SEARCHES ? 0.5 * (1 - searched / MAX_ZONE_SEARCHES) : 0;
-  const dangerAmbush = Math.min(0.65, 0.05 * state.zone.dangerLevel + 0.003 * (state.elapsedSec / 60));
-  const ambushChance = Math.max(residualChance, dangerAmbush);
+  // v1.0.10：伏击率由「深度」驱动（越深越容易被残余敌人缠上）
+  const depthAmbush = Math.min(0.65, 0.05 * zoneDepth(state) + 0.003 * (state.elapsedSec / 60));
+  const ambushChance = Math.max(residualChance, depthAmbush);
   if (rng() < ambushChance) {
       const enemy = pickEnemy(state, rng);
       const intro = `⚠️ 转移遭袭！\n${searched >= MAX_ZONE_SEARCHES ? `你以为【${state.zone.name}】已被翻遍、再无威胁——可废墟深处仍有游荡的【${enemy.name}】循着动静扑了出来！（即便区域已搜刮干净，危险仍随等级与时间累积）` : `你收拾行装准备离开【${state.zone.name}】——但未探索彻底的区域里，残余的敌人循着你的动静追了上来！\n一名【${enemy.name}】堵住了去路。`}${enemy.affixes?.length ? `\n敌方词条：${enemy.affixes.map((a) => a.label).join('、')}` : ''}\n先解决纠缠，才能继续：\n🔹【主动开战】消耗弹药，开启回合战斗\n🔹【潜行绕行】消耗时间，有概率被发现；失败将被迫交战\n🔹【投掷物脱离】消耗烟雾弹/闪光弹，必定脱离纠缠\n🔹【突围撤离点】放弃深入，直奔撤离位置`;
       state.encounter = { enemy, intro };
       state.scene = intro;
-      plog(state, `⚠ 转移途中被【${enemy.name}】纠缠（本区搜刮 ${searched}/${MAX_ZONE_SEARCHES} 次，危险度 ${state.zone.dangerLevel}，对局 ${Math.floor(state.elapsedSec / 60)} 分）！`);
+      plog(state, `⚠ 转移途中被【${enemy.name}】纠缠（本区搜刮 ${searched}/${MAX_ZONE_SEARCHES} 次，深度 ${zoneDepth(state)}，对局 ${Math.floor(state.elapsedSec / 60)} 分）！`);
       updateThreat(state);
       maybeRevealExtract(state);
       return;
     }
-  state.scene = `你穿过废墟间的缝隙，转移到了【${state.zone.name}】（危${state.zone.dangerLevel}，深度 ${currentZoneOf(state).depth}）。\n${state.zone.flavor}`;
-  plog(state, `📍 转移至【${state.zone.name}】（危${state.zone.dangerLevel}）。`);
+  state.scene = `你穿过废墟间的缝隙，转移到了【${state.zone.name}】（本图危${state.zone.dangerLevel} · 本区深度 ${zoneDepth(state)}）。\n${state.zone.flavor}`;
+  plog(state, `📍 转移至【${state.zone.name}】（危${state.zone.dangerLevel} · 深度 ${zoneDepth(state)}）。`);
   updateThreat(state);
   maybeRevealExtract(state);
 }
@@ -1652,8 +1665,9 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
   // 转移伏击判定：该分支搜刮次数越多，残余敌人越少，伏击概率越低
   const searched = state.zoneSearches[state.zone.id] ?? 0;
   const residualChance = searched < MAX_ZONE_SEARCHES ? 0.55 * (1 - searched / MAX_ZONE_SEARCHES) : 0;
-  const dangerAmbush = Math.min(0.65, 0.05 * state.zone.dangerLevel + 0.003 * (state.elapsedSec / 60));
-  const ambushChance = Math.max(residualChance, dangerAmbush);
+  // v1.0.10：伏击率由「深度」驱动（越深越容易被残余敌人缠上）
+  const depthAmbush = Math.min(0.65, 0.05 * zoneDepth(state) + 0.003 * (state.elapsedSec / 60));
+  const ambushChance = Math.max(residualChance, depthAmbush);
   if (rng() < ambushChance) {
       const enemy = pickEnemy(state, rng);
       state.encounter = {
@@ -1670,7 +1684,7 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
         ].join('\n'),
       };
       state.scene = state.encounter.intro;
-      plog(state, `⚠ 转移途中被【${enemy.name}】纠缠（本分支搜刮 ${searched}/${MAX_ZONE_SEARCHES} 次，危险度 ${state.zone.dangerLevel}，对局 ${Math.floor(state.elapsedSec / 60)} 分）！`);
+      plog(state, `⚠ 转移途中被【${enemy.name}】纠缠（本分支搜刮 ${searched}/${MAX_ZONE_SEARCHES} 次，深度 ${zoneDepth(state)}，对局 ${Math.floor(state.elapsedSec / 60)} 分）！`);
       return;
     }
   spendTime(state, actionCost(state, ACTION_COST.move), rng);

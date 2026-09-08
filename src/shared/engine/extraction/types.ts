@@ -83,11 +83,12 @@ export const THREAT_TIERS: { tier: ThreatTier; label: string; fromSec: number; c
 ];
 
 /**
- * 威胁查表：行=区域深度(0..6)，列=威胁档 → 遭遇概率。
+ * 威胁查表：行=区域深度(1..7)，列=威胁档 → 遭遇概率。
  * 浅层低、深层高、收网期(tier3)必遇。
+ * v1.0.10：入参由「0..6 原始层距」改为「1..7 归一化深度」，与区域后缀展示的深度一致。
  */
 export function threatEncounterChance(depth: number, tier: ThreatTier): number {
-  const d = Math.max(0, Math.min(6, Math.round(depth)));
+  const d = Math.max(0, Math.min(6, Math.round(depth) - 1));
   const row = [
     [0.05, 0.15, 0.3, 1.0],
     [0.08, 0.2, 0.38, 1.0],
@@ -184,9 +185,15 @@ export interface ZoneNode {
   id: string;
   name: string;
   flavor: string;
-  /** 危险度 1..6（随深度递增），驱动产物品阶 / 敌人强度 / 威胁查表 */
+  /**
+   * v1.0.10：= 本图难度（危1..危7），**全图恒定**。
+   * 只驱动「装备基础爆率」查表（小怪 / 霸主品质权重），与区域深度无关。
+   */
   danger: number;
-  /** 在分支图中的深度（= 距起点的边数），用于威胁查表与"越深越危险" */
+  /**
+   * v1.0.10：本区深度（1..7，随层距递增）。
+   * 只驱动「遇怪难度 / 遇怪概率」（威胁查表 + 敌人词缀强度 + 伏击率），并作为区域后缀展示。
+   */
   depth: number;
   lootTable: LootItem[];
   enemies: EnemyArchetype[];

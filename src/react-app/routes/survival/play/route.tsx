@@ -476,6 +476,21 @@ export default function SurvivalHub() {
   const mutate = (fn: (s: SurvivalGameState) => SurvivalGameState) =>
     setState((prev) => fn(prev));
 
+  /**
+   * v1.0.10 补充：重置存档 = 先退出出击 + 清空存档 + 以「重生者姓名」重建主角。
+   * 关键：必须先清掉进行中的对局（run / clearRun），否则重生的主角（id 与旧主角同名时相同）
+   * 会被判定仍在副本中 —— 状态条沿用副本内血量，表现为「出击状态 + 血量不满」。
+   */
+  const resetGame = (name: string) => {
+    runRef.current = null;
+    writtenRef.current = false;
+    setRun(null);
+    const u = getCurrentUser();
+    if (u) clearRun(u);
+    clearSave();
+    mutate(() => createProtagonistGame(name));
+  };
+
   // 实时同步：档案（角色页 / 出击页共用）的加点与选词条，立即同步进副本血量，实现两边完全一致。
   // stateRef 已置于 early-return 之前，此处直接复用。
 
@@ -574,7 +589,7 @@ export default function SurvivalHub() {
           <InventoryPanel state={state} mutate={mutate} rng={Math.random as RNG} run={run} />
         </div>
         <div className={tab === 'base' ? '' : 'hidden'}>
-          <BasePanel state={state} mutate={mutate} />
+          <BasePanel state={state} mutate={mutate} onResetGame={resetGame} />
         </div>
         <div className={tab === 'sortie' ? '' : 'hidden'}>
           <SortiePanel
@@ -626,6 +641,7 @@ export default function SurvivalHub() {
         state={state}
         mutate={mutate}
         setState={setState}
+        onResetGame={resetGame}
         open={menuOpen}
         onClose={() => setMenuOpen(false)}
       />
@@ -1453,8 +1469,10 @@ const GEAR_CATS: Array<{ key: 'all' | GearSlot; label: string }> = [
 function BasePanel(props: {
   state: SurvivalGameState;
   mutate: (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
+  /** v1.0.10 补充：重置存档（含退出出击）；由 Hub 统一实现，保证对局状态一并清空 */
+  onResetGame: (name: string) => void;
 }) {
-  const { state, mutate } = props;
+  const { state, mutate, onResetGame } = props;
   // v1.0.10：重置存档不再沿用「玩家代号」，改为弹窗输入重生者姓名
   const [resetOpen, setResetOpen] = useState(false);
   const suggestedName = (
@@ -1481,8 +1499,7 @@ function BasePanel(props: {
           defaultName={suggestedName}
           onCancel={() => setResetOpen(false)}
           onConfirm={(name) => {
-            clearSave();
-            mutate(() => createProtagonistGame(name));
+            onResetGame(name);
             setResetOpen(false);
           }}
         />
@@ -2175,7 +2192,7 @@ function SortiePanel(props: {
     ? run.graph.extractZones
         .map((id) => {
           const n = run.graph.nodes.find((nn) => nn.id === id);
-          return n ? `${n.name} 危${n.danger}` : id;
+          return n ? `${n.name} 深${n.depth}` : id;
         })
         .join('、')
     : '';
@@ -2269,6 +2286,9 @@ function SortiePanel(props: {
                 📍 <span className="text-zinc-100">{run.zone.name}</span>
                 <span className="ml-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-amber-300">
                   {DANGER_LABEL[run.zone.dangerLevel] ?? `危${run.zone.dangerLevel}`}
+                </span>
+                <span className="ml-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-emerald-300">
+                  深度 {curNode?.depth ?? 1}
                 </span>
                 <span className="ml-1 text-zinc-500">
                   搜刮 {usedSearches}/{MAX_ZONE_SEARCHES}
@@ -2689,7 +2709,7 @@ function SortiePanel(props: {
               )}
               <div>
                 <div className="mb-1.5 flex items-center justify-between text-[11px] uppercase tracking-wider text-zinc-500">
-                  <span>区域图（共 {run.graph.nodes.length} 区 · 越深越危险）</span>
+                  <span>区域图（共 {run.graph.nodes.length} 区 · 数字=本区深度，越深遇敌越凶）</span>
                   <span className="text-amber-400/80">当前深度 {curNode?.depth ?? 0}</span>
                 </div>
                 {/* 当前所在区域 */}
@@ -2700,7 +2720,8 @@ function SortiePanel(props: {
                       className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px]"
                       style={{ color: tierDef.color }}
                     >
-                      {DANGER_LABEL[curNode?.danger ?? 1] ?? `危${curNode?.danger ?? 1}`}
+                      {DANGER_LABEL[curNode?.danger ?? 1] ?? `危${curNode?.danger ?? 1}`} · 深度
+                      {curNode?.depth ?? 1}
                     </span>
                   </div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">
@@ -2728,7 +2749,7 @@ function SortiePanel(props: {
                         }`}
                       >
                         {n.name}
-                        <span className="ml-1 opacity-70">危{n.danger}</span>
+                        <span className="ml-1 opacity-70">深{n.depth}</span>
                         {revealedExtract && <span className="ml-0.5">🚁</span>}
                         {isBoss && <span className="ml-0.5">👑</span>}
                       </button>

@@ -112,12 +112,14 @@ export interface MenuDrawerProps {
   state: SurvivalGameState;
   mutate: (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
   setState: React.Dispatch<React.SetStateAction<SurvivalGameState>>;
+  /** v1.0.10 补充：重置存档（含退出出击），由调用方（避难所 Hub）实现 */
+  onResetGame?: (name: string) => void;
   open: boolean;
   onClose: () => void;
 }
 
 export function MenuDrawer(props: MenuDrawerProps) {
-  const { state, mutate, setState, open, onClose } = props;
+  const { state, mutate, setState, onResetGame, open, onClose } = props;
   const [activeId, setActiveId] = useState<string | null>(null);
   const [rng] = useState<RNG>(() => mulberry32(Date.now() >>> 0));
 
@@ -134,6 +136,7 @@ export function MenuDrawer(props: MenuDrawerProps) {
     mutate,
     setState,
     rng,
+    onResetGame,
   } as const;
 
   return (

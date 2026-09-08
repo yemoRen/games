@@ -365,27 +365,36 @@ export const ZONE_POOL: { id: string; name: string; flavor: string }[] = [
 ];
 
 /**
+ * v1.0.10：图内「深度」= 距起点的层距，归一化到 1..7 展示。
+ * 深度只驱动**遇怪难度 / 遇怪概率**（越深越容易撞上硬茬），与装备基础爆率无关。
+ */
+function normalizeDepth(raw: number, maxRaw: number): number {
+  return Math.max(1, Math.min(7, 1 + Math.round((raw * 6) / Math.max(1, maxRaw))));
+}
+
+/**
  * 生成本局分支图：从固定 16 区池构建节点 + 随机连边，保证连通（起点可达全部节点）。
- *  - 深度：随机生成树 + 少量冗余边，得到每个节点距起点的深度。
- *  - 危险度：v1.0.10 起按「本图难度」推导——最深处 = 该图危险度（危1..危7），入口恒为 危1，保证"越深越危险"。
- *  - 霸主：深度最大的节点（并列随机取一），敌人池替换为地图霸主。
- *  - 撤离点：深度 [2, maxDepth-1] 范围内随机取 EXTRACT_POINT_COUNT 个（排除起点/霸主）。
+ *  - 深度（1..7）：随机生成树 + 少量冗余边，得到每个节点距起点的层距，再归一化到 1..7。
+ *    深度只影响**遇怪难度 / 遇怪概率**（威胁查表 + 敌人词缀），不影响装备爆率。
+ *  - 危险度（危1..危7）：= 本图难度 `theme.dangerLevel`，全图恒定，只驱动**装备基础爆率**。
+ *  - 霸主：层距最大的节点（并列随机取一），敌人池替换为地图霸主。
+ *  - 撤离点：层距 [2, maxRaw-1] 范围内随机取 EXTRACT_POINT_COUNT 个（排除起点/霸主）。
  */
 export function generateZoneGraph(theme: DangerZone, rng: () => number): ZoneGraph {
   const pool = ZONE_POOL;
   const n = pool.length; // 16
   const ids = pool.map((z) => z.id);
-  const depth = new Array<number>(n).fill(-1);
+  const rawDepth = new Array<number>(n).fill(-1);
   const parent = new Array<number>(n).fill(-1);
-  depth[0] = 0;
+  rawDepth[0] = 0;
   for (let i = 1; i < n; i++) {
     const done: number[] = [];
-    for (let j = 0; j < i; j++) if (depth[j] >= 0) done.push(j);
+    for (let j = 0; j < i; j++) if (rawDepth[j] >= 0) done.push(j);
     const p = done[Math.floor(rng() * done.length)];
     parent[i] = p;
-    depth[i] = depth[p] + 1;
+    rawDepth[i] = rawDepth[p] + 1;
   }
-  const maxDepth = Math.max(...depth);
+  const maxDepth = Math.max(...rawDepth);
 
   const edges: Record<string, string[]> = {};
   for (const id of ids) edges[id] = [];
@@ -401,11 +410,11 @@ export function generateZoneGraph(theme: DangerZone, rng: () => number): ZoneGra
   for (let k = 0; k < extra; k++) {
     const a = Math.floor(rng() * n);
     const b = Math.floor(rng() * n);
-    if (Math.abs(depth[a] - depth[b]) <= 2) addEdge(ids[a], ids[b]);
+    if (Math.abs(rawDepth[a] - rawDepth[b]) <= 2) addEdge(ids[a], ids[b]);
   }
 
   // 霸主：深度最大者（并列随机取一）
-  const deepIdx = ids.map((_, i) => i).filter((i) => depth[i] === maxDepth);
+  const deepIdx = ids.map((_, i) => i).filter((i) => rawDepth[i] === maxDepth);
   const bossIdx = deepIdx[Math.floor(rng() * deepIdx.length)];
 
   // 撤离点：深度 [2, maxDepth-1]，排除霸主/起点；不足则从其余节点补足
@@ -423,21 +432,24 @@ export function generateZoneGraph(theme: DangerZone, rng: () => number): ZoneGra
     }
     return [...arr, ...rest.slice(0, count - arr.length)];
   };
-  const extractIdx = pick(EXTRACT_POINT_COUNT, (i) => depth[i] >= 2 && depth[i] <= maxDepth - 1 && i !== bossIdx);
+  const extractIdx = pick(
+    EXTRACT_POINT_COUNT,
+    (i) => rawDepth[i] >= 2 && rawDepth[i] <= maxDepth - 1 && i !== bossIdx,
+  );
 
-  // v1.0.10：区域危险度与「本图难度」绑定——入口 危1，最深处 = 本图危险度（危1..危7）。
-  // 例：废弃公寓全图 危1；核爆禁区由入口 危1 递增到最深处 危7。
-  const baseDanger = Math.max(1, Math.min(7, Math.round(theme.dangerLevel ?? 1)));
-  const span = Math.max(0, baseDanger - 1);
+  // v1.0.10 修订：
+  //  - danger = 本图难度（危1..危7），全图恒定 → 只驱动装备基础爆率；
+  //  - depth  = 本区深度（1..7），随层距递增 → 只驱动遇怪难度 / 遇怪概率，并在区域后缀展示。
+  // 例：废弃公寓全图 危1，但图内仍分 深度1..深度7；核爆禁区全图 危7，图内同样分 深度1..深度7。
+  const mapDanger = Math.max(1, Math.min(7, Math.round(theme.dangerLevel ?? 1)));
   const nodes: ZoneNode[] = ids.map((_, i) => {
-    const danger = Math.max(1, Math.min(7, 1 + Math.round((depth[i] * span) / Math.max(1, maxDepth))));
     const isBoss = i === bossIdx;
     return {
       id: ids[i],
       name: pool[i].name,
       flavor: pool[i].flavor,
-      danger,
-      depth: depth[i],
+      danger: mapDanger,
+      depth: normalizeDepth(rawDepth[i], maxDepth),
       lootTable: theme.lootTable,
       enemies: isBoss ? (theme.bossEnemy ? [theme.bossEnemy, ...theme.enemies] : theme.enemies) : theme.enemies,
     };

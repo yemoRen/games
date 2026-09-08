@@ -60,6 +60,8 @@ interface ViewProps {
   mutate: Mutate;
   setState: SetState;
   rng: RNG;
+  /** v1.0.10 补充：重置存档（含退出出击）。由避难所 Hub 注入；缺省时退化为仅重建档案 */
+  onResetGame?: (name: string) => void;
 }
 
 const Section: React.FC<{ title: string; subtitle?: string; children: React.ReactNode; right?: React.ReactNode }> = ({ title, subtitle, children, right }) => (
@@ -954,7 +956,7 @@ export const ViewFeedback: React.FC = () => (
 );
 
 // ===== 23. 系统设置 =====
-export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
+export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }) => {
   // v1.0.10：重置存档不再沿用「玩家代号」，改为弹窗输入重生者姓名
   const [resetOpen, setResetOpen] = useState(false);
   const suggestedName = (
@@ -983,7 +985,9 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate }) => {
             defaultName={suggestedName}
             onCancel={() => setResetOpen(false)}
             onConfirm={(name) => {
-              mutate(() => createProtagonistGame(name));
+              // v1.0.10 补充：优先走 Hub 的重置（会一并退出出击），避免重生主角仍处于副本中
+              if (onResetGame) onResetGame(name);
+              else mutate(() => createProtagonistGame(name));
               setResetOpen(false);
             }}
           />
