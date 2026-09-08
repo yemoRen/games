@@ -115,7 +115,6 @@ for (const fac of FACTIONS.slice(0, 1)) {
 const bonuses = computeShelterBonuses(state.facilities, state.factionRep);
 console.log('\n[驻防加成]', JSON.stringify({
   搜刮运势: bonuses.lootLuck.toFixed(2),
-  出击初始HP: bonuses.startHpBonus,
   改装折扣: bonuses.craftDiscount.toFixed(2),
 }));
 

@@ -615,7 +615,7 @@ export function upgradeFacility(
 export function nextFactionCost(state: SurvivalGameState, factionId: string): number | null {
   const rep = state.factionRep[factionId] ?? 0;
   if (rep >= 5) return null;
-  return 50 + rep * 30;
+  return (50 + rep * 30) * 5;
 }
 
 export function investFaction(
@@ -698,7 +698,7 @@ export function buildSortieLoadout(
   const gearC = aggregateGearCombat(state, survivorId);
   const bonuses = computeShelterBonuses(state.facilities, state.factionRep);
   const bonus: CombatBonus = {
-    hpBonus: traitC.hpBonus + gearC.hpBonus + bonuses.startHpBonus,
+    hpBonus: traitC.hpBonus + gearC.hpBonus,
     critBonus: traitC.critBonus + gearC.critBonus,
     lootLuck: traitC.lootLuck + gearC.lootLuck + bonuses.lootLuck,
     startHpRatio: traitC.startHpRatio,
@@ -1121,7 +1121,10 @@ function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): Surviv
   const st = state.survivorStatus[survivorId];
   if (!p || !st) return state;
   const traitC = aggregateTraitCombat(p.traits);
-  const newMax = deriveMaxHp(p.attributes, traitC.hpBonus);
+  // 用含装备六维加成的有效属性重算（与 recomputeMaxHpIncludingGear 保持一致），
+  // 避免装备提供体质/耐力时 newMax < st.maxHp 导致守护早退、加点不掉血。
+  const eff = effectiveAttributes(state, survivorId);
+  const newMax = deriveMaxHp(eff, traitC.hpBonus);
   if (newMax <= st.maxHp) return state;
   const delta = newMax - st.maxHp;
   return {
@@ -1142,6 +1145,20 @@ function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): Surviv
  * 佩戴/卸下装备后气血上限未同步至角色页）。
  * 同步当前生命：按增量等比调整（上限升降，当前生命同步增减，封顶于新上限、封底于 0）。
  */
+/** 计算角色有效六维（最终值）：基础属性 + 已穿戴装备的六维词条加成。用于战力与气血上限。 */
+function effectiveAttributes(state: SurvivalGameState, survivorId: string): Attributes {
+  const p = state.survivors.find((s) => s.id === survivorId);
+  const eff: Attributes = p
+    ? { ...p.attributes }
+    : { vitality: 0, strength: 0, spirit: 0, endurance: 0, speed: 0, willpower: 0 };
+  for (const g of equippedGearList(state, survivorId)) {
+    for (const k of Object.keys(g.modifiers) as (keyof Attributes)[]) {
+      eff[k] = (eff[k] ?? 0) + (g.modifiers[k] ?? 0);
+    }
+  }
+  return eff;
+}
+
 function recomputeMaxHpIncludingGear(state: SurvivalGameState, survivorId: string): SurvivalGameState {
   const p = state.survivors.find((s) => s.id === survivorId);
   const st = state.survivorStatus[survivorId];
@@ -1149,11 +1166,20 @@ function recomputeMaxHpIncludingGear(state: SurvivalGameState, survivorId: strin
   const traitC = aggregateTraitCombat(p.traits);
   const gearC = aggregateGearCombat(state, survivorId);
   const totalHpBonus = traitC.hpBonus + gearC.hpBonus;
-  const newMax = deriveMaxHp(p.attributes, totalHpBonus);
+  // v1.0.6：用含装备六维加成的有效属性重算气血上限（修复装备体质不减血量的问题）
+  const eff = effectiveAttributes(state, survivorId);
+  const newMax = deriveMaxHp(eff, totalHpBonus);
   const delta = newMax - st.maxHp;
   const newCur = Math.min(newMax, Math.max(0, st.currentHp + delta));
+  // v1.0.6：战力统计六维最终值（含装备六维加成）
+  const power = computePower(eff);
+  const { tier, name: tierName } = tierFromPower(power);
+  const survivors = state.survivors.map((s) =>
+    s.id === survivorId ? { ...s, power, tier, tierName } : s,
+  );
   return {
     ...state,
+    survivors,
     survivorStatus: {
       ...state.survivorStatus,
       [survivorId]: { ...st, maxHp: newMax, currentHp: newCur },
@@ -1173,7 +1199,7 @@ export function allocateFreePoint(
   if ((p.freePoints ?? 0) <= 0) return state;
   p.freePoints = (p.freePoints ?? 0) - 1;
   p.attributes = { ...p.attributes, [attr]: (p.attributes[attr] ?? 0) + 1 };
-  p.power = computePower(p.attributes);
+  p.power = computePower(effectiveAttributes({ ...state, survivors: state.survivors.map((s, i) => (i === idx ? p : s)) }, survivorId));
   const { tier, name: tierName } = tierFromPower(p.power);
   p.tier = tier;
   p.tierName = tierName;
@@ -1201,7 +1227,7 @@ export function chooseTraitPick(
     if (delta) attributes[k] += delta;
   }
   p.attributes = attributes;
-  p.power = computePower(attributes);
+  p.power = computePower(effectiveAttributes({ ...state, survivors: state.survivors.map((s, i) => (i === idx ? p : s)) }, survivorId));
   const { tier, name: tierName } = tierFromPower(p.power);
   p.tier = tier;
   p.tierName = tierName;

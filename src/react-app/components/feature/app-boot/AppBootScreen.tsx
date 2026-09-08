@@ -2,7 +2,8 @@ import { InkLoadingBar } from '@app/components/ui/InkLoadingBar';
 
 function isWastelandRoute(): boolean {
   try {
-    return (window.location.pathname || '').indexOf('/survival') === 0;
+    const p = window.location.pathname || '';
+    return p === '/' || p.indexOf('/survival') === 0;
   } catch {
     return false;
   }

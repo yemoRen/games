@@ -992,7 +992,6 @@ export function rollEncounter(state: ExtractionRunState, rng: () => number = Mat
  *  - fight：进入回合战斗（弹药不足则肉搏）
  *  - sneak：消耗时间潜行；失败被迫交战
  *  - throw：消耗投掷物（UI 负责扣库存），必定脱离
- *  - extract：突围奔赴撤离点
  */
 export function resolveEncounter(state: ExtractionRunState, action: EncounterAction, rng: () => number = Math.random): void {
   const enc = state.encounter;
@@ -1025,15 +1024,6 @@ export function resolveEncounter(state: ExtractionRunState, action: EncounterAct
       state.encounter = undefined;
       state.scene = '烟雾弹炸开，浓白的烟雾瞬间吞没了敌人的视野。\n你借着烟幕低姿疾走，甩开了纠缠。\n（投掷物已消耗）';
       plog(state, '💥 投掷物脱离成功，甩开了敌人。');
-      break;
-    }
-    case 'extract': {
-      spendTime(state, actionCost(state, ACTION_COST.travel), rng);
-      if (state.phase !== 'searching') return;
-      state.encounter = undefined;
-      state.atExtract = true;
-      state.scene = '你不再恋战，转身冲向撤离信号区……\n🚁 你已抵达撤离点！救援直升机正在接近。\n【确认撤离】带走背包物资；【继续搜刮】贪心者自负风险。';
-      plog(state, '🚁 突围成功，已抵达撤离点。');
       break;
     }
   }

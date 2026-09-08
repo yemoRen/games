@@ -118,7 +118,7 @@ export interface RunEncounter {
 }
 
 /** 遭遇抉择动作 */
-export type EncounterAction = 'fight' | 'sneak' | 'throw' | 'extract';
+export type EncounterAction = 'fight' | 'sneak' | 'throw';
 
 export type LootKind = 'material' | 'consumable' | 'gear' | 'currency';
 

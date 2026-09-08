@@ -7,9 +7,10 @@
 
 ## 版本与发布约定（用户明确指定）
 - **首发 = v1.0.0**（2026-09-06 已推 GitHub，tag `v1.0.0`）。
-- **后续每次推 GitHub 递增补丁号：1.0.1 → 1.0.2 …**（用户原话："之后的推到github，就1.0.1逐步增加"）。
-- 流程：改 `package.json` 的 `version` → 提交 → `git tag -a vX.Y.Z` → `git push origin main --tags`。
-- 用户偏好：**攒一批需求统一改好后再推**，不要零散推送。
+- **后续每次推 GitHub 递增补丁号**（用户原话："之后的推到github，就1.0.1逐步增加"），流程：改 `package.json` 的 `version` → 提交 → `git tag -a vX.Y.Z` → `git push origin main --tags`。
+- **用户偏好：攒一批需求统一改好后再推，不要零散推送。**
+- **当前版本分级（2026-09-08 用户最新指令）**：所有本地改动（v1.0.6 那一批 + 之后每轮 6/3/3/6 等）**统一归类到 v1.0.6 这个版本**；本地 package.json 当前为 `1.0.5`，发版时一次性 bump 到 `1.0.6` 连同全部累积改动推送，**不零散 bump、不零散推，等用户指令**。
+- 推送前提：本机 Clash 代理 7890 开启（沙箱内置代理无法连 github）；无活跃 git hooks。
 
 ## Git / 网络
 - 远程 `origin` = https://github.com/yemoRen/games.git ，主分支 `main`（已设跟踪 origin/main）。

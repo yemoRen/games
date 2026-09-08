@@ -347,7 +347,7 @@ function GearBonusChips({ gear }: { gear: GearItem }) {
     return <div className="mt-0.5 text-[11px] text-zinc-600">无属性加成</div>;
   }
   return (
-    <div className="mt-0.5 flex flex-wrap gap-1">
+    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
       {chips.map((c, i) => (
         <span
           key={i}
@@ -1150,6 +1150,36 @@ function InventoryPanel(props: {
             <p className="mt-2 text-[11px] text-zinc-600">
               主槽装备常驻生效，撤离失败时有概率被夺走；快捷槽供战斗中一键使用。
             </p>
+            {/* 已穿戴装备属性增益统计（出击/副本内临时换装时实时同步） */}
+            {(() => {
+              const eb: Partial<Attributes> = {};
+              if (inSortie && run) {
+                for (const e of run.equipped) {
+                  for (const k of Object.keys(e.gear.modifiers) as (keyof Attributes)[]) {
+                    eb[k] = (eb[k] ?? 0) + (e.gear.modifiers[k] ?? 0);
+                  }
+                }
+              } else {
+                const g = gearAttrBonus(state, active.id);
+                for (const k of Object.keys(g) as (keyof Attributes)[]) {
+                  eb[k] = (eb[k] ?? 0) + (g[k] ?? 0);
+                }
+              }
+              const entries = (Object.keys(eb) as (keyof Attributes)[]).filter((k) => (eb[k] ?? 0) !== 0);
+              if (entries.length === 0) return null;
+              return (
+                <div className="mt-3 rounded border border-emerald-900/40 bg-emerald-950/20 p-2">
+                  <div className="mb-1 text-[11px] uppercase tracking-wider text-emerald-300/70">已穿戴属性增益</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {entries.map((k) => (
+                      <span key={k} className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[11px] text-emerald-300">
+                        {attrLabel(k)}+{eb[k]}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
       </div>
@@ -1231,12 +1261,14 @@ function InventoryPanel(props: {
                         </button>
                       )}
                     </div>
-                    <div className="mt-1 text-[11px] text-zinc-500">{g.affixes.join('、')}</div>
-                    <div className="mt-0.5 flex flex-wrap gap-1.5">
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+                      {g.affixes.length > 0 && (
+                        <span className="text-emerald-300">{g.affixes.join('、')}</span>
+                      )}
                       {(Object.keys(g.modifiers) as (keyof Attributes)[])
                         .filter((k) => (g.modifiers[k] ?? 0) !== 0)
                         .map((k) => (
-                          <span key={k} className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[11px] text-emerald-300">
+                          <span key={k} className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-emerald-300">
                             {attrLabel(k)}+{g.modifiers[k]}
                           </span>
                         ))}
@@ -1397,6 +1429,9 @@ function BasePanel(props: {
                     {f.name} <span className="text-[11px] text-zinc-500">Lv.{lvl}/{f.maxLevel}</span>
                   </div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">{f.description}</div>
+                  <div className="mt-0.5 text-[11px] text-emerald-400/80">
+                    每级：{[f.lootPerLevel > 0 ? `搜刮运势 +${(f.lootPerLevel * 100).toFixed(0)}%` : null, f.recoveryPerLevel > 0 ? `恢复速率 +${f.recoveryPerLevel}%` : null, f.discountPerLevel > 0 ? `改装折扣 -${(f.discountPerLevel * 100).toFixed(0)}%` : null, ...(Object.keys(f.attrPerLevel).map((k) => `${attrLabel(k as keyof Attributes)} +${f.attrPerLevel[k as keyof Attributes]}/级`))].filter(Boolean).join(' · ') || '暂无数值加成'}
+                  </div>
                 </div>
                 {maxed ? (
                   <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400">已满级</span>
@@ -1433,6 +1468,9 @@ function BasePanel(props: {
                     {fac.name} <span className="text-[11px] text-zinc-500">声望 {rep}/5</span>
                   </div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">{fac.description}</div>
+                  <div className="mt-0.5 text-[11px] text-purple-300/80">
+                    每级声望：{Object.entries(fac.attrPerRepLevel).map(([k, v]) => `${attrLabel(k as keyof Attributes)} +${v}`).join(' · ')}
+                  </div>
                 </div>
                 {maxed ? (
                   <span className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400">已信赖</span>
@@ -1458,9 +1496,28 @@ function BasePanel(props: {
         <h3 className="mb-1 text-xs uppercase tracking-wider text-emerald-300/70">驻防加成</h3>
         <div className="grid grid-cols-2 gap-2 text-zinc-300">
           <div>搜刮运势 +{(bonuses.lootLuck * 100).toFixed(0)}%</div>
-          <div>出击初始HP +{bonuses.startHpBonus}</div>
           <div>改装折扣 -{(bonuses.craftDiscount * 100).toFixed(0)}%</div>
-          <div>全队属性 +{Object.values(bonuses.attrBonus).reduce((a, b) => a + b, 0)}</div>
+
+          <div>驻防恢复 +{(bonuses.recoveryBonus * 100).toFixed(0)}%</div>
+          {(() => {
+            const sum: Partial<Attributes> = {};
+            for (const k of Object.keys(bonuses.attrBonus) as (keyof Attributes)[]) {
+              sum[k] = (sum[k] ?? 0) + (bonuses.attrBonus[k] ?? 0);
+            }
+            for (const k of Object.keys(bonuses.factionAttrBonus) as (keyof Attributes)[]) {
+              sum[k] = (sum[k] ?? 0) + (bonuses.factionAttrBonus[k] ?? 0);
+            }
+            const entries = (Object.keys(sum) as (keyof Attributes)[]).filter((k) => (sum[k] ?? 0) !== 0);
+            if (entries.length === 0) return null;
+            return (
+              <div className="col-span-2 mt-1 flex flex-wrap gap-x-2 gap-y-1 text-emerald-300">
+                {entries.map((k) => (
+                  <span key={k}>{attrLabel(k)}+{sum[k]}</span>
+                ))}
+              </div>
+            );
+          })()}
+
         </div>
       </div>
     </section>
@@ -1582,16 +1639,20 @@ function SortiePanel(props: {
     const zone = getZone(zoneId);
     const status = state.survivorStatus[active.id];
     const baseMax = status?.maxHp ?? 0;
-    // 临时驻防加成（医疗站 startHpBonus 等）：只在本局生效，出击初始「最大血量」与「当前血量」都加上
-    const garrisonHp = computeShelterBonuses(state.facilities, state.factionRep).startHpBonus ?? 0;
-    const startMax = baseMax + garrisonHp;
+    // 驻防全属性加成（避难所设施 + 势力声望）折算为气血增益：体质×20 + 耐力×3
+    const garrisonBonuses = computeShelterBonuses(state.facilities, state.factionRep);
+    const garrisonAttrHp =
+      ((garrisonBonuses.attrBonus.vitality ?? 0) + (garrisonBonuses.factionAttrBonus.vitality ?? 0)) * 20 +
+      ((garrisonBonuses.attrBonus.endurance ?? 0) + (garrisonBonuses.factionAttrBonus.endurance ?? 0)) * 3;
+    // 驻防全属性带来的气血提升：同时加到出击起始「最大血量」与「当前血量」（仅本局生效）
+    const startMax = baseMax + garrisonAttrHp;
     // 持久 HP 作为出击起始；附加词条「初始血量」头领（封顶 baseMax）
     let startHp = status?.currentHp ?? 0;
     if (status && loadout.bonus) {
       const headStart = Math.round(baseMax * (loadout.bonus.startHpRatio ?? 0));
       startHp = Math.min(startHp + headStart, baseMax);
     }
-    startHp = Math.min(startHp + garrisonHp, startMax);
+    startHp = Math.min(startHp + garrisonAttrHp, startMax);
     // 护甲耐久 / 弹药由穿戴装备推算：护甲阶级→耐久，武器阶级→携弹量
     const eq = state.equipped[active.id] ?? {};
     const armorGear = eq.armor ? state.gear.find((g) => g.id === eq.armor) : undefined;
@@ -1999,6 +2060,17 @@ function SortiePanel(props: {
       sortieSixBonus[k] = (effAttrs[k] ?? baseAttrs[k]) - (baseAttrs[k] ?? 0) + (sortieSixReduction[k] ?? 0);
     }
   }
+  // 驻防「每属性 +N」：取 attrBonus 所有非零项的最小值，代表每个属性至少 +N。
+  // 例：训练场 Lv5（六维各+1）→ min=5，「每属性 +5」（不堆成"全属性+30"）。
+  const garrisonBonusPerAttr = run
+    ? (() => {
+        const gb = computeShelterBonuses(state.facilities, state.factionRep);
+        const vals = (Object.keys(gb.attrBonus) as (keyof Attributes)[])
+          .map((k) => gb.attrBonus[k] ?? 0)
+          .filter((v) => v > 0);
+        return vals.length === 0 ? 0 : Math.min(...vals);
+      })()
+    : 0;
   // 对局状态栏派生值
   const left = run ? timeLeft(run) : 0;
   const urgent = left > 0 && left <= RUN_TIME_LIMIT_SEC * 0.2;
@@ -2138,11 +2210,6 @@ function SortiePanel(props: {
                 <div className="h-2 overflow-hidden rounded bg-zinc-800">
                   <div className={`h-full ${hpMeta.bar} transition-all`} style={{ width: `${hpPct}%` }} />
                 </div>
-                {run.startMaxHp > run.baseMaxHp && (
-                  <div className="mt-1 text-[10px] text-emerald-400/80">
-                    含临时驻防加成 +{run.startMaxHp - run.baseMaxHp} 气血（仅本局生效，不计入角色档案）
-                  </div>
-                )}
               </div>
               <div className="flex items-end justify-between text-zinc-500">
                 <span>🛡 护甲耐久</span>
@@ -2241,13 +2308,26 @@ function SortiePanel(props: {
                   {attrBars(baseAttrs, sortieSixBonus, sortieSixReduction)}
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                  {run.buffCharges > 0 ? (
-                    <span className="rounded bg-sky-900/40 px-2 py-0.5 text-sky-300">
-                      🧪 增益激活（下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2）· 备战 {run.buffCharges} 次
+                  {garrisonBonusPerAttr > 0 && (
+                    <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-300" title="避难所设施提供的属性加成（取每属性的最小值，已并入有效六维）">
+                      🏰 驻防·全属性+{garrisonBonusPerAttr}
                     </span>
-                  ) : (
-                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-500">暂无增益 buff</span>
                   )}
+                  {FACTIONS.filter((fac) => (state.factionRep[fac.id] ?? 0) > 0).map((fac) => (
+                    <span key={fac.id} className="rounded bg-purple-900/40 px-2 py-0.5 text-purple-300" title="势力声望提供的全属性加成（已并入有效六维）">
+                      🤝 {fac.name} Lv{state.factionRep[fac.id]}
+                    </span>
+                  ))}
+                  <span
+                    className={
+                      run.buffCharges > 0
+                        ? "rounded bg-sky-900/40 px-2 py-0.5 text-sky-300"
+                        : "rounded bg-zinc-800 px-2 py-0.5 text-zinc-500"
+                    }
+                    title="备战可叠加：下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2"
+                  >
+                    🧪 增益 buff · 备战 {run.buffCharges} 次
+                  </span>
                   {run.injuries.length > 0 ? (
                     <>
                       <span className="text-zinc-500">伤势：</span>
@@ -2409,13 +2489,6 @@ function SortiePanel(props: {
                   <span className="ml-1 text-[11px] opacity-70">
                     （烟雾弹/闪光弹 库存×{throwableStock}）
                   </span>
-                </button>
-                <button
-                  onClick={(e) => { doEncounter('extract'); e.currentTarget.blur(); }}
-                  className="rounded-lg border border-amber-700 bg-amber-900/30 px-4 py-3 text-sm text-amber-200 hover:bg-amber-800/40"
-                >
-                  🚁 向撤离点突围
-                  <span className="ml-1 text-[11px] opacity-70">（放弃搜刮）</span>
                 </button>
               </div>
             </div>

@@ -78,17 +78,17 @@ export function RootRouteErrorView({ error }: { error: unknown }) {
       : error instanceof Error
         ? error.message
         : '页面加载失败';
-  const pageTitle = isVersionError ? '版本已更迭' : '道途异常';
+  const pageTitle = isVersionError ? '版本已更迭' : '废土异常';
 
   return (
     <div className="app-safe-area-page bg-paper flex min-h-[100svh] items-center justify-center">
       <title>{formatDocumentTitle(pageTitle)}</title>
       <div className="w-full max-w-xl p-6">
         <p className="text-ink-secondary text-xs tracking-[0.2em]">
-          {APP_TITLE}
+          {'全民求生・系统搜打撤'}
         </p>
         <h1 className="text-ink mt-3 text-2xl font-semibold">
-          {isVersionError ? '版本已更迭' : '道途出现偏差'}
+          {isVersionError ? '版本已更迭' : '废土航向偏移'}
         </h1>
         <p className="text-ink-secondary mt-3 text-sm leading-7">{message}</p>
         <div className="mt-6 flex flex-wrap gap-3">
@@ -102,7 +102,7 @@ export function RootRouteErrorView({ error }: { error: unknown }) {
                 刷新进入新版本
               </button>
               <a
-                href="/"
+                href="/survival"
                 className="border-ink/20 text-ink hover:border-crimson/40 hover:text-crimson border border-dashed px-3 py-2 no-underline"
               >
                 返回首页
@@ -111,13 +111,13 @@ export function RootRouteErrorView({ error }: { error: unknown }) {
           ) : (
             <>
               <Link
-                href="/"
+                href="/survival"
                 className="border-ink/20 text-ink hover:border-crimson/40 hover:text-crimson border border-dashed px-3 py-2 no-underline"
               >
                 返回首页
               </Link>
               <Link
-                href="/game"
+                href="/survival/play"
                 className="border-ink/20 text-ink hover:border-crimson/40 hover:text-crimson border border-dashed px-3 py-2 no-underline"
               >
                 返回游戏
