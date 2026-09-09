@@ -179,9 +179,11 @@ bun run test       # 运行 src/shared 下的纯引擎单测
 **补充修复（2026-09-09 后续 · 同版本合并）**
 
 - **手机端 Row 4 错位对齐**：护甲 / 弹药 / 负重 / 安全箱 四列由横排 `flex items-end justify-between`（窄列撑爆折行）改为纵向 `flex flex-col items-start`（标签在上、数值在下），四列严格对齐。
-- **角色页体质加点不回血（核心 bug）**：`state.ts:recomputeMaxHpFor` 的 `if (newMax <= st.maxHp) return state` 早返守卫是元凶——若旧档 `st.maxHp` 因历史 bug 被错误抬高，加点的 `newMax < st.maxHp` 会被吞掉，表现为「出击中加点有用、切角色页加点不加血」。改为始终按 derived 写回（与 `recomputeMaxHpIncludingGear` 同口径）。
+- **角色页加点气血逻辑回归（修正上一版误改）**：上一版曾为修「角色页加点不加血」而**删除** `recomputeMaxHpFor` 的 `if (newMax <= st.maxHp) return` 早返守卫、改为无条件按 derived 写回——这是**错误修复**，会压垮 `freshStatus` 给新人的 600「新手保护」缓冲（低体质新人 derived≈538 但 `st.maxHp=600`，加 1 体质 derived 仍 <600），造成副本中角色页加体质「血量倒扣」（见下第 5 项）。**早返守卫必须保留**，它是新人缓冲的护盾。
 - **连升 N 级只 1 组三选一（bug）**：`grantSortieXp` 旧逻辑「已有候选则不覆盖」，导致一次性连升多级的自由点累计正确、但词条三选一只有 1 组。改为每升 1 级追加 3 候选累积；`chooseTraitPick` 签名改双下标 `(state, id, pickSetIndex, candidateIndex)`，选中后整组 3 个一次性移除；UI 按 3 个一组 chunk 渲染多个「三选一」区块，多组时标题显示 `(1/3, 三选一)` 进度。
 - **「自由点 ×N」徽标合并**：出击页 Row 3 + 角色页等级行的独立 `自由点 ×N` 徽标删除，统一合并到「分配自由属性点 ×N」标签。
+
+- **副本中角色页加体质「血量倒扣」回归修复（第 5 项 · 当前）**：根因同上——删除早返守卫后，`recomputeMaxHpFor` 把 `st.maxHp` 从 600 无条件压到 derived(≈558)；`syncProfileMaxHpDeltaToRun` 仅当 `delta>0` 才同步当前血，于是副本 `hp.max` 降到 558 而 `hp.current` 仍 600，UI 显示「当前 > 上限」的怪象（用户截图 623/581 与约 42 差额吻合）。修复：**恢复早返守卫**，仅当 derived 严格大于 `st.maxHp` 才提升上限，新人缓冲被保留、随加点自然自愈。落点：`state.ts:recomputeMaxHpFor`（含回归注释 + 误导性旧注释清理）。
 
 
 ### v1.0.11（2026-09-09）— 濒死与等级门槛治理 + UI 紧凑化 + 副本内容贴合

@@ -1131,30 +1131,27 @@ export function grantSortieXp(state: SurvivalGameState, survivorId: string, xp: 
 }
 
 /**
- * 按当前六维 + 词条气血重算该成员的最大生命上限（v1.0.3b）。
- * 体质（vitality）每点 +20 气血，词条气血 hpBonus 直接叠加；
- * 仅当新上限更高时提升，并把增量同步加到当前生命（加点/升级不掉血）。
- */
-/**
- * 重算某成员最大生命上限，纳入：六维 + 词条气血 + 已装备装备气血。
- * 同步当前生命：按增量等比调整（上限升降，当前生命同步增减，封顶于新上限、封底于 0）。
+ * 重算某成员最大生命上限，纳入：六维（含装备六维词条）+ 词条气血 + 已装备装备气血(hpBonus)。
+ * 同步当前生命：按增量调整（上限升降，当前生命同步增减，封顶于新上限、封底于 0）。
  *
- * v1.0.12 补充：去掉「newMax <= st.maxHp 早返」守卫，改为始终按 derived 写回。
- *   旧实现若 `st.maxHp` 因历史 bug/旧档被错误地抬高（高于 derived），后续体质加点会
- *   计算出 newMax < st.maxHp 被早返吞掉，表现为「角色页加点偶而不加血」（issue 报告 ②）。
- *   与下方 `recomputeMaxHpIncludingGear` 同口径：永远把 maxHp 写回 derived，让旧档自愈。
+ * 早返守卫 `if (newMax <= st.maxHp) return` 必须保留（v1.0.12 第 5 项回归修复）：
+ * - `freshStatus` 给新成员按 `Math.max(600, deriveMaxHp(...))` 固化了「新手保护」缓冲，
+ *   低体质新角色的 st.maxHp 会高于纯 derived 值（如 6 体质约 538 但 st.maxHp=600）；
+ *   若无条件写回 derived，加 1 体质时 derived 仍 <600，会把上限从 600 压到 ~558，
+ *   表现为「血量倒扣」（run.currentHp 因 delta<0 不同步，UI 显示 current>max 的怪象）。
+ * - 该守卫保证：仅在 derived 严格更大时才提升上限，历史缓冲/旧档偏高值被保留，会随加点自愈。
  */
 function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): SurvivalGameState {
   const p = state.survivors.find((s) => s.id === survivorId);
   const st = state.survivorStatus[survivorId];
   if (!p || !st) return state;
   const traitC = aggregateTraitCombat(p.traits);
-  // 与 recomputeMaxHpIncludingGear 同口径：有效六维（含装备六维词条）+ 词条气血 + 装备气血(hpBonus)。
-  // 之前漏算装备 flat combat.hpBonus，导致穿戴气血装备时 newMax 反被低估、
-  // `if (newMax <= st.maxHp) return` 提前返回吞掉加点增量（表现为「体质加点偶而不加血」）。
+  // 有效属性（含装备六维词条）+ 词条气血 + 装备气血(hpBonus)，使穿戴气血装备时上限正确提升。
   const gearC = aggregateGearCombat(state, survivorId);
   const eff = effectiveAttributes(state, survivorId);
   const newMax = deriveMaxHp(eff, traitC.hpBonus + gearC.hpBonus);
+  // 早返守卫：preserve st.maxHp（含 freshStatus 的 +42 新手保护），仅当 derived 严格更大才更新
+  if (newMax <= st.maxHp) return state;
   const delta = newMax - st.maxHp;
   const newCur = Math.min(newMax, Math.max(0, st.currentHp + delta));
   return {
