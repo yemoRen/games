@@ -176,6 +176,13 @@ bun run test       # 运行 src/shared 下的纯引擎单测
 
 > 所有改动纯前端，`build:client` 验证通过；旧档无缝衔接。
 
+**补充修复（2026-09-09 后续 · 同版本合并）**
+
+- **手机端 Row 4 错位对齐**：护甲 / 弹药 / 负重 / 安全箱 四列由横排 `flex items-end justify-between`（窄列撑爆折行）改为纵向 `flex flex-col items-start`（标签在上、数值在下），四列严格对齐。
+- **角色页体质加点不回血（核心 bug）**：`state.ts:recomputeMaxHpFor` 的 `if (newMax <= st.maxHp) return state` 早返守卫是元凶——若旧档 `st.maxHp` 因历史 bug 被错误抬高，加点的 `newMax < st.maxHp` 会被吞掉，表现为「出击中加点有用、切角色页加点不加血」。改为始终按 derived 写回（与 `recomputeMaxHpIncludingGear` 同口径）。
+- **连升 N 级只 1 组三选一（bug）**：`grantSortieXp` 旧逻辑「已有候选则不覆盖」，导致一次性连升多级的自由点累计正确、但词条三选一只有 1 组。改为每升 1 级追加 3 候选累积；`chooseTraitPick` 签名改双下标 `(state, id, pickSetIndex, candidateIndex)`，选中后整组 3 个一次性移除；UI 按 3 个一组 chunk 渲染多个「三选一」区块，多组时标题显示 `(1/3, 三选一)` 进度。
+- **「自由点 ×N」徽标合并**：出击页 Row 3 + 角色页等级行的独立 `自由点 ×N` 徽标删除，统一合并到「分配自由属性点 ×N」标签。
+
 
 ### v1.0.11（2026-09-09）— 濒死与等级门槛治理 + UI 紧凑化 + 副本内容贴合
 

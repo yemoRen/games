@@ -45,6 +45,10 @@ function mkState() {
     },
     log: [],
     sortieHistory: [],
+    equipped: {},
+    gear: [],
+    factionRep: {},
+    facilities: { medical: 0, armory: 0, market: 0, training: 0, workshop: 0, watchtower: 0, radio: 0, gym: 0, kitchen: 0, lounge: 0 },
   } as any;
 }
 

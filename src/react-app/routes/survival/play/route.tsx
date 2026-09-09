@@ -540,12 +540,14 @@ export default function SurvivalHub() {
     syncRun();
   };
 
-  /** 升级词条三选一（角色页 / 出击页共用）：档案立即生效，并同步副本血量 / 有效六维 */
-  const onPickTrait = (survivorId: string, index: number) => {
+  /** 升级词条三选一（角色页 / 出击页共用）：档案立即生效，并同步副本血量 / 有效六维
+   * v1.0.12 补充：双下标签名 (pickSetIndex, candidateIndex)，与 chooseTraitPick 对齐。 */
+  const onPickTrait = (survivorId: string, pickSetIndex: number, candidateIndex: number) => {
     const prev = stateRef.current;
     const p = prev.survivors.find((x) => x.id === survivorId);
-    const trait = p?.pendingTraitPick?.[index];
-    const next = chooseTraitPick(prev, survivorId, index);
+    const flat = p?.pendingTraitPick ?? [];
+    const trait = flat[pickSetIndex * 3 + candidateIndex];
+    const next = chooseTraitPick(prev, survivorId, pickSetIndex, candidateIndex);
     stateRef.current = next;
     const s = runRef.current;
     if (s && s.survivor.profile?.id === survivorId && trait) {
@@ -667,7 +669,7 @@ function CharacterPanel(props: {
   rng: RNG;
   run: ExtractionRunState | null;
   onAllocatePoint: (survivorId: string, attr: keyof Attributes) => void;
-  onPickTrait: (survivorId: string, index: number) => void;
+  onPickTrait: (survivorId: string, pickSetIndex: number, candidateIndex: number) => void;
 }) {
   const { state, mutate, run, onAllocatePoint, onPickTrait } = props;
   const [confirmDismissId, setConfirmDismissId] = useState<string | null>(null);
@@ -888,7 +890,7 @@ function CharacterPanel(props: {
                     </div>
                     {fp > 0 && (
                       <div className="mt-2">
-                        <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点（每点 +1）：</div>
+                        <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点 ×{fp}（每点 +1）：</div>
                         <div className="flex flex-wrap gap-1">
                           {(Object.keys(s.attributes) as (keyof Attributes)[]).map((k) => (
                             <button
@@ -903,34 +905,43 @@ function CharacterPanel(props: {
                       </div>
                     )}
                     {cands.length > 0 && (
-                      <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
-                        <div className="text-[11px] text-purple-300">
-                          🔗【系统】检测到宿主等级提升……请选择词条强化（三选一）：
-                        </div>
-                        <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
-                          {cands.map((t, i) => (
-                            <button
-                              key={`${t.id}-${i}`}
-                              onClick={() => onPickTrait(s.id, i)}
-                              className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
-                              style={{ borderColor: affixColor(t.quality) }}
-                            >
-                              <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
-                                {affixLabel(t.quality)}·{t.name}
+                      <div className="mt-2 space-y-1.5">
+                        {Array.from({ length: Math.ceil(cands.length / 3) }, (_, setIdx) => {
+                          const set = cands.slice(setIdx * 3, setIdx * 3 + 3);
+                          const totalSets = Math.ceil(cands.length / 3);
+                          return (
+                            <div key={`pick-${setIdx}`} className="rounded border border-purple-800/60 bg-purple-950/20 p-2">
+                              <div className="text-[11px] text-purple-300">
+                                🔗【系统】检测到宿主等级提升……请选择词条强化
+                                {totalSets > 1 ? `（${setIdx + 1}/${totalSets}，三选一）` : '（三选一）'}：
                               </div>
-                              <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
-                              <div className="mt-0.5 text-[10px] text-emerald-300">
-                                {(Object.keys(t.modifiers) as (keyof Attributes)[])
-                                  .filter((k) => (t.modifiers[k] ?? 0) !== 0)
-                                  .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
-                                  .join(' ')}
-                                {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
-                                {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
-                                {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
+                              <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+                                {set.map((t, i) => (
+                                  <button
+                                    key={`${t.id}-${setIdx}-${i}`}
+                                    onClick={() => onPickTrait(s.id, setIdx, i)}
+                                    className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
+                                    style={{ borderColor: affixColor(t.quality) }}
+                                  >
+                                    <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
+                                      {affixLabel(t.quality)}·{t.name}
+                                    </div>
+                                    <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
+                                    <div className="mt-0.5 text-[10px] text-emerald-300">
+                                      {(Object.keys(t.modifiers) as (keyof Attributes)[])
+                                        .filter((k) => (t.modifiers[k] ?? 0) !== 0)
+                                        .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
+                                        .join(' ')}
+                                      {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
+                                      {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
+                                      {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
+                                    </div>
+                                  </button>
+                                ))}
                               </div>
-                            </button>
-                          ))}
-                        </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1646,7 +1657,7 @@ function SortiePanel(props: {
   writtenRef: React.MutableRefObject<boolean>;
   syncRun: () => void;
   onAllocatePoint: (survivorId: string, attr: keyof Attributes) => void;
-  onPickTrait: (survivorId: string, index: number) => void;
+  onPickTrait: (survivorId: string, pickSetIndex: number, candidateIndex: number) => void;
   stateRef: React.MutableRefObject<SurvivalGameState>;
 }) {
   const { state, setState, onExit, run, setRun, runRef, rngRef, writtenRef, syncRun, onAllocatePoint, onPickTrait, stateRef } = props;
@@ -2380,11 +2391,7 @@ function SortiePanel(props: {
               <div>
                 <div className="mb-1 flex justify-between text-sky-300">
                   <span>⬆ Lv.{active.level ?? 1} <span className="ml-1 text-zinc-400">经验 {(active.xp ?? 0)} / {xpNeededForLevel(active.level ?? 1)}</span></span>
-                  {(active.freePoints ?? 0) > 0 && (
-                    <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-300">
-                      自由点 ×{active.freePoints}
-                    </span>
-                  )}
+                  {/* v1.0.12 补充：「自由点 ×N」徽标已挪到下方「分配自由属性点 ×N」标签里，避免重复 */}
                 </div>
                 <div className="h-2 overflow-hidden rounded bg-zinc-800">
                   <div
@@ -2394,24 +2401,24 @@ function SortiePanel(props: {
                 </div>
               </div>
             </div>
-            {/* Row 4：护甲 / 弹药 / 负重 / 安全箱 —— 4 列纯文本 */}
-            <div className="mt-2 grid grid-cols-4 gap-3 text-xs">
-              <div className="flex items-end justify-between text-zinc-500">
-                <span>🛡 护甲</span>
+            {/* Row 4：护甲 / 弹药 / 负重 / 安全箱 —— 4 列纵向 stack（手机端防折行对齐，v1.0.12 补充） */}
+            <div className="mt-2 grid grid-cols-4 gap-2 text-xs">
+              <div className="flex flex-col items-start">
+                <span className="text-zinc-500">🛡 护甲</span>
                 <span className="text-zinc-200">{armorCur} / {armorMax}</span>
               </div>
-              <div className="flex items-end justify-between text-zinc-500">
-                <span>🔫 弹药</span>
+              <div className="flex flex-col items-start">
+                <span className="text-zinc-500">🔫 弹药</span>
                 <span className={run.ammo >= FIGHT_AMMO_COST ? 'text-zinc-200' : 'text-rose-400'}>
                   {run.ammo} 发
                 </span>
               </div>
-              <div className="flex items-end justify-between text-zinc-500">
-                <span>🎒 负重</span>
-                <span className="text-zinc-200">{carried.length} / {runPackCapacity(run)} 格</span>
+              <div className="flex flex-col items-start">
+                <span className="text-zinc-500">🎒 负重</span>
+                <span className="text-zinc-200">{carried.length} / {runPackCapacity(run)}</span>
               </div>
-              <div className="flex items-end justify-between text-zinc-500">
-                <span>📦 安全箱</span>
+              <div className="flex flex-col items-start">
+                <span className="text-zinc-500">📦 安全箱</span>
                 <span className="text-amber-300">{secureUsed}/{SECURE_BOX_SLOTS}</span>
               </div>
             </div>
@@ -2463,7 +2470,7 @@ function SortiePanel(props: {
 
             {(active.freePoints ?? 0) > 0 && (
               <div className="mt-2">
-                <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点（每点 +1，出击途中即时生效）：</div>
+                <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点 ×{active.freePoints ?? 0}（每点 +1，出击途中即时生效）：</div>
                 <div className="flex flex-wrap gap-1">
                   {(Object.keys(active.attributes) as (keyof Attributes)[]).map((k) => (
                     <button
@@ -2477,37 +2484,49 @@ function SortiePanel(props: {
                 </div>
               </div>
             )}
-            {(active.pendingTraitPick ?? []).length > 0 && (
-              <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
-                <div className="text-[11px] text-purple-300">
-                  🔗【系统】检测到宿主等级提升……请选择词条强化（三选一）：
-                </div>
-                <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
-                  {active.pendingTraitPick!.map((t, i) => (
-                    <button
-                      key={`${t.id}-${i}`}
-                      onClick={() => onPickTrait(active.id, i)}
-                      className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
-                      style={{ borderColor: affixColor(t.quality) }}
-                    >
-                      <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
-                        {affixLabel(t.quality)}·{t.name}
+            {(active.pendingTraitPick ?? []).length > 0 && (() => {
+              const cands = active.pendingTraitPick!;
+              const totalSets = Math.ceil(cands.length / 3);
+              return (
+                <div className="mt-2 space-y-1.5">
+                  {Array.from({ length: totalSets }, (_, setIdx) => {
+                    const set = cands.slice(setIdx * 3, setIdx * 3 + 3);
+                    return (
+                      <div key={`pick-${setIdx}`} className="rounded border border-purple-800/60 bg-purple-950/20 p-2">
+                        <div className="text-[11px] text-purple-300">
+                          🔗【系统】检测到宿主等级提升……请选择词条强化
+                          {totalSets > 1 ? `（${setIdx + 1}/${totalSets}，三选一）` : '（三选一）'}：
+                        </div>
+                        <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+                          {set.map((t, i) => (
+                            <button
+                              key={`${t.id}-${setIdx}-${i}`}
+                              onClick={() => onPickTrait(active.id, setIdx, i)}
+                              className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
+                              style={{ borderColor: affixColor(t.quality) }}
+                            >
+                              <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
+                                {affixLabel(t.quality)}·{t.name}
+                              </div>
+                              <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
+                              <div className="mt-0.5 text-[10px] text-emerald-300">
+                                {(Object.keys(t.modifiers) as (keyof Attributes)[])
+                                  .filter((k) => (t.modifiers[k] ?? 0) !== 0)
+                                  .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
+                                  .join(' ')}
+                                {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
+                                {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
+                                {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                      <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
-                      <div className="mt-0.5 text-[10px] text-emerald-300">
-                        {(Object.keys(t.modifiers) as (keyof Attributes)[])
-                          .filter((k) => (t.modifiers[k] ?? 0) !== 0)
-                          .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
-                          .join(' ')}
-                        {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
-                        {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
-                        {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
-                      </div>
-                    </button>
-                  ))}
+                    );
+                  })}
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* v1.0.5：背包已满弹窗（放弃 / 取消 抉择） */}

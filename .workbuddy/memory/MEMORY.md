@@ -56,3 +56,10 @@
 - boss 仅能在「霸主区第三次搜刮」由 `rollEncounter` 登场；**转移伏击（moveToNode / advanceBranch）的敌池必须排除 `boss`**，否则身处/进入霸主区会被伏击抽出 boss，造成「反复转移刷 boss」漏洞。
 - 伏击取敌统一用 `pickEnemy(state, rng, ambushPool)`，其中 `ambushPool = state.zone.enemies.filter(e => !e.boss)`；若霸主区敌池只有 boss，则 `ambushPool` 为空 → 跳过伏击。
 - 调副本/加地图时务必守住这条，别让 boss 在非「第三次搜刮」路径出现。
+## ⚠️ recomputeMaxHpFor 不要早返（v1.0.12 补充）
+- 旧实现 `if (newMax <= st.maxHp) return state` 是为了防「穿戴气血装备 newMax 被低估」；公式已修（v1.0.5/1.0.6 加入 `gearC.hpBonus`），该守卫仍残留。
+- **正确做法**：与 `recomputeMaxHpIncludingGear` 同口径，始终按 derived 写回 `maxHp`。否则旧档若 `st.maxHp` 因历史 bug 偏高，后续体质加点的 `newMax < st.maxHp` 会被早返吞，表现为「角色页加点偶而不加血」。
+## ⚠️ 词条三选一累积（v1.0.12 补充）
+- `SurvivorProfile.pendingTraitPick: SurvivorTrait[]` 为扁平数组，每升 1 级 `grantSortieXp` 追加 3 候选。
+- `chooseTraitPick(state, id, pickSetIndex, candidateIndex)` 双下标，选中后整组（3 个）一次性从列表移除（`[...flat.slice(0, start), ...flat.slice(start + 3)]`），未选中的 2 个随整组淘汰、不入档。
+- UI 把 `pendingTraitPick` 按 3 个一组 chunk 渲染多个「三选一」区块，多组时标题显示 `（1/3, 三选一）` 进度。

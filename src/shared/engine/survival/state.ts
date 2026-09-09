@@ -39,6 +39,7 @@ import {
   RAID_PACK_CAPACITY,
 } from './equipment';
 import type { Injury, SurvivorStatus } from './recovery';
+import { type SurvivorTrait } from './chargen';
 import {
   freshStatus,
   recoverAll as recoverAllImpl,
@@ -1108,9 +1109,15 @@ export function grantSortieXp(state: SurvivalGameState, survivorId: string, xp: 
         },
       }
     : state.survivorStatus;
-  // 词条三选一（系统提示）：已有待选则不覆盖（多级连升共用一次选择，点数照常累计）
-  if (!p.pendingTraitPick || p.pendingTraitPick.length === 0) {
-    p.pendingTraitPick = rollTraitCandidates(Math.random, p.traits.map((t) => t.id), 3);
+  // 词条三选一（系统提示）：v1.0.12 补充 —— 每升 1 级追加一组（3 选 1）候选，连升 N 级一次性给 N 组；
+  // 用户可逐组选择，选中后该组 3 个整组移除。自由属性点累计与词条三选一组数严格对齐。
+  if (levels > 0) {
+    const existing = p.pendingTraitPick ?? [];
+    const newSets: SurvivorTrait[] = [];
+    for (let i = 0; i < levels; i++) {
+      newSets.push(...rollTraitCandidates(Math.random, p.traits.map((t) => t.id), 3));
+    }
+    p.pendingTraitPick = [...existing, ...newSets];
   }
   return {
     ...state,
@@ -1128,6 +1135,15 @@ export function grantSortieXp(state: SurvivalGameState, survivorId: string, xp: 
  * 体质（vitality）每点 +20 气血，词条气血 hpBonus 直接叠加；
  * 仅当新上限更高时提升，并把增量同步加到当前生命（加点/升级不掉血）。
  */
+/**
+ * 重算某成员最大生命上限，纳入：六维 + 词条气血 + 已装备装备气血。
+ * 同步当前生命：按增量等比调整（上限升降，当前生命同步增减，封顶于新上限、封底于 0）。
+ *
+ * v1.0.12 补充：去掉「newMax <= st.maxHp 早返」守卫，改为始终按 derived 写回。
+ *   旧实现若 `st.maxHp` 因历史 bug/旧档被错误地抬高（高于 derived），后续体质加点会
+ *   计算出 newMax < st.maxHp 被早返吞掉，表现为「角色页加点偶而不加血」（issue 报告 ②）。
+ *   与下方 `recomputeMaxHpIncludingGear` 同口径：永远把 maxHp 写回 derived，让旧档自愈。
+ */
 function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): SurvivalGameState {
   const p = state.survivors.find((s) => s.id === survivorId);
   const st = state.survivorStatus[survivorId];
@@ -1139,8 +1155,8 @@ function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): Surviv
   const gearC = aggregateGearCombat(state, survivorId);
   const eff = effectiveAttributes(state, survivorId);
   const newMax = deriveMaxHp(eff, traitC.hpBonus + gearC.hpBonus);
-  if (newMax <= st.maxHp) return state;
   const delta = newMax - st.maxHp;
+  const newCur = Math.min(newMax, Math.max(0, st.currentHp + delta));
   return {
     ...state,
     survivorStatus: {
@@ -1148,7 +1164,7 @@ function recomputeMaxHpFor(state: SurvivalGameState, survivorId: string): Surviv
       [survivorId]: {
         ...st,
         maxHp: newMax,
-        currentHp: Math.min(newMax, st.currentHp + delta),
+        currentHp: newCur,
       },
     },
   };
@@ -1222,18 +1238,24 @@ export function allocateFreePoint(
   return recomputeMaxHpFor({ ...state, survivors }, survivorId);
 }
 
-/** 升级词条三选一：选定候选 → 词条入库 + 属性增量叠加 + 重算战力段位 */
+/** 升级词条三选一：选定候选 → 词条入库 + 属性增量叠加 + 重算战力段位
+ * v1.0.12 补充：`pendingTraitPick` 改为累积式（每升 1 级 push 3 候选），
+ *   签名改为 (pickSetIndex, candidateIndex) 双下标；选定后整组（3 个）一次性从待选列表移除。 */
 export function chooseTraitPick(
   state: SurvivalGameState,
   survivorId: string,
+  pickSetIndex: number,
   candidateIndex: number,
 ): SurvivalGameState {
   const idx = state.survivors.findIndex((s) => s.id === survivorId);
   if (idx < 0) return state;
   const p = { ...state.survivors[idx] };
-  const cands = p.pendingTraitPick;
-  const trait = cands?.[candidateIndex];
+  const flat = p.pendingTraitPick ?? [];
+  const start = pickSetIndex * 3;
+  const trait = flat[start + candidateIndex];
   if (!trait) return state;
+  // 整组移除：选中的组（含同组的另外 2 个未选）从待选列表剔除
+  p.pendingTraitPick = [...flat.slice(0, start), ...flat.slice(start + 3)];
   p.traits = [...p.traits, trait];
   const attributes = { ...p.attributes };
   for (const k of ALL_ATTR_KEYS) {
@@ -1245,7 +1267,6 @@ export function chooseTraitPick(
   const { tier, name: tierName } = tierFromPower(p.power);
   p.tier = tier;
   p.tierName = tierName;
-  p.pendingTraitPick = undefined;
   const survivors = [...state.survivors];
   survivors[idx] = p;
   const next = {
