@@ -2326,9 +2326,10 @@ function SortiePanel(props: {
 
       {run && (
         <>
-          {/* ① 对局状态栏（常驻：时间 / 位置 / 撤离点 / 安全箱 + 生命护甲弹药负重） */}
-          <div className="sticky top-0 z-20 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          {/* ① 对局状态栏（常驻：v1.0.12 紧凑化）—— 时间+携带估值同行；位置/撤离/威胁/安全箱成行；生命/经验 同尺寸 2 列；护甲/弹药/负重 3 列；6 维 + buff + 自由点 + 词条三选一 全部并入主面板，去掉独立蓝框 */}
+          <div className="sticky top-0 z-20 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+            {/* Row 1：对局剩余（左） + 携带估值（右） */}
+            <div className="flex items-center justify-between text-xs">
               <span className="text-zinc-400">
                 ⏱ 对局剩余{' '}
                 <span className={`font-mono text-sm font-semibold ${urgent ? 'text-rose-400' : 'text-emerald-400'}`}>
@@ -2336,6 +2337,12 @@ function SortiePanel(props: {
                 </span>
                 <span className="text-zinc-600"> / {fmtClock(RUN_TIME_LIMIT_SEC)}</span>
               </span>
+              <span className="text-zinc-400">
+                💰 携带估值 <span className="font-semibold text-emerald-400">{carriedValue}</span> 废土币
+              </span>
+            </div>
+            {/* Row 2：位置 / 撤离 / 威胁 / 安全箱 —— 紧凑单行 */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className="text-zinc-400">
                 📍 <span className="text-zinc-100">{run.zone.name}</span>
                 <span className="ml-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-amber-300">
@@ -2358,14 +2365,9 @@ function SortiePanel(props: {
                 🔥 威胁：
                 <span style={{ color: tierDef.color }}>{tierDef.label}</span>
               </span>
-              <span className="text-zinc-400">
-                🛡 安全箱：<span className="text-amber-300">{secureUsed}/{SECURE_BOX_SLOTS}</span>
-              </span>
-              <span className="ml-auto text-zinc-400">
-                携带估值 <span className="font-semibold text-emerald-400">{carriedValue}</span> 废土币
-              </span>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+            {/* Row 3：生命 / 等级·经验 —— 同尺寸 2 列（同为 h-2 bar） */}
+            <div className="mt-2.5 grid grid-cols-2 gap-3 text-xs">
               <div>
                 <div className="mb-1 flex justify-between text-zinc-500">
                   <span>❤ 生命 <span className={hpMeta.text}>{hpMeta.label}</span></span>
@@ -2375,10 +2377,28 @@ function SortiePanel(props: {
                   <div className={`h-full ${hpMeta.bar} transition-all`} style={{ width: `${hpPct}%` }} />
                 </div>
               </div>
+              <div>
+                <div className="mb-1 flex justify-between text-sky-300">
+                  <span>⬆ Lv.{active.level ?? 1} <span className="ml-1 text-zinc-400">经验 {(active.xp ?? 0)} / {xpNeededForLevel(active.level ?? 1)}</span></span>
+                  {(active.freePoints ?? 0) > 0 && (
+                    <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-300">
+                      自由点 ×{active.freePoints}
+                    </span>
+                  )}
+                </div>
+                <div className="h-2 overflow-hidden rounded bg-zinc-800">
+                  <div
+                    className="h-full bg-sky-500/70 transition-all"
+                    style={{ width: `${Math.min(100, ((active.xp ?? 0) / xpNeededForLevel(active.level ?? 1)) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+            {/* Row 4：护甲 / 弹药 / 负重 / 安全箱 —— 4 列纯文本 */}
+            <div className="mt-2 grid grid-cols-4 gap-3 text-xs">
               <div className="flex items-end justify-between text-zinc-500">
-                <span>🛡 护甲耐久</span>
+                <span>🛡 护甲</span>
                 <span className="text-zinc-200">{armorCur} / {armorMax}</span>
-
               </div>
               <div className="flex items-end justify-between text-zinc-500">
                 <span>🔫 弹药</span>
@@ -2390,122 +2410,104 @@ function SortiePanel(props: {
                 <span>🎒 负重</span>
                 <span className="text-zinc-200">{carried.length} / {runPackCapacity(run)} 格</span>
               </div>
+              <div className="flex items-end justify-between text-zinc-500">
+                <span>📦 安全箱</span>
+                <span className="text-amber-300">{secureUsed}/{SECURE_BOX_SLOTS}</span>
+              </div>
             </div>
 
-            {/* ①-a 角色等级 / 经验（实时，与角色页同步）：打怪获取经验实时显示；途中升级此处同样提示三选一 */}
-            <div className="mt-3 rounded-lg border border-sky-900/50 bg-sky-950/20 p-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-sky-300">
-                  Lv.{active.level ?? 1}
-                  <span className="ml-2 text-zinc-400">
-                    经验 {(active.xp ?? 0)} / {xpNeededForLevel(active.level ?? 1)}
-                  </span>
-                </span>
-                {(active.freePoints ?? 0) > 0 && (
-                  <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-300">
-                    ⬆ 自由属性点 ×{active.freePoints}
-                  </span>
-                )}
-              </div>
-              <div className="mt-1 h-1.5 overflow-hidden rounded bg-zinc-800">
-                <div
-                  className="h-full bg-sky-500/70"
-                  style={{ width: `${Math.min(100, ((active.xp ?? 0) / xpNeededForLevel(active.level ?? 1)) * 100)}%` }}
-                />
-              </div>
-              {/* 角色属性 / 增益 / 伤势 —— 整合进经验条卡片，随经验条一同固定滑动（v1.0.11） */}
-              {effAttrs && baseAttrs && (
-                <div className="mt-2 space-y-1.5 border-t border-sky-900/40 pt-2">
-                  <div className="scale-[0.92] origin-left">{attrBars(baseAttrs, sortieSixBonus, sortieSixReduction)}</div>
-                  <div className="flex flex-wrap items-center gap-1 text-[10px]">
-                    {garrisonBonusPerAttr > 0 && (
-                      <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-300" title="避难所设施提供的属性加成（取每属性的最小值，已并入有效六维）">
-                        🏰 驻防·全属性+{garrisonBonusPerAttr}
-                      </span>
-                    )}
-                    {FACTIONS.filter((fac) => (state.factionRep[fac.id] ?? 0) > 0).map((fac) => (
-                      <span key={fac.id} className="rounded bg-purple-900/40 px-2 py-0.5 text-purple-300" title="势力声望提供的全属性加成（已并入有效六维）">
-                        🤝 {fac.name} Lv{state.factionRep[fac.id]}
-                      </span>
-                    ))}
-                    <span
-                      className={
-                        run.buffCharges > 0
-                          ? "rounded bg-sky-900/40 px-2 py-0.5 text-sky-300"
-                          : "rounded bg-zinc-800 px-2 py-0.5 text-zinc-500"
-                      }
-                      title="备战可叠加：下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2"
-                    >
-                      🧪 增益 buff · 备战 {run.buffCharges} 次
+            {/* 角色属性 / 增益 / 伤势 —— v1.0.12 整合进主面板，去掉独立蓝框 */}
+            {effAttrs && baseAttrs && (
+              <div className="mt-2.5 space-y-1.5 border-t border-sky-900/40 pt-2">
+                <div className="scale-[0.92] origin-left">{attrBars(baseAttrs, sortieSixBonus, sortieSixReduction)}</div>
+                <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                  {garrisonBonusPerAttr > 0 && (
+                    <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-300" title="避难所设施提供的属性加成（取每属性的最小值，已并入有效六维）">
+                      🏰 驻防·全属性+{garrisonBonusPerAttr}
                     </span>
-                    {run.injuries.length > 0 ? (
-                      <>
-                        <span className="text-zinc-500">伤势：</span>
-                        {run.injuries.map((inj) => (
-                          <span
-                            key={inj}
-                            className="rounded border border-rose-800/60 bg-rose-950/30 px-2 py-0.5 text-rose-300"
-                            title={injuryAttrTextOf(run, inj)}
-                          >
-                            ⚠ {INJURY_LABEL[inj]} · {injuryAttrTextOf(run, inj)}
-                          </span>
-                        ))}
-                      </>
-                    ) : (
-                      <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-500">无伤势 debuff</span>
-                    )}
-                  </div>
+                  )}
+                  {FACTIONS.filter((fac) => (state.factionRep[fac.id] ?? 0) > 0).map((fac) => (
+                    <span key={fac.id} className="rounded bg-purple-900/40 px-2 py-0.5 text-purple-300" title="势力声望提供的全属性加成（已并入有效六维）">
+                      🤝 {fac.name} Lv{state.factionRep[fac.id]}
+                    </span>
+                  ))}
+                  <span
+                    className={
+                      run.buffCharges > 0
+                        ? "rounded bg-sky-900/40 px-2 py-0.5 text-sky-300"
+                        : "rounded bg-zinc-800 px-2 py-0.5 text-zinc-500"
+                    }
+                    title="备战可叠加：下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2"
+                  >
+                    🧪 增益 buff · 备战 {run.buffCharges} 次
+                  </span>
+                  {run.injuries.length > 0 ? (
+                    <>
+                      <span className="text-zinc-500">伤势：</span>
+                      {run.injuries.map((inj) => (
+                        <span
+                          key={inj}
+                          className="rounded border border-rose-800/60 bg-rose-950/30 px-2 py-0.5 text-rose-300"
+                          title={injuryAttrTextOf(run, inj)}
+                        >
+                          ⚠ {INJURY_LABEL[inj]} · {injuryAttrTextOf(run, inj)}
+                        </span>
+                      ))}
+                    </>
+                  ) : (
+                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-500">无伤势 debuff</span>
+                  )}
                 </div>
-              )}
+              </div>
+            )}
 
-              {(active.freePoints ?? 0) > 0 && (
-                <div className="mt-2">
-                  <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点（每点 +1，出击途中即时生效）：</div>
-                  <div className="flex flex-wrap gap-1">
-                    {(Object.keys(active.attributes) as (keyof Attributes)[]).map((k) => (
-                      <button
-                        key={k}
-                        onClick={() => onAllocatePoint(active.id, k)}
-                        className="rounded border border-amber-700/60 px-1.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
-                      >
-                        {attrLabel(k)} +1
-                      </button>
-                    ))}
-                  </div>
+            {(active.freePoints ?? 0) > 0 && (
+              <div className="mt-2">
+                <div className="mb-1 text-[10px] text-zinc-500">分配自由属性点（每点 +1，出击途中即时生效）：</div>
+                <div className="flex flex-wrap gap-1">
+                  {(Object.keys(active.attributes) as (keyof Attributes)[]).map((k) => (
+                    <button
+                      key={k}
+                      onClick={() => onAllocatePoint(active.id, k)}
+                      className="rounded border border-amber-700/60 px-1.5 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40"
+                    >
+                      {attrLabel(k)} +1
+                    </button>
+                  ))}
                 </div>
-              )}
-              {(active.pendingTraitPick ?? []).length > 0 && (
-                <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
-                  <div className="text-[11px] text-purple-300">
-                    🔗【系统】检测到宿主等级提升……请选择词条强化（三选一）：
-                  </div>
-                  <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
-                    {active.pendingTraitPick!.map((t, i) => (
-                      <button
-                        key={`${t.id}-${i}`}
-                        onClick={() => onPickTrait(active.id, i)}
-                        className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
-                        style={{ borderColor: affixColor(t.quality) }}
-                      >
-                        <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
-                          {affixLabel(t.quality)}·{t.name}
-                        </div>
-                        <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
-                        <div className="mt-0.5 text-[10px] text-emerald-300">
-                          {(Object.keys(t.modifiers) as (keyof Attributes)[])
-                            .filter((k) => (t.modifiers[k] ?? 0) !== 0)
-                            .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
-                            .join(' ')}
-                          {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
-                          {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
-                          {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
+              </div>
+            )}
+            {(active.pendingTraitPick ?? []).length > 0 && (
+              <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
+                <div className="text-[11px] text-purple-300">
+                  🔗【系统】检测到宿主等级提升……请选择词条强化（三选一）：
                 </div>
-              )}
-            </div>
+                <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+                  {active.pendingTraitPick!.map((t, i) => (
+                    <button
+                      key={`${t.id}-${i}`}
+                      onClick={() => onPickTrait(active.id, i)}
+                      className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
+                      style={{ borderColor: affixColor(t.quality) }}
+                    >
+                      <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
+                        {affixLabel(t.quality)}·{t.name}
+                      </div>
+                      <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
+                      <div className="mt-0.5 text-[10px] text-emerald-300">
+                        {(Object.keys(t.modifiers) as (keyof Attributes)[])
+                          .filter((k) => (t.modifiers[k] ?? 0) !== 0)
+                          .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
+                          .join(' ')}
+                        {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
+                        {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
+                        {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* v1.0.5：背包已满弹窗（放弃 / 取消 抉择） */}
@@ -2532,17 +2534,18 @@ function SortiePanel(props: {
             </div>
           )}
 
-          {/* v1.0.11：② 场景叙事区 + 系统消息日志 —— 整合为同一面板。
-              场景区整体字号 / 行距再压缩 1/3（13→9.5px 行距 1.625→1.375）；
-              日志区高度减半（300→150px）、字号同步缩 1/3。 */}
-          <div className="rounded-lg border border-sky-900/50 bg-zinc-950/70 p-3">
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-sky-500/70">— 场景 —</div>
-            <pre className="mb-2 whitespace-pre-wrap font-mono text-[10px] leading-snug text-sky-100/90">
-              {run.scene}
-            </pre>
-            <div className="border-t border-zinc-800 pt-2">
-              <h2 className="mb-1 text-[11px] font-medium text-zinc-400">系统消息日志</h2>
-              <div ref={logScrollRef} className="max-h-[150px] space-y-0.5 overflow-y-auto pr-1 font-mono text-[10px] leading-snug">
+          {/* v1.0.12：场景 + 系统消息日志 整合为单一紧凑面板。
+              场景限高 3 行（line-clamp-3），日志限高 112px，字号统一 9~10px，内边距收紧 —— 整体占比更小。 */}
+          <div className="rounded-lg border border-sky-900/50 bg-zinc-950/70">
+            <div className="border-b border-sky-900/40 px-2.5 py-1.5">
+              <div className="mb-0.5 text-[9px] uppercase tracking-wider text-sky-500/60">场景</div>
+              <pre className="line-clamp-3 whitespace-pre-wrap font-mono text-[10px] leading-tight text-sky-100/90">
+                {run.scene}
+              </pre>
+            </div>
+            <div className="px-2.5 py-1.5">
+              <div className="mb-1 text-[9px] uppercase tracking-wider text-zinc-500">系统消息</div>
+              <div ref={logScrollRef} className="max-h-[112px] space-y-0.5 overflow-y-auto pr-1 font-mono text-[9px] leading-snug">
                 {run.log.map((line, i) => {
                   const m = line.match(/^\[(\d{2}:\d{2})\]\s*/);
                   const body = m ? line.slice(m[0].length) : line;
@@ -2764,10 +2767,16 @@ function SortiePanel(props: {
                   <span>区域图（共 {run.graph.nodes.length} 区 · 数字=本区深度，越深遇敌越凶）</span>
                   <span className="text-amber-400/80">当前深度 {curNode?.depth ?? 0}</span>
                 </div>
-                {/* 当前所在区域 */}
-                <div className="mb-2 rounded border border-emerald-500/60 bg-emerald-500/5 p-2">
+                {/* 当前所在区域 —— v1.0.12：外框色随深度 1~7 从白(白阶)渐变到红(红阶)，与装备阶级色一致（tierColor 映射 depth-1 → 0..6） */}
+                <div
+                  className="mb-2 rounded border p-2"
+                  style={{
+                    borderColor: `${tierColor((curNode?.depth ?? 1) - 1)}99`,
+                    backgroundColor: `${tierColor((curNode?.depth ?? 1) - 1)}14`,
+                  }}
+                >
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-emerald-300">
+                    <span className="text-sm" style={{ color: tierColor((curNode?.depth ?? 1) - 1) }}>
                       📍 {curNode?.name}
                       {/* v1.0.11：搜刮 3 次后，把「已搜尽」紧凑地紧贴在区域名后（）内 */}
                       {searchLeft <= 0 && (
@@ -2828,62 +2837,66 @@ function SortiePanel(props: {
             </div>
           ) : null}
 
-          {/* 💊 快捷医疗（仅限快捷·医疗槽装备的药品） */}
-          {!isOver && availableMeds.length > 0 ? (
+          {/* 💊 药物恢复 + 🧪 增益补给 —— v1.0.12 合并为同一 UI 区域，左右双栏排版 */}
+          {!isOver && (availableMeds.length > 0 || (buffSpec && buffStock > 0)) ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
-              <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
-                💊 使用药物恢复
-                <span className="text-[11px] font-normal text-zinc-500">
-                  （仅限快捷·医疗槽已装备的药品，消耗基地库存）
-                </span>
-              </h2>
-              <div className="flex flex-wrap gap-2">
-                {availableMeds.map((m) => {
-                  const maxHp = hpMax;
-                  const heal = Math.round(m.healPct * maxHp) + m.healFlat;
-                  const cur = hpCur;
-                  const canTreat = (m.treats ?? []).some((inj) => (run?.injuries ?? []).includes(inj));
-                  const disabled = cur >= maxHp && !canTreat;
-                  return (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {availableMeds.length > 0 ? (
+                  <div>
+                    <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
+                      💊 使用药物恢复
+                      <span className="text-[11px] font-normal text-zinc-500">
+                        （仅限快捷·医疗槽已装备的药品，消耗基地库存）
+                      </span>
+                    </h2>
+                    <div className="flex flex-wrap gap-2">
+                      {availableMeds.map((m) => {
+                        const maxHp = hpMax;
+                        const heal = Math.round(m.healPct * maxHp) + m.healFlat;
+                        const cur = hpCur;
+                        const canTreat = (m.treats ?? []).some((inj) => (run?.injuries ?? []).includes(inj));
+                        const disabled = cur >= maxHp && !canTreat;
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={(e) => { takeMedicine(); e.currentTarget.blur(); }}
+                            disabled={disabled}
+                            className="rounded-lg border border-emerald-800 bg-emerald-900/40 px-3 py-2 text-xs text-emerald-200 hover:bg-emerald-800/60 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {m.name}
+                            <span className="ml-1 opacity-70">×{state.medicines[m.id]}</span>
+                            <span className="ml-1 text-emerald-400">+{heal}</span>
+                            {(m.treats ?? []).length > 0 && (
+                              <span className="ml-1 text-rose-300/80">治:{m.treats!.map((t) => INJURY_LABEL[t]).join('/')}</span>
+                            )}
+                            {disabled && <span className="ml-1 text-zinc-500">（已满）</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+                {buffSpec && buffStock > 0 ? (
+                  <div>
+                    <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
+                      🧪 增益补给
+                      <span className="text-[11px] font-normal text-zinc-500">
+                        （使用后下场交战力量/敏捷/耐力/意志临时提升；消耗基地库存）
+                      </span>
+                    </h2>
                     <button
-                      key={m.id}
-                      onClick={(e) => { takeMedicine(); e.currentTarget.blur(); }}
-                      disabled={disabled}
-                      className="rounded-lg border border-emerald-800 bg-emerald-900/40 px-3 py-2 text-xs text-emerald-200 hover:bg-emerald-800/60 disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={(e) => { applyBuff(); e.currentTarget.blur(); }}
+                      className="rounded-lg border border-sky-800 bg-sky-900/40 px-3 py-2 text-xs text-sky-200 hover:bg-sky-800/60"
                     >
-                      {m.name}
-                      <span className="ml-1 opacity-70">×{state.medicines[m.id]}</span>
-                      <span className="ml-1 text-emerald-400">+{heal}</span>
-                      {(m.treats ?? []).length > 0 && (
-                        <span className="ml-1 text-rose-300/80">治:{m.treats!.map((t) => INJURY_LABEL[t]).join('/')}</span>
+                      使用 {buffSpec.name}
+                      <span className="ml-1 opacity-70">×{buffStock}</span>
+                      {buffCharges > 0 && (
+                        <span className="ml-1 text-sky-300">（已备战 {buffCharges} 次）</span>
                       )}
-                      {disabled && <span className="ml-1 text-zinc-500">（已满）</span>}
                     </button>
-                  );
-                })}
+                  </div>
+                ) : null}
               </div>
-            </div>
-          ) : null}
-
-          {/* 🧪 增益补给（v1.0.2：快捷·增益槽药品，为下场交战储备属性强化） */}
-          {!isOver && buffSpec && buffStock > 0 ? (
-            <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
-              <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
-                🧪 增益补给
-                <span className="text-[11px] font-normal text-zinc-500">
-                  （使用后下场交战力量/敏捷/耐力/意志临时提升；消耗基地库存）
-                </span>
-              </h2>
-              <button
-                onClick={(e) => { applyBuff(); e.currentTarget.blur(); }}
-                className="rounded-lg border border-sky-800 bg-sky-900/40 px-3 py-2 text-xs text-sky-200 hover:bg-sky-800/60"
-              >
-                使用 {buffSpec.name}
-                <span className="ml-1 opacity-70">×{buffStock}</span>
-                {buffCharges > 0 && (
-                  <span className="ml-1 text-sky-300">（已备战 {buffCharges} 次）</span>
-                )}
-              </button>
             </div>
           ) : null}
 

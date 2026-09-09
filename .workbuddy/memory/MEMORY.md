@@ -36,6 +36,9 @@
 - 本项目 Edit / Grep / Read 工具存在「沙箱视图」与真实磁盘不一致：Edit 报成功但 Grep/Read 可能读到旧版；关键改动一律用 **Bash + Python**（真实磁盘）落地，并用 Python 读文件复核后才算完成。
 
 ## v1.0.11（已发布 2026-09-09 · commit `5bf3557` · tag `v1.0.11`）
+## v1.0.12（已发布 2026-09-09 · tag `v1.0.12`）
+- 五批累积：①霸主唯一性（取消 boss 参与 moveToNode/advanceBranch 转移伏击，伏击池改 `ambushPool = state.zone.enemies.filter(e => !e.boss)`，boss 仍仅由 rollEncounter 在霸主区第三次搜刮登场）②场景叙事+系统消息日志整合为更紧凑单一面板（场景 line-clamp-3、日志 max-h 112px/9px）③头部 sticky 重排（手机优先：Row1 剩余时间+携带估值、Row2 位置/撤离/威胁、Row3 生命+经验双栏条、Row4 护甲/弹药/负重/安全箱四列；6维/增益/buff/自由点/词条并入主面板删蓝框）④药物+增益合并为 1 卡片（sm:grid-cols-2）⑤当前区域外框随 depth1~7 从白(#cbd5e1)变红(#f87171) 复用 tierColor。package.json 已 bump 到 `1.0.12`。
+
 - 累计三轮：①濒死禁再次出击 ②副本等级门槛（DANGER_LEVEL_REQ：危1=Lv1 不限→危7=Lv15）+ 难度提升靠等级门槛（低等级禁入高危区）③热更新废土文案 + doExtract atExtract 守卫（修 boss 区直接撤离）+ 属性 UI 次级 sticky + 场景/日志压缩 + 搜刮提示紧贴区名 + 7 张地图专属 16 区名 ④属性 UI 合并进经验条卡片同区固定 + 濒死禁遣散（dismissSurvivor 引擎守卫 + UI 灰态「濒死·不可遣散」）。`ENEMY_DANGER_SCALE` 钩子当前全 1.0。
 
 ## ⚠️ 战斗引擎「数值悬崖」（调难度必读）
@@ -48,3 +51,8 @@
 ## ⚠️ 内容数据"共享池"陷阱（多地图项目必读）
 - v1.0.11 之前 7 张大地图共用**全局 ZONE_POOL**（同一份 16 区名），造成「走到哪个副本 16 区名都雷同」。
 - 教训：每张地图若主题不同，**专属池（map.subZones）必须独立**，别共用 ZONE_POOL。fallback 保留即可（不传则用全局），但**默认应是地图专属**。
+
+## ⚠️ 霸主唯一性（副本 boss 设计铁律）
+- boss 仅能在「霸主区第三次搜刮」由 `rollEncounter` 登场；**转移伏击（moveToNode / advanceBranch）的敌池必须排除 `boss`**，否则身处/进入霸主区会被伏击抽出 boss，造成「反复转移刷 boss」漏洞。
+- 伏击取敌统一用 `pickEnemy(state, rng, ambushPool)`，其中 `ambushPool = state.zone.enemies.filter(e => !e.boss)`；若霸主区敌池只有 boss，则 `ambushPool` 为空 → 跳过伏击。
+- 调副本/加地图时务必守住这条，别让 boss 在非「第三次搜刮」路径出现。

@@ -1645,8 +1645,10 @@ export function moveToNode(state: ExtractionRunState, targetId: string, rng: () 
   // v1.0.10：伏击率由「深度」驱动（越深越容易被残余敌人缠上）
   const depthAmbush = Math.min(0.65, 0.05 * zoneDepth(state) + 0.003 * (state.elapsedSec / 60));
   const ambushChance = Math.max(residualChance, depthAmbush);
-  if (rng() < ambushChance) {
-      const enemy = pickEnemy(state, rng);
+  // v1.0.12：伏击池排除霸主——霸主唯一、仅于「霸主区第三次搜刮」登场，禁止转移途中刷 boss
+  const ambushPool = state.zone.enemies.filter((e) => !e.boss);
+  if (ambushPool.length > 0 && rng() < ambushChance) {
+      const enemy = pickEnemy(state, rng, ambushPool);
       const intro = `⚠️ 转移遭袭！\n${searched >= MAX_ZONE_SEARCHES ? `你以为【${state.zone.name}】已被翻遍、再无威胁——可废墟深处仍有游荡的【${enemy.name}】循着动静扑了出来！（即便区域已搜刮干净，危险仍随等级与时间累积）` : `你收拾行装准备离开【${state.zone.name}】——但未探索彻底的区域里，残余的敌人循着你的动静追了上来！\n一名【${enemy.name}】堵住了去路。`}${enemy.affixes?.length ? `\n敌方词条：${enemy.affixes.map((a) => a.label).join('、')}` : ''}\n先解决纠缠，才能继续：\n🔹【主动开战】消耗弹药，开启回合战斗\n🔹【潜行绕行】消耗时间，有概率被发现；失败将被迫交战\n🔹【投掷物脱离】消耗烟雾弹/闪光弹，必定脱离纠缠\n🔹【突围撤离点】放弃深入，直奔撤离位置`;
       state.encounter = { enemy, intro };
       state.scene = intro;
@@ -1682,8 +1684,10 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
   // v1.0.10：伏击率由「深度」驱动（越深越容易被残余敌人缠上）
   const depthAmbush = Math.min(0.65, 0.05 * zoneDepth(state) + 0.003 * (state.elapsedSec / 60));
   const ambushChance = Math.max(residualChance, depthAmbush);
-  if (rng() < ambushChance) {
-      const enemy = pickEnemy(state, rng);
+  // v1.0.12：伏击池排除霸主——霸主唯一、仅于「霸主区第三次搜刮」登场，禁止转移途中刷 boss
+  const ambushPool = state.zone.enemies.filter((e) => !e.boss);
+  if (ambushPool.length > 0 && rng() < ambushChance) {
+      const enemy = pickEnemy(state, rng, ambushPool);
       state.encounter = {
         enemy,
         intro: [
