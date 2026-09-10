@@ -542,13 +542,13 @@ export default function SurvivalHub() {
   };
 
   /** 升级词条三选一（角色页 / 出击页共用）：档案立即生效，并同步副本血量 / 有效六维
-   * v1.0.12 补充：双下标签名 (pickSetIndex, candidateIndex)，与 chooseTraitPick 对齐。 */
-  const onPickTrait = (survivorId: string, pickSetIndex: number, candidateIndex: number) => {
+   * v1.1.2 补充：改为队列式，始终操作当前第一组 (candidateIndex)。 */
+  const onPickTrait = (survivorId: string, candidateIndex: number) => {
     const prev = stateRef.current;
     const p = prev.survivors.find((x) => x.id === survivorId);
-    const flat = p?.pendingTraitPick ?? [];
-    const trait = flat[pickSetIndex * 3 + candidateIndex];
-    const next = chooseTraitPick(prev, survivorId, pickSetIndex, candidateIndex);
+    const sets = p?.pendingTraitPick ?? [];
+    const trait = sets[0]?.[candidateIndex];
+    const next = chooseTraitPick(prev, survivorId, candidateIndex);
     stateRef.current = next;
     const s = runRef.current;
     if (s && s.survivor.profile?.id === survivorId && trait) {
@@ -670,7 +670,7 @@ function CharacterPanel(props: {
   rng: RNG;
   run: ExtractionRunState | null;
   onAllocatePoint: (survivorId: string, attr: keyof Attributes) => void;
-  onPickTrait: (survivorId: string, pickSetIndex: number, candidateIndex: number) => void;
+  onPickTrait: (survivorId: string, candidateIndex: number) => void;
 }) {
   const { state, mutate, run, onAllocatePoint, onPickTrait } = props;
   const [confirmDismissId, setConfirmDismissId] = useState<string | null>(null);
@@ -905,59 +905,55 @@ function CharacterPanel(props: {
                         </div>
                       </div>
                     )}
-                    {cands.length > 0 && (
-                      <div className="mt-2 space-y-1.5">
-                        {Array.from({ length: Math.ceil(cands.length / 3) }, (_, setIdx) => {
-                          const set = cands.slice(setIdx * 3, setIdx * 3 + 3);
-                          const totalSets = Math.ceil(cands.length / 3);
-                          return (
-                            <div key={`pick-${setIdx}`} className="rounded border border-purple-800/60 bg-purple-950/20 p-2">
-                              <div className="text-[11px] text-purple-300">
-                                🔗【系统】检测到宿主等级提升……请选择词条强化
-                                {totalSets > 1 ? `（${setIdx + 1}/${totalSets}，三选一）` : '（三选一）'}：
-                              </div>
-                              <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
-                                {set.map((t, i) => (
-                                  <button
-                                    key={`${t.id}-${setIdx}-${i}`}
-                                    onClick={() => onPickTrait(s.id, setIdx, i)}
-                                    className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
-                                    style={{ borderColor: affixColor(t.quality) }}
-                                  >
-                                    <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
-                                      {affixLabel(t.quality)}·{t.name}
-                                    </div>
-                                    <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
-                                    {(() => {
-                                      const modsTxt = (Object.keys(t.modifiers) as (keyof Attributes)[])
-                                        .filter((k) => (t.modifiers[k] ?? 0) !== 0)
-                                        .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
-                                        .join(' ');
-                                      const combatTxt = [
-                                        t.combat?.hpBonus ? `气血+${t.combat.hpBonus}` : '',
-                                        t.combat?.critBonus ? `暴击+${Math.round(t.combat.critBonus * 100)}%` : '',
-                                        t.combat?.lootLuck ? `搜刮+${Math.round(t.combat.lootLuck * 100)}%` : '',
-                                        t.combat?.startHpRatio ? `初始血量+${Math.round(t.combat.startHpRatio * 100)}%` : '',
-                                      ].filter(Boolean).join(' ');
-                                      return (
-                                        <>
-                                          {modsTxt && (
-                                            <div className="mt-0.5 text-[10px] text-emerald-300">属性加成：{modsTxt}</div>
-                                          )}
-                                          {combatTxt && (
-                                            <div className="mt-0.5 text-[10px] text-sky-300">增益效果：{combatTxt}</div>
-                                          )}
-                                        </>
-                                      );
-                                    })()}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                    {cands.length > 0 && (() => {
+                      const set = cands[0];
+                      const remaining = cands.length;
+                      return (
+                        <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
+                          <div className="text-[11px] text-purple-300">
+                            🔗【系统】检测到宿主等级提升……请选择词条强化
+                            {remaining > 1 ? `（剩余 ${remaining} 组，三选一）` : '（三选一）'}：
+                          </div>
+                          <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+                            {set.map((t, i) => (
+                              <button
+                                key={`${t.id}-0-${i}`}
+                                onClick={() => onPickTrait(s.id, i)}
+                                className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
+                                style={{ borderColor: affixColor(t.quality) }}
+                              >
+                                <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
+                                  {affixLabel(t.quality)}·{t.name}
+                                </div>
+                                <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
+                                {(() => {
+                                  const modsTxt = (Object.keys(t.modifiers) as (keyof Attributes)[])
+                                    .filter((k) => (t.modifiers[k] ?? 0) !== 0)
+                                    .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
+                                    .join(' ');
+                                  const combatTxt = [
+                                    t.combat?.hpBonus ? `气血+${t.combat.hpBonus}` : '',
+                                    t.combat?.critBonus ? `暴击+${Math.round(t.combat.critBonus * 100)}%` : '',
+                                    t.combat?.lootLuck ? `搜刮+${Math.round(t.combat.lootLuck * 100)}%` : '',
+                                    t.combat?.startHpRatio ? `初始血量+${Math.round(t.combat.startHpRatio * 100)}%` : '',
+                                  ].filter(Boolean).join(' ');
+                                  return (
+                                    <>
+                                      {modsTxt && (
+                                        <div className="mt-0.5 text-[10px] text-emerald-300">属性加成：{modsTxt}</div>
+                                      )}
+                                      {combatTxt && (
+                                        <div className="mt-0.5 text-[10px] text-sky-300">增益效果：{combatTxt}</div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })()}
@@ -1683,7 +1679,7 @@ function SortiePanel(props: {
   writtenRef: React.MutableRefObject<boolean>;
   syncRun: () => void;
   onAllocatePoint: (survivorId: string, attr: keyof Attributes) => void;
-  onPickTrait: (survivorId: string, pickSetIndex: number, candidateIndex: number) => void;
+  onPickTrait: (survivorId: string, candidateIndex: number) => void;
   stateRef: React.MutableRefObject<SurvivalGameState>;
 }) {
   const { state, setState, onExit, run, setRun, runRef, rngRef, writtenRef, syncRun, onAllocatePoint, onPickTrait, stateRef } = props;
@@ -2638,44 +2634,51 @@ function SortiePanel(props: {
             )}
             {(active.pendingTraitPick ?? []).length > 0 && (() => {
               const cands = active.pendingTraitPick!;
-              const totalSets = Math.ceil(cands.length / 3);
+              const set = cands[0];
+              const remaining = cands.length;
               return (
-                <div className="mt-2 space-y-1.5">
-                  {Array.from({ length: totalSets }, (_, setIdx) => {
-                    const set = cands.slice(setIdx * 3, setIdx * 3 + 3);
-                    return (
-                      <div key={`pick-${setIdx}`} className="rounded border border-purple-800/60 bg-purple-950/20 p-2">
-                        <div className="text-[11px] text-purple-300">
-                          🔗【系统】检测到宿主等级提升……请选择词条强化
-                          {totalSets > 1 ? `（${setIdx + 1}/${totalSets}，三选一）` : '（三选一）'}：
+                <div className="mt-2 rounded border border-purple-800/60 bg-purple-950/20 p-2">
+                  <div className="text-[11px] text-purple-300">
+                    🔗【系统】检测到宿主等级提升……请选择词条强化
+                    {remaining > 1 ? `（剩余 ${remaining} 组，三选一）` : '（三选一）'}：
+                  </div>
+                  <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
+                    {set.map((t, i) => (
+                      <button
+                        key={`${t.id}-0-${i}`}
+                        onClick={() => onPickTrait(active.id, i)}
+                        className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
+                        style={{ borderColor: affixColor(t.quality) }}
+                      >
+                        <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
+                          {affixLabel(t.quality)}·{t.name}
                         </div>
-                        <div className="mt-1.5 grid gap-1.5 sm:grid-cols-3">
-                          {set.map((t, i) => (
-                            <button
-                              key={`${t.id}-${setIdx}-${i}`}
-                              onClick={() => onPickTrait(active.id, setIdx, i)}
-                              className="rounded border p-2 text-left transition hover:bg-zinc-800/60"
-                              style={{ borderColor: affixColor(t.quality) }}
-                            >
-                              <div className="text-xs font-medium" style={{ color: affixColor(t.quality) }}>
-                                {affixLabel(t.quality)}·{t.name}
-                              </div>
-                              <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
-                              <div className="mt-0.5 text-[10px] text-emerald-300">
-                                {(Object.keys(t.modifiers) as (keyof Attributes)[])
-                                  .filter((k) => (t.modifiers[k] ?? 0) !== 0)
-                                  .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
-                                  .join(' ')}
-                                {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
-                                {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
-                                {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
+                        <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
+                        {(() => {
+                          const modsTxt = (Object.keys(t.modifiers) as (keyof Attributes)[])
+                            .filter((k) => (t.modifiers[k] ?? 0) !== 0)
+                            .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
+                            .join(' ');
+                          const combatTxt = [
+                            t.combat?.hpBonus ? `气血+${t.combat.hpBonus}` : '',
+                            t.combat?.critBonus ? `暴击+${Math.round(t.combat.critBonus * 100)}%` : '',
+                            t.combat?.lootLuck ? `搜刮+${Math.round(t.combat.lootLuck * 100)}%` : '',
+                            t.combat?.startHpRatio ? `初始血量+${Math.round(t.combat.startHpRatio * 100)}%` : '',
+                          ].filter(Boolean).join(' ');
+                          return (
+                            <>
+                              {modsTxt && (
+                                <div className="mt-0.5 text-[10px] text-emerald-300">属性加成：{modsTxt}</div>
+                              )}
+                              {combatTxt && (
+                                <div className="mt-0.5 text-[10px] text-sky-300">增益效果：{combatTxt}</div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               );
             })()}

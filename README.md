@@ -159,9 +159,9 @@ bun run test       # 运行 src/shared 下的纯引擎单测
 
 ## 版本更新日志
 
-### v1.1.2（待发 · 累积更新 · 未发包）
+### v1.1.2（2026-09-10 首发 · 2026-09-11 补发 · 已发布）
 
-> 群怪战斗日志与战斗回放补全。
+> 群怪战斗日志与战斗回放补全、Boss 狂暴两阶段梳理、升级天赋池扩至 60、天赋卡显示优化；补发：连升多级的天赋三选一改为队列式（xN 分组轮流选，避免重复天赋）。
 
 **① 群怪战斗日志强化文案（修正 v1.1.1⑤ 不到位处）**
 - 每只小怪的 ⚔ 交战行现在带群序标签：〔敌群 X/Y〕与【名】交战（……），一眼可辨这是一次多敌遭遇中的第几只。`ExtractionEngine.ts: fightOne`
@@ -192,6 +192,13 @@ bun run test       # 运行 src/shared 下的纯引擎单测
 **⑤ 升级三选一天赋卡「属性加成 / 增益效果」显式分行标签（修正"看不到属性加成"的视觉混淆）**
 - 每项新天赋都同时配了 `modifiers`（属性加成，如 力量+4 敏捷+2）与 `combat`（增益效果，如 暴击+12% 气血+30），与原 14 个一致；白档按设计纯属性、无增益，彩色档两者皆有。
 - 原显示把属性加成与增益效果挤在同一行同色（翠绿）文本里，难以区分。现改为：候选卡（`play/route.tsx` 升级三选一）与悬浮气泡 `TraitBonusText` 均**分行 + 标签**——「属性加成：…」（翠绿）/「增益效果：…」（天蓝），候选卡并补上原先漏显示的「初始血量」增益。`play/route.tsx: TraitBonusText / 候选卡渲染`
+
+**⑥ 连升多级的天赋三选一改为队列式（xN 分组轮流选，避免重复天赋）—— v1.1.2 补发**
+- 问题：副本内一次性连升多级时，若前面升级的三选一未选，后续升级可能在同一个面板里重复出现同一天赋（旧 `pendingTraitPick` 为扁平数组，两次升级各自独立抽取，互不排除 pending 项）。
+- 改法：`pendingTraitPick` 类型由 `SurvivorTrait[]` 改为 `SurvivorTrait[][]`（分组队列）。`grantSortieXp` 升级时一次性按 `levels*3` **无放回**抽取候选，拆成 `levels` 组排队；排除集合 = 已拥有 + **仍在待选队列中的词条**，故无论单次连升多级还是多次升级间隔未选，都不会再出现同一天赋。`chargen.ts: rollTraitCandidates` / `state.ts: grantSortieXp`
+- UI：始终只展示当前第一组（`sets[0]`），选完该组后整组移除、下一组自动顶上；面板显示「剩余 N 组，三选一」进度；角色页与出击页两处渲染同步。`play/route.tsx: onPickTrait / 候选卡渲染 / 副本内词条卡`
+- `chooseTraitPick` 签名简化为 `(survivorId, candidateIndex)`，固定操作第一组。`state.ts: chooseTraitPick`
+- 校验：`bun run tsc -b tsconfig.app.json`（exit 0）、`bun run build:client`（exit 0，built in 3.33s）。
 
 ### v1.1.1（2026-09-10 · 已发布）
 

@@ -1278,13 +1278,18 @@ export function grantSortieXp(state: SurvivalGameState, survivorId: string, xp: 
         },
       }
     : state.survivorStatus;
-  // 词条三选一（系统提示）：v1.0.12 补充 —— 每升 1 级追加一组（3 选 1）候选，连升 N 级一次性给 N 组；
-  // 用户可逐组选择，选中后该组 3 个整组移除。自由属性点累计与词条三选一组数严格对齐。
+  // 词条三选一（系统提示）：v1.1.2 补充 —— 连升 N 级时一次性从池子无放回抽 3N 个候选，
+  // 再分成 N 组依次排队；同一次升级内不会出现重复天赋。UI 一次只展示第一组，选完再弹出下一组。
   if (levels > 0) {
     const existing = p.pendingTraitPick ?? [];
-    const newSets: SurvivorTrait[] = [];
+    // 排除已拥有 + 仍在待选队列中的词条，连升多级或多次升级都不会重复出现同一天赋
+    const pendingIds = (p.pendingTraitPick ?? []).flat().map((t) => t.id);
+    const excludeIds = [...p.traits.map((t) => t.id), ...pendingIds];
+    const pool = rollTraitCandidates(Math.random, excludeIds, levels * 3);
+    const newSets: SurvivorTrait[][] = [];
     for (let i = 0; i < levels; i++) {
-      newSets.push(...rollTraitCandidates(Math.random, p.traits.map((t) => t.id), 3));
+      const set = pool.slice(i * 3, i * 3 + 3);
+      if (set.length > 0) newSets.push(set);
     }
     p.pendingTraitPick = [...existing, ...newSets];
   }
@@ -1405,23 +1410,23 @@ export function allocateFreePoint(
 }
 
 /** 升级词条三选一：选定候选 → 词条入库 + 属性增量叠加 + 重算战力段位
- * v1.0.12 补充：`pendingTraitPick` 改为累积式（每升 1 级 push 3 候选），
- *   签名改为 (pickSetIndex, candidateIndex) 双下标；选定后整组（3 个）一次性从待选列表移除。 */
+ * v1.1.2 补充：`pendingTraitPick` 改为 SurvivorTrait[][] 分组排队。
+ *   签名改为 (candidateIndex)；总是取当前第一组（sets[0]），选中后移除该组。 */
 export function chooseTraitPick(
   state: SurvivalGameState,
   survivorId: string,
-  pickSetIndex: number,
   candidateIndex: number,
 ): SurvivalGameState {
   const idx = state.survivors.findIndex((s) => s.id === survivorId);
   if (idx < 0) return state;
   const p = { ...state.survivors[idx] };
-  const flat = p.pendingTraitPick ?? [];
-  const start = pickSetIndex * 3;
-  const trait = flat[start + candidateIndex];
+  const sets = p.pendingTraitPick ?? [];
+  const current = sets[0];
+  if (!current) return state;
+  const trait = current[candidateIndex];
   if (!trait) return state;
-  // 整组移除：选中的组（含同组的另外 2 个未选）从待选列表剔除
-  p.pendingTraitPick = [...flat.slice(0, start), ...flat.slice(start + 3)];
+  // 移除当前第一组（含同组另外 2 个未选），下一组自动顶上
+  p.pendingTraitPick = sets.slice(1);
   p.traits = [...p.traits, trait];
   const attributes = { ...p.attributes };
   for (const k of ALL_ATTR_KEYS) {

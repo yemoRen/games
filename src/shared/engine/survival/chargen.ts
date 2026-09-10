@@ -65,8 +65,8 @@ export interface SurvivorProfile {
   xp?: number;
   /** 待分配的自由六维属性点（每级 +3） */
   freePoints?: number;
-  /** 升级触发的词条三选一候选（选定后清空） */
-  pendingTraitPick?: SurvivorTrait[];
+  /** 升级触发的词条三选一候选（分组排队，选定后清空当前组） */
+  pendingTraitPick?: SurvivorTrait[][];
 }
 
 const ATTR_LABEL: Record<keyof Attributes, string> = {
