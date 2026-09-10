@@ -7,9 +7,9 @@
  */
 import type { SurvivalGameState } from './state';
 import type { ExtractionRunState } from '../extraction/types';
-import { emptyGardenPlots } from './state';
+import { emptyGardenPlots, ACTION_POINT_CAP, START_SEEDS } from './state';
 import { getCurrentUser } from './account';
-import { DEPRECATED_PROTAGONIST_TRAIT_IDS } from './chargen';
+import { DEPRECATED_PROTAGONIST_TRAIT_IDS, ensureBaseAttributes } from './chargen';
 
 const SAVE_PREFIX = 'wqqs-survival-save-v1:';
 const RUN_PREFIX = 'wqqs-survival-run-v1:';
@@ -57,6 +57,17 @@ export function loadGame(): SurvivalGameState | null {
           ? { ...sv, traits: sv.traits.filter((t) => !DEPRECATED_PROTAGONIST_TRAIT_IDS.includes(t.id)) }
           : sv,
       );
+      // v1.1.0：行动点字段补齐（旧存档视为满点；漫游记录缺省为空）
+      if (typeof data.actionPoints !== 'number') data.actionPoints = ACTION_POINT_CAP;
+      if (typeof data.actionPointsAt !== 'number') data.actionPointsAt = Date.now();
+      if (!Array.isArray(data.wanderLog)) data.wanderLog = [];
+      // v1.1.0：种子库存迁移 —— 旧存档没有该字段时发放开局种子，避免菜园直接锁死
+      if (!data.seeds || typeof data.seeds !== 'object') data.seeds = { ...START_SEEDS };
+      // v1.1.0：补齐「初始六维基础属性」（重塑六维依赖；缺省以 当前属性 − 词条加成 回填）
+      data.survivors = data.survivors.map((sv) => ensureBaseAttributes(sv));
+      if (Array.isArray(data.recruits)) {
+        data.recruits = data.recruits.map((sv) => ensureBaseAttributes(sv));
+      }
       return data;
     }
   } catch {

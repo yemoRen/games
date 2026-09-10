@@ -45,6 +45,11 @@ export interface SurvivorProfile {
   age: number;
   rarity: SurvivorRarity;
   attributes: Attributes;
+  /**
+   * 初始六维「基础属性」（v1.1.0）：不含词条加成、升级加点、装备/buff 加成。
+   * 仅「重塑六维」会改写它；旧存档缺省时由 ensureBaseAttributes 迁移补齐。
+   */
+  baseAttributes?: Attributes;
   traits: SurvivorTrait[];
   power: number;
   tier: number;
@@ -340,10 +345,12 @@ export function generateSurvivor(rng: RNG, opts: GenerateOptions = {}): Survivor
   const info = RARITY_INFO[rarity];
 
   // 1) 基础六维：每维在 6~15 浮动，再加稀有度整体加成
-  const base = emptyAttributes();
+  // v1.1.0：rolled = 初始基础属性（词条加成前），持久化到 baseAttributes 供「重塑六维」使用
+  const rolled = emptyAttributes();
   for (const k of ALL_ATTR_KEYS) {
-    base[k] = randInt(rng, 6, 15) + info.attrBonus;
+    rolled[k] = randInt(rng, 6, 15) + info.attrBonus;
   }
+  const base: Attributes = { ...rolled };
 
   // 2) 抽取词条并叠加属性增量
   const traitCount = info.traitCount;
@@ -366,6 +373,7 @@ export function generateSurvivor(rng: RNG, opts: GenerateOptions = {}): Survivor
     age: randInt(rng, 17, 58),
     rarity,
     attributes: base,
+    baseAttributes: rolled,
     traits,
     power,
     tier,
@@ -455,8 +463,10 @@ export function rollTraitCandidates(rng: RNG, excludeIds: string[] = [], count =
 }
 
 export function makeProtagonist(name: string): SurvivorProfile {
-  const attributes = emptyAttributes();
-  for (const k of ALL_ATTR_KEYS) attributes[k] = PROTAGONIST_BASE_ATTR;
+  // v1.1.0：baseAttributes 记录「词条加成前」的初始基础属性（主角全 15）
+  const baseAttributes = emptyAttributes();
+  for (const k of ALL_ATTR_KEYS) baseAttributes[k] = PROTAGONIST_BASE_ATTR;
+  const attributes: Attributes = { ...baseAttributes };
   // v1.0.10：主角只保留「末世主角」一条身份词条，不再附带退役兵 / 战地医护
   const traits = [PROTAGONIST_TRAIT];
   for (const t of traits) {
@@ -475,6 +485,7 @@ export function makeProtagonist(name: string): SurvivorProfile {
     // 紫（精英）品质，资质均衡固定，留待后续培养成长
     rarity: 'epic',
     attributes,
+    baseAttributes,
     traits,
     power,
     tier,
@@ -484,3 +495,29 @@ export function makeProtagonist(name: string): SurvivorProfile {
   };
 }
 
+/** 词条六维加成合计（用于从「当前属性」反推初始基础属性） */
+export function traitModifierSum(traits: SurvivorTrait[]): Attributes {
+  const sum = emptyAttributes();
+  for (const t of traits ?? []) {
+    for (const k of ALL_ATTR_KEYS) {
+      const d = (t.modifiers as Record<string, number | undefined>)[k];
+      if (d) sum[k] += d;
+    }
+  }
+  return sum;
+}
+
+/**
+ * 补齐 baseAttributes（v1.1.0 迁移用）。
+ * 旧存档没有该字段时，以「当前属性 − 词条加成」回填；
+ * 若该成员已有升级加点，这部分会被算进 base（一次性近似，重随时会一并重掷）。
+ */
+export function ensureBaseAttributes(p: SurvivorProfile): SurvivorProfile {
+  if (p.baseAttributes) return p;
+  const tm = traitModifierSum(p.traits ?? []);
+  const base = emptyAttributes();
+  for (const k of ALL_ATTR_KEYS) {
+    base[k] = (p.attributes?.[k] ?? 0) - tm[k];
+  }
+  return { ...p, baseAttributes: base };
+}

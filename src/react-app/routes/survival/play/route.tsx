@@ -71,6 +71,14 @@ import {
   gearAttrBonus,
   aggregateGearCombat,
   createProtagonistGame,
+  // v1.1.0：行动点
+  ACTION_POINT_CAP,
+  actionPointView,
+  tickActionPoints,
+  trySpendActionPoints,
+  sortieActionPointCost,
+  // 副本等级门槛（原 UI 局部常量，现提升到引擎层，手动与漫游共用）
+  DANGER_LEVEL_REQ,
 } from '@shared/engine/survival';
 import {
   createRun,
@@ -137,16 +145,6 @@ import {
 } from '@shared/engine/survival/affixes';
 
 // v1.0.11：副本等级门槛（危N → 最低等级）。危1 不限（主角恒 ≥ Lv1，恒满足）。
-const DANGER_LEVEL_REQ: Record<number, number> = {
-  1: 1,
-  2: 3,
-  3: 5,
-  4: 8,
-  5: 10,
-  6: 12,
-  7: 15,
-};
-
 // ===== 出击临时制作台（v1.0.3c）=====
 // 材料大类 → 本局背包内对应的 loot id（用于把「医疗制作台」配方映射到副本内可搜到的物资）
 const MATERIAL_TO_LOOT: Record<string, string> = {
@@ -435,7 +433,8 @@ function Pager({
 export default function SurvivalHub() {
   const [state, setState] = useState<SurvivalGameState>(() => {
     const loaded = loadGame() ?? newGame();
-    return _recoverAll(loaded);
+    // v1.1.0：载入时先把离线期间应恢复的行动点补上
+    return tickActionPoints(_recoverAll(loaded));
   });
   const [tab, setTab] = useState<Tab>('character');
   const goToTab = (t: Tab) => {
@@ -447,6 +446,7 @@ export default function SurvivalHub() {
   const navigate = useNavigate();
   const [user] = useState(() => getCurrentUser());
   const [menuOpen, setMenuOpen] = useState(false);
+
 
   // 存档随状态变化持久化（按当前账号独立槽位，见 persistence.ts）
   useEffect(() => {
@@ -1671,6 +1671,12 @@ function SortiePanel(props: {
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId) ?? null;
   const [zoneId, setZoneId] = useState(DANGER_ZONES[0].id);
   const [seed, setSeed] = useState('');
+  // v1.1.0：行动点实时恢复展示的本地时钟（每秒刷新，不写存档，避免高频落盘）
+  const [apNow, setApNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setApNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   // 系统消息日志：出现新内容时自动滚动到最新处，免去手动滑动
   const logScrollRef = useRef<HTMLDivElement>(null);
@@ -1767,6 +1773,9 @@ function SortiePanel(props: {
     // v1.0.11：濒死角色禁止出击
     const st0 = state.survivorStatus[active.id];
     if (st0?.dyingUntil && new Date(st0.dyingUntil).getTime() > Date.now()) return;
+    // v1.1.0：行动点门槛 —— 先按当前时间结算恢复，不足则禁止出击（UI 也会置灰按钮）
+    const apCost = sortieActionPointCost(getZone(zoneId).dangerLevel);
+    if ((tickActionPoints(state, Date.now()).actionPoints ?? ACTION_POINT_CAP) < apCost) return;
     writtenRef.current = false;
     const loadout = buildSortieLoadout(state, active.id);
     if (!loadout) return;
@@ -1831,6 +1840,8 @@ function SortiePanel(props: {
     }
     runRef.current = r;
     rngRef.current = runRng;
+    // v1.1.0：进图瞬间扣除行动点（不足时 trySpendActionPoints 返回 null，保持原状）
+    setState((prev) => trySpendActionPoints(prev, apCost) ?? prev);
     sync();
   };
 
@@ -2253,6 +2264,13 @@ function SortiePanel(props: {
   const activeDying = !!activeStatus?.dyingUntil;
   const selReqForSortie = DANGER_LEVEL_REQ[getZone(zoneId).dangerLevel] ?? 1;
   const selLocked = (active.level ?? 1) < selReqForSortie;
+  // v1.1.0：行动点展示（apNow 每秒刷新，不写存档）
+  const apView = actionPointView(state, apNow);
+  const apCost = sortieActionPointCost(getZone(zoneId).dangerLevel);
+  const apLocked = apView.current < apCost;
+  const apRemainClock = `${Math.floor(apView.remainMs / 60000)}:${String(
+    Math.floor((apView.remainMs % 60000) / 1000),
+  ).padStart(2, '0')}`;
 
   return (
     <section className="space-y-4">
@@ -2262,6 +2280,26 @@ function SortiePanel(props: {
             出击者：<span className="text-zinc-100">{active.name}</span>
             <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-300">
               {active.tierName}
+            </span>
+          </div>
+          {/* v1.1.0：行动点（出击消耗 / 每 5 分钟恢复 1 点） */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs">
+            <span className="text-zinc-400">
+              ⚡ 行动点{' '}
+              <span
+                className={`font-mono text-sm font-semibold ${
+                  apView.full ? 'text-emerald-400' : 'text-amber-400'
+                }`}
+              >
+                {apView.current}
+              </span>
+              <span className="text-zinc-600"> / {apView.cap}</span>
+            </span>
+            <span className="text-zinc-500">
+              {apView.full ? '已满（暂停恢复）' : `下一点 ${apRemainClock} 后 · 每 5 分钟 +1`}
+            </span>
+            <span className="ml-auto text-zinc-400">
+              本次出击消耗 <span className="font-mono text-amber-300">{apCost}</span> 点
             </span>
           </div>
           {activeDying && (
@@ -2310,6 +2348,9 @@ function SortiePanel(props: {
                       <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-amber-300">
                         {DANGER_LABEL[z.dangerLevel] ?? `危${z.dangerLevel}`}
                       </span>
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-sky-300">
+                        ⚡{sortieActionPointCost(z.dangerLevel)}
+                      </span>
                     </span>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-zinc-500">{z.flavor}</p>
@@ -2327,7 +2368,7 @@ function SortiePanel(props: {
             />
             <button
               onClick={start}
-              disabled={selLocked || activeDying}
+              disabled={selLocked || activeDying || apLocked}
               className="ml-auto rounded-lg bg-emerald-600 px-6 py-2.5 font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
             >
               出击 ▶
@@ -2338,6 +2379,11 @@ function SortiePanel(props: {
           )}
           {activeDying && (
             <p className="text-xs text-rose-300">⚠ 你正处于濒死状态，无法出击，请先在「战团成员」中救治。</p>
+          )}
+          {apLocked && !selLocked && !activeDying && (
+            <p className="text-xs text-rose-300">
+              ⚠ 行动点不足：本次需 {apCost} 点，当前 {apView.current} 点（每 5 分钟恢复 1 点，上限 {apView.cap}）。
+            </p>
           )}
         </div>
       )}

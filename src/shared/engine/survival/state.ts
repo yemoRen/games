@@ -14,6 +14,7 @@ import {
   tierFromPower,
   rollTraitCandidates,
   ALL_ATTR_KEYS,
+  ensureBaseAttributes,
   type SurvivorProfile,
 } from './chargen';
 import {
@@ -30,7 +31,7 @@ import {
   rollGear,
   MATERIAL_LABEL,
 } from './economy';
-import { type RNG } from './rng';
+import { type RNG, randInt, emptyAttributes } from './rng';
 import {
   type MainSlotKey,
   type QuickSlotKey,
@@ -84,20 +85,72 @@ export interface GardenCrop {
   coins?: number;
   minutes: number;
   icon: string;
+  /**
+   * 种子单价（废土币）。v1.1.0：种植必须先有种子。
+   * 硬约束：seedPrice 必须 < 产物价值（gardenCropValue），否则种植毫无意义。
+   */
+  seedPrice: number;
 }
 
 /** 基础 6 块地，每块地可任选一种作物种植 */
 export const GARDEN_PLOT_COUNT = 6;
 
+/**
+ * 作物表。seedPrice 定价原则：**种子价 ≈ 产物市价的 47%~58%**，
+ * 保证「产物价值 − 种子价」恒为正，剩余差额即为等待时间折算的利润。
+ *  草药 7/15 · 变异菌 12/25 · 兴奋草 22/40 · 高能作物 33/60
+ *  血清藤 38/70 · 纳米菇 70/120 · 口粮 16/30
+ */
 export const GARDEN_CROPS: GardenCrop[] = [
-  { id: 'herb', name: '草药', yields: 'bandage', qty: 1, minutes: 6, icon: '🌿' },
-  { id: 'mush', name: '变异菌', yields: 'antibiotic', qty: 1, minutes: 12, icon: '🍄' },
-  { id: 'nutr', name: '高能作物', yields: 'medkit', qty: 1, minutes: 25, icon: '🌾' },
-  { id: 'exg', name: '兴奋草', yields: 'stim', qty: 1, minutes: 14, icon: '⚡' },
-  { id: 'sera', name: '血清藤', yields: 'serum', qty: 1, minutes: 20, icon: '🩸' },
-  { id: 'nano', name: '纳米菇', yields: 'nanogel', qty: 1, minutes: 35, icon: '🧬' },
-  { id: 'feed', name: '口粮作物', yields: null, coins: 30, qty: 1, minutes: 8, icon: '🥫' },
+  { id: 'herb', name: '草药', yields: 'bandage', qty: 1, minutes: 6, icon: '🌿', seedPrice: 7 },
+  { id: 'mush', name: '变异菌', yields: 'antibiotic', qty: 1, minutes: 12, icon: '🍄', seedPrice: 12 },
+  { id: 'nutr', name: '高能作物', yields: 'medkit', qty: 1, minutes: 25, icon: '🌾', seedPrice: 33 },
+  { id: 'exg', name: '兴奋草', yields: 'stim', qty: 1, minutes: 14, icon: '⚡', seedPrice: 22 },
+  { id: 'sera', name: '血清藤', yields: 'serum', qty: 1, minutes: 20, icon: '🩸', seedPrice: 38 },
+  { id: 'nano', name: '纳米菇', yields: 'nanogel', qty: 1, minutes: 35, icon: '🧬', seedPrice: 70 },
+  { id: 'feed', name: '口粮作物', yields: null, coins: 30, qty: 1, minutes: 8, icon: '🥫', seedPrice: 16 },
 ];
+
+/** 开局赠送 / 旧存档迁移发放的初始种子 */
+export const START_SEEDS: Record<string, number> = { herb: 3, feed: 2 };
+
+/** 作物产物的折算价值（医疗品按市价 costCoins，口粮按售币） */
+export function gardenCropValue(crop: GardenCrop): number {
+  if (crop.yields) return MEDICINES.find((m) => m.id === crop.yields)?.costCoins ?? 0;
+  return crop.coins ?? 0;
+}
+
+/** 单季净利润 = 产物价值 − 种子价（恒 > 0） */
+export function gardenCropProfit(crop: GardenCrop): number {
+  return gardenCropValue(crop) - crop.seedPrice;
+}
+
+/** 某种作物的种子库存 */
+export function seedStock(state: SurvivalGameState, cropId: string): number {
+  return state.seeds?.[cropId] ?? 0;
+}
+
+/** 购买种子：扣废土币、入种子库存；币不足或数量非法则原样返回 */
+export function buySeeds(
+  state: SurvivalGameState,
+  cropId: string,
+  qty: number,
+): SurvivalGameState {
+  const crop = GARDEN_CROPS.find((c) => c.id === cropId);
+  const q = Math.floor(qty);
+  if (!crop || q <= 0) return state;
+  const total = crop.seedPrice * q;
+  if (state.coins < total) return state;
+  return {
+    ...state,
+    coins: state.coins - total,
+    seeds: { ...(state.seeds ?? {}), [cropId]: (state.seeds?.[cropId] ?? 0) + q },
+    log: [
+      `【菜园】购买 ${crop.name}种子×${q}，花费 ${total} 废土币。`,
+      ...state.log,
+    ].slice(0, 50),
+  };
+}
 
 export function emptyGardenPlots(): GardenPlot[] {
   return Array.from({ length: GARDEN_PLOT_COUNT }, () => ({ cropId: null, plantedAt: null, readyAt: null }));
@@ -120,12 +173,19 @@ export function plantGardenCrop(
   const plots = state.gardenPlots ?? emptyGardenPlots();
   if (!crop || plotIndex < 0 || plotIndex >= plots.length) return state;
   if (plots[plotIndex].cropId) return state; // 已种，不改
+  // v1.1.0：种植消耗 1 颗种子，没有种子则无法种植
+  const stock = seedStock(state, cropId);
+  if (stock <= 0) return state;
   const next = plots.slice();
   next[plotIndex] = { cropId, plantedAt: now, readyAt: now + gardenCropDurationMs(crop, state.facilities['garden'] ?? 0) };
   return {
     ...state,
     gardenPlots: next,
-    log: [`【菜园】第 ${plotIndex + 1} 块地种下 ${crop.name}。`, ...state.log].slice(0, 50),
+    seeds: { ...(state.seeds ?? {}), [cropId]: stock - 1 },
+    log: [
+      `【菜园】第 ${plotIndex + 1} 块地种下 ${crop.name}（种子 -1，余 ${stock - 1}）。`,
+      ...state.log,
+    ].slice(0, 50),
   };
 }
 
@@ -180,6 +240,8 @@ export interface SurvivalGameState {
   factionRep: Record<string, number>;
   /** 菜园地块（基础 6 块，每块可种一种作物，种植状态持久化） */
   gardenPlots?: GardenPlot[];
+  /** 种子库存：作物 id → 数量（v1.1.0，种植需先消耗种子） */
+  seeds?: Record<string, number>;
   recruits: SurvivorProfile[];
   sortieHistory: SortieLog[];
   log: string[];
@@ -191,6 +253,13 @@ export interface SurvivalGameState {
   redeemedCodes?: string[];
   /** 玩家注册代号；重置存档后用于重生同名主角（可选，兼容旧存档） */
   playerCodename?: string;
+  // ===== v1.1.0：行动点系统 =====
+  /** 当前行动点（出击消耗，随时间恢复）；缺省视为满点 */
+  actionPoints?: number;
+  /** 行动点上次结算时刻（ms），用于离线/实时恢复计算 */
+  actionPointsAt?: number;
+  /** 漫游搜打撤最近 10 条记录（v1.1.0：写入存档，不再只存组件内存） */
+  wanderLog?: string[];
 }
 
 export interface SortieLog {
@@ -211,6 +280,101 @@ const START_MEDICINES = { bandage: 3, antibiotic: 2, medkit: 1, stim: 1, nutrien
 
 /** 战团成员上限（含主角） */
 export const WARBAND_CAP = 10;
+
+// ===== 行动点系统（v1.1.0） =====
+/** 行动点上限（初始即满点） */
+export const ACTION_POINT_CAP = 120;
+/** 每恢复 1 点行动点所需时间（5 分钟） */
+export const ACTION_POINT_REGEN_MS = 5 * 60 * 1000;
+/** 「重塑六维」费用（废土币） */
+export const REROLL_ATTR_COST = 500;
+
+/** 出击一次的消耗：危1 = 6 点 … 危7 = 12 点（每级 +1） */
+export function sortieActionPointCost(dangerLevel: number): number {
+  const d = Math.max(1, Math.min(7, Math.floor(dangerLevel) || 1));
+  return 5 + d;
+}
+
+/**
+ * 副本等级门槛（v1.0.12 引入，原仅 UI 局部常量，现提升到引擎层）：
+ * 危险度 → 进入所需最低等级。手动出击与漫游搜打撤共用，避免「1 级角色被随机扔到危7」。
+ * 危1 不限 → 危7 需 Lv15。
+ */
+export const DANGER_LEVEL_REQ: Record<number, number> = {
+  1: 1,
+  2: 3,
+  3: 5,
+  4: 8,
+  5: 10,
+  6: 12,
+  7: 15,
+};
+
+/** 出击者等级是否满足某危险度副本的进入门槛 */
+export function meetsDangerLevelReq(level: number, dangerLevel: number): boolean {
+  return (level ?? 1) >= (DANGER_LEVEL_REQ[dangerLevel] ?? 1);
+}
+
+/** 按时间恢复行动点（纯函数，可安全重复调用）；已满时只推进结算时刻 */
+export function tickActionPoints(
+  state: SurvivalGameState,
+  now: number = Date.now(),
+): SurvivalGameState {
+  const cur = state.actionPoints ?? ACTION_POINT_CAP;
+  if (cur >= ACTION_POINT_CAP) {
+    if (state.actionPoints === ACTION_POINT_CAP && typeof state.actionPointsAt === 'number') return state;
+    return { ...state, actionPoints: ACTION_POINT_CAP, actionPointsAt: now };
+  }
+  const at = typeof state.actionPointsAt === 'number' ? state.actionPointsAt : now;
+  const elapsed = Math.max(0, now - at);
+  const gain = Math.floor(elapsed / ACTION_POINT_REGEN_MS);
+  if (gain <= 0) return state;
+  const next = Math.min(ACTION_POINT_CAP, cur + gain);
+  const carry = elapsed - gain * ACTION_POINT_REGEN_MS;
+  return {
+    ...state,
+    actionPoints: next,
+    actionPointsAt: next >= ACTION_POINT_CAP ? now : now - carry,
+  };
+}
+
+/** 行动点展示信息（当前值 / 上限 / 距下一点的剩余毫秒） */
+export function actionPointView(
+  state: SurvivalGameState,
+  now: number = Date.now(),
+): { current: number; cap: number; full: boolean; remainMs: number } {
+  const ticked = tickActionPoints(state, now);
+  const current = ticked.actionPoints ?? ACTION_POINT_CAP;
+  if (current >= ACTION_POINT_CAP) {
+    return { current: ACTION_POINT_CAP, cap: ACTION_POINT_CAP, full: true, remainMs: 0 };
+  }
+  const at = typeof ticked.actionPointsAt === 'number' ? ticked.actionPointsAt : now;
+  const elapsed = Math.max(0, now - at);
+  return {
+    current,
+    cap: ACTION_POINT_CAP,
+    full: false,
+    remainMs: Math.max(0, ACTION_POINT_REGEN_MS - (elapsed % ACTION_POINT_REGEN_MS)),
+  };
+}
+
+/** 尝试扣除行动点：足够则返回新状态，不足返回 null（调用方据此拦截） */
+export function trySpendActionPoints(
+  state: SurvivalGameState,
+  cost: number,
+  now: number = Date.now(),
+): SurvivalGameState | null {
+  const ticked = tickActionPoints(state, now);
+  const cur = ticked.actionPoints ?? ACTION_POINT_CAP;
+  if (cur < cost) return null;
+  const next = cur - cost;
+  return {
+    ...ticked,
+    actionPoints: next,
+    actionPointsAt:
+      next >= ACTION_POINT_CAP ? now : ticked.actionPointsAt ?? now,
+  };
+}
 
 function emptyFacilities(): Record<string, number> {
   const o: Record<string, number> = {};
@@ -258,10 +422,15 @@ export function newGame(): SurvivalGameState {
     facilities: emptyFacilities(),
     factionRep: emptyFactionRep(),
     gardenPlots: emptyGardenPlots(),
+    seeds: { ...START_SEEDS },
     recruits: [],
     sortieHistory: [],
     log: ['【系统】避难所已建立，开始末世求生。'],
     playerCodename: '',
+    // v1.1.0：行动点初始满点
+    actionPoints: ACTION_POINT_CAP,
+    actionPointsAt: now,
+    wanderLog: [],
   };
 }
 
@@ -1292,12 +1461,153 @@ export function recycleGear(state: SurvivalGameState, gearIds: string[]): Surviv
   const targets = state.gear.filter((g) => ids.has(g.id));
   if (targets.length === 0) return state;
   if (targets.some((g) => equippedIds.has(g.id))) return state; // 有穿戴中的装备混入，整体拒绝
-  const refund = targets.reduce((a, g) => a + g.value, 0);
+  // v1.1.0：按稀有度阶级浮动计价（白 1.0× → 红 2.2×）
+  const refund = targets.reduce((a, g) => a + gearSellPrice(g), 0);
   return {
     ...state,
     gear: state.gear.filter((g) => !ids.has(g.id)),
     coins: state.coins + refund,
-    log: [`【回收】${targets.length} 件装备折算 ${refund} 废土币。`, ...state.log].slice(0, 50),
+    log: [`【出售】${targets.length} 件装备折算 ${refund} 废土币。`, ...state.log].slice(0, 50),
+  };
+}
+
+// ===== v1.1.0：重塑六维 =====
+
+/**
+ * 重塑当前出击者的「初始六维基础属性」：六维各在 6~20 重新随机。
+ * 只改写 baseAttributes，词条加成 / 升级加点 / 等级 / 经验 / 装备 / 段位算法全部保留
+ * （段位由新战力重算）。消耗 REROLL_ATTR_COST 废土币，余额不足时原样返回。
+ * 注意：不再重建成员对象，因此成员 id 不变 —— 装备、状态、出击引用均不会断裂。
+ */
+export function rerollBaseAttributes(
+  state: SurvivalGameState,
+  survivorId: string,
+  rng: RNG,
+  now: number = Date.now(),
+): SurvivalGameState {
+  const idx = state.survivors.findIndex((s) => s.id === survivorId);
+  if (idx < 0) return state;
+  if (state.coins < REROLL_ATTR_COST) return state;
+  const cur = ensureBaseAttributes(state.survivors[idx]);
+
+  const rolled = emptyAttributes();
+  for (const k of ALL_ATTR_KEYS) rolled[k] = randInt(rng, 6, 20);
+
+  // 保留「词条加成 + 升级加点」的差值，只替换基础部分
+  const attrs = emptyAttributes();
+  for (const k of ALL_ATTR_KEYS) {
+    attrs[k] = rolled[k] + ((cur.attributes?.[k] ?? 0) - (cur.baseAttributes?.[k] ?? 0));
+  }
+
+  const survivors = [...state.survivors];
+  survivors[idx] = { ...cur, baseAttributes: rolled, attributes: attrs };
+  const tmp: SurvivalGameState = { ...state, survivors };
+  const power = computePower(effectiveAttributes(tmp, survivorId));
+  const { tier, name: tierName } = tierFromPower(power);
+  survivors[idx] = { ...survivors[idx], power, tier, tierName };
+
+  const next: SurvivalGameState = {
+    ...tmp,
+    survivors,
+    coins: state.coins - REROLL_ATTR_COST,
+    log: [
+      `【重塑六维】${cur.name} 初始基础属性重随，消耗 ${REROLL_ATTR_COST} 废土币。`,
+      ...state.log,
+    ].slice(0, 50),
+  };
+  return recomputeMaxHpFor(next, survivorId);
+}
+
+// ===== v1.1.0：GM 调试工具 =====
+
+/** GM 功能密钥（纯本地调试用，输入正确才解锁 GM 面板） */
+export const GM_ACCESS_KEY = '5362895';
+
+/** 校验 GM 密钥（去除首尾空白后比对） */
+export function verifyGmKey(input: string): boolean {
+  return (input ?? '').trim() === GM_ACCESS_KEY;
+}
+
+/** GM：给出击者加经验（走正常升级流程：升级给自由点 + 词条三选一 + 状态回满） */
+export function gmGrantXp(
+  state: SurvivalGameState,
+  survivorId: string,
+  amount: number,
+): SurvivalGameState {
+  const amt = Math.floor(amount);
+  if (amt <= 0) return state;
+  const target = state.survivors.find((s) => s.id === survivorId);
+  if (!target) return state;
+  const next = grantSortieXp(state, survivorId, amt);
+  const name = target.name;
+  return {
+    ...next,
+    log: [`【GM】${name} 经验 +${amt}。`, ...next.log].slice(0, 50),
+  };
+}
+
+/** GM：加废土币 */
+export function gmGrantCoins(state: SurvivalGameState, amount: number): SurvivalGameState {
+  const amt = Math.floor(amount);
+  if (amt <= 0) return state;
+  return {
+    ...state,
+    coins: state.coins + amt,
+    log: [`【GM】废土币 +${amt}。`, ...state.log].slice(0, 50),
+  };
+}
+
+/** GM：恢复行动点到上限（默认满 120 点） */
+export function gmGrantActionPoints(
+  state: SurvivalGameState,
+  amount: number = ACTION_POINT_CAP,
+): SurvivalGameState {
+  const cap = ACTION_POINT_CAP;
+  const target = Math.max(0, Math.min(cap, Math.floor(amount)));
+  const current = Math.max(0, Math.min(cap, Math.floor(state.actionPoints ?? 0)));
+  if (target <= current) return state; // 已满或更高 → 跳过
+  return {
+    ...state,
+    actionPoints: target,
+    log: [`【GM】行动点恢复至 ${target}/${cap}。`, ...state.log].slice(0, 50),
+  };
+}
+
+// ===== v1.1.0：废土市场出售价 =====
+
+/** 材料出售单价：基础价值 ×2（与旧「10 币/件」口径一致） */
+export function materialSellPrice(m: MaterialItem): number {
+  return Math.max(1, Math.round(m.value * 2));
+}
+
+/** 装备出售价：基础价值 ×（1 + 稀有度阶级 × 0.2），白 1.0× → 红 2.2× */
+export function gearSellPrice(g: GearItem): number {
+  return Math.max(1, Math.round(g.value * (1 + (g.tier ?? 0) * 0.2)));
+}
+
+/** 出售指定材料的若干件（数量自动夹到库存上限） */
+export function sellMaterials(
+  state: SurvivalGameState,
+  materialId: string,
+  qty: number,
+): SurvivalGameState {
+  const q = Math.floor(qty);
+  if (q <= 0) return state;
+  const m = state.materials.find((x) => x.id === materialId);
+  if (!m) return state;
+  const sell = Math.min(q, m.quantity);
+  if (sell <= 0) return state;
+  const gain = materialSellPrice(m) * sell;
+  const left = m.quantity - sell;
+  const materials =
+    left > 0
+      ? state.materials.map((x) => (x.id === materialId ? { ...x, quantity: left } : x))
+      : state.materials.filter((x) => x.id !== materialId);
+  return {
+    ...state,
+    materials,
+    coins: state.coins + gain,
+    log: [`【出售】${m.name}×${sell}，+${gain} 废土币。`, ...state.log].slice(0, 50),
   };
 }
 

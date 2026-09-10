@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { ResetSaveDialog } from '../components/ResetSaveDialog';
-import { attrLabel, rarityLabel } from '@shared/engine/survival/chargen';
+import { attrLabel, rarityLabel, ALL_ATTR_KEYS } from '@shared/engine/survival/chargen';
 import type { Attributes } from '@shared/types/cultivator';
 import type { SurvivalGameState, SortieLog } from '@shared/engine/survival/state';
 import {
@@ -37,8 +37,29 @@ import {
   plantGardenCrop,
   harvestGardenPlot,
   clearGardenPlot,
+  // v1.1.0：菜园种子
+  seedStock,
+  buySeeds,
+  gardenCropValue,
+  gardenCropProfit,
   emptyGardenPlots,
   createProtagonistGame,
+  // v1.1.0：行动点 / 重塑六维 / 市场出售
+  ACTION_POINT_CAP,
+  actionPointView,
+  trySpendActionPoints,
+  sortieActionPointCost,
+  REROLL_ATTR_COST,
+  rerollBaseAttributes,
+  // v1.1.0 补充：GM 调试工具
+  verifyGmKey,
+  gmGrantXp,
+  gmGrantCoins,
+  gmGrantActionPoints,
+  materialSellPrice,
+  gearSellPrice,
+  sellMaterials,
+  recycleGear,
 } from '@shared/engine/survival/state';
 import type { RNG } from '@shared/engine/survival/rng';
 import {
@@ -46,9 +67,12 @@ import {
   MATERIAL_LABEL,
   materialCount,
   FACTIONS,
+  type MaterialItem,
 } from '@shared/engine/survival/economy';
 import { INJURY_LABEL, regenPerMinute, timeToFullSeconds } from '@shared/engine/survival/recovery';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
+// v1.1.0：漫游 = 模拟一次完整副本（同源结算）
+import { simulateWanderSortie, type WanderReport } from '@shared/engine/survival/wander';
 import { createRun, search, rollRescue, fight, extract, mulberry32, sumValue } from '@shared/engine/extraction';
 import { DANGER_ZONES } from '@shared/engine/extraction/content';
 
@@ -116,13 +140,16 @@ const hpBar = (current: number, max: number) => {
   );
 };
 
-// ===== 1. 避难所菜园（6 块地，种植状态持久化到存档） =====
+// ===== 1. 避难所菜园（6 块地 · v1.1.0：种植消耗种子，种子在下方种子商店购买） =====
 export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
   const gardenLevel = state.facilities['garden'] ?? 0;
   // 旧存档可能没有 gardenPlots，用空 6 地块兜底；新存档与种植动作都走 persist
   const plots = state.gardenPlots && state.gardenPlots.length > 0 ? state.gardenPlots : emptyGardenPlots();
   const [sel, setSel] = useState<Record<number, string>>({}); // 每块地当前选中的作物
   const [now, setNow] = useState(0);
+  // v1.1.0：铲除未成熟地块会损失种子，需内联二次确认
+  const [confirmClear, setConfirmClear] = useState<number | null>(null);
+  const [shopMsg, setShopMsg] = useState<string | null>(null);
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
@@ -130,16 +157,96 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
 
   const cropName = (id: string | null) =>
     id ? (GARDEN_CROPS.find((c) => c.id === id)?.name ?? id) : '';
+  const productLabel = (c: (typeof GARDEN_CROPS)[number]) =>
+    c.yields ? `${MEDICINES.find((m) => m.id === c.yields)?.name ?? c.yields}×${c.qty}` : `+${c.coins} 废土币`;
+
+  const doBuy = (cropId: string, qty: number) => {
+    const crop = GARDEN_CROPS.find((c) => c.id === cropId);
+    if (!crop) return;
+    const total = crop.seedPrice * qty;
+    if (state.coins < total) {
+      setShopMsg(`⚠ 废土币不足，${crop.name}种子×${qty} 需 ${total} 币。`);
+      return;
+    }
+    mutate((st) => buySeeds(st, cropId, qty));
+    setShopMsg(`✅ 购入 ${crop.name}种子×${qty}，花费 ${total} 废土币。`);
+  };
 
   return (
     <Section
       title="避难所·菜园"
-      subtitle="6 块地，每块可任选一种作物种植。成熟后收获换医疗品 / 废土币。种植状态已存档，切走再切回不会丢失。"
+      subtitle="6 块地，每块可任选一种作物种植。种植需消耗对应种子（成熟收获后回本并盈利）。种植状态已存档，切走再切回不会丢失。"
     >
-      <div className="mb-3 flex items-center gap-2 text-sm text-zinc-300">
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-300">
         <Pill tone="sky">菜园等级 {gardenLevel}</Pill>
-        <span className="text-xs">每升 1 级收成时间 -10%（下限 30%）</span>
+        <span className="text-xs text-zinc-400">每升 1 级收成时间 -10%（下限 30%）</span>
       </div>
+
+      {/* ===== 种子商店 ===== */}
+      <Card className="mb-4">
+        <h3 className="font-semibold text-zinc-100">种子商店</h3>
+        <p className="mt-1 text-xs text-zinc-400">
+          种子价恒低于产物市价，差额即为你等待成熟应得的利润。未成熟就铲除会损失该颗种子。
+        </p>
+        {shopMsg && (
+          <div
+            className={`mt-2 rounded border px-2 py-1 text-xs ${
+              shopMsg.startsWith('⚠')
+                ? 'border-rose-800 bg-rose-950/30 text-rose-300'
+                : 'border-emerald-800 bg-emerald-950/30 text-emerald-300'
+            }`}
+          >
+            {shopMsg}
+          </div>
+        )}
+        <div className="mt-3 space-y-1.5">
+          {GARDEN_CROPS.map((c) => {
+            const stock = seedStock(state, c.id);
+            const value = gardenCropValue(c);
+            const profit = gardenCropProfit(c);
+            return (
+              <div
+                key={c.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded border border-zinc-800 px-2 py-1.5"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm text-zinc-100">
+                    {c.icon} {c.name}
+                    <span className="ml-2 font-mono text-xs text-sky-300">库存 {stock}</span>
+                  </div>
+                  <div className="text-[11px] text-zinc-500">
+                    {c.minutes} 分钟 → {productLabel(c)}（市价 {value} 币）· 种子 {c.seedPrice} 币 ·
+                    净赚{' '}
+                    <span className={profit > 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                      {profit > 0 ? '+' : ''}
+                      {profit}
+                    </span>{' '}
+                    币
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    onClick={() => doBuy(c.id, 1)}
+                    disabled={state.coins < c.seedPrice}
+                    className="rounded bg-stone-600 px-2 py-1 text-xs text-white hover:bg-stone-700 disabled:opacity-40"
+                  >
+                    ×1 / {c.seedPrice}
+                  </button>
+                  <button
+                    onClick={() => doBuy(c.id, 5)}
+                    disabled={state.coins < c.seedPrice * 5}
+                    className="rounded bg-stone-700 px-2 py-1 text-xs text-white hover:bg-stone-600 disabled:opacity-40"
+                  >
+                    ×5 / {c.seedPrice * 5}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-2 text-[11px] text-zinc-500">当前废土币：{state.coins}</div>
+      </Card>
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {plots.map((plot, idx) => {
           const crop = plot.cropId ? GARDEN_CROPS.find((c) => c.id === plot.cropId) : null;
@@ -164,21 +271,34 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
                     <option value="">选择作物…</option>
                     {GARDEN_CROPS.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.icon} {c.name}（{c.minutes} 分钟 →{' '}
-                        {c.yields ? MEDICINES.find((m) => m.id === c.yields)?.name : `+${c.coins} 废土币`}）
+                        {c.icon} {c.name}（{c.minutes} 分 →{' '}
+                        {c.yields ? MEDICINES.find((m) => m.id === c.yields)?.name : `+${c.coins} 废土币`}
+                        ）· 种子库存 {seedStock(state, c.id)}
                       </option>
                     ))}
                   </select>
+                  {sel[idx] && seedStock(state, sel[idx]) === 0 && (
+                    <div className="text-[11px] text-rose-300">
+                      ⚠ 没有{cropName(sel[idx])}种子，请先在上方种子商店购买。
+                    </div>
+                  )}
                   <button
-                    disabled={!sel[idx]}
+                    disabled={!sel[idx] || seedStock(state, sel[idx]) === 0}
                     onClick={() => {
                       if (!sel[idx]) return;
                       mutate((s) => plantGardenCrop(s, idx, sel[idx], Date.now()));
                       setSel((s) => ({ ...s, [idx]: '' }));
                     }}
                     className="w-full rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={
+                      !sel[idx]
+                        ? '先选择作物'
+                        : seedStock(state, sel[idx]) === 0
+                          ? '缺少种子'
+                          : `消耗 1 颗${cropName(sel[idx])}种子`
+                    }
                   >
-                    种植
+                    种植（消耗种子 ×1）
                   </button>
                 </div>
               ) : (
@@ -186,12 +306,7 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
                   <div className="text-base font-semibold text-zinc-100">
                     {crop?.icon} {cropName(plot.cropId)}
                   </div>
-                  <div className="mt-1 text-xs text-zinc-400">
-                    收成：
-                    {crop?.yields
-                      ? `${MEDICINES.find((m) => m.id === crop.yields)?.name}×${crop.qty}`
-                      : `+${crop?.coins} 废土币`}
-                  </div>
+                  <div className="mt-1 text-xs text-zinc-400">收成：{crop ? productLabel(crop) : ''}</div>
                   {ready ? (
                     <button
                       onClick={() => mutate((s) => harvestGardenPlot(s, idx, Date.now()))}
@@ -202,12 +317,39 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
                   ) : (
                     <div className="mt-3 text-xs text-zinc-400">剩余约 {leftMin} 分钟成熟</div>
                   )}
-                  <button
-                    onClick={() => mutate((s) => clearGardenPlot(s, idx))}
-                    className="mt-2 w-full rounded border border-zinc-700 px-3 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800"
-                  >
-                    铲除重种
-                  </button>
+                  {confirmClear === idx ? (
+                    <div className="mt-2 rounded border border-rose-800 bg-rose-950/30 px-2 py-1.5">
+                      <div className="text-[11px] text-rose-200">
+                        {ready
+                          ? '确认铲除？该地块将被清空。'
+                          : '⚠ 作物尚未成熟，铲除将损失这颗种子，确认？'}
+                      </div>
+                      <div className="mt-1.5 flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            mutate((s) => clearGardenPlot(s, idx));
+                            setConfirmClear(null);
+                          }}
+                          className="rounded bg-rose-600 px-2 py-1 text-[11px] text-white hover:bg-rose-700"
+                        >
+                          确认铲除
+                        </button>
+                        <button
+                          onClick={() => setConfirmClear(null)}
+                          className="rounded bg-zinc-700 px-2 py-1 text-[11px] text-white hover:bg-zinc-600"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmClear(idx)}
+                      className="mt-2 w-full rounded border border-zinc-700 px-3 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800"
+                    >
+                      铲除重种
+                    </button>
+                  )}
                 </div>
               )}
             </Card>
@@ -418,58 +560,146 @@ export const ViewExplorationNotes: React.FC<ViewProps> = ({ state }) => {
   );
 };
 
-// ===== 7. 漫游搜打撤（自动出击） =====
+// ===== 7. 漫游搜打撤（v1.1.0：模拟跑一次完整副本，结算与手动出击同源） =====
 export const ViewWandering: React.FC<ViewProps> = ({ state, mutate, rng }) => {
-  const [log, setLog] = useState<string[]>([]);
+  // 行动点实时恢复展示：每秒刷新本地时钟（不写存档，避免高频落盘）
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const ap = actionPointView(state, now);
+  const [report, setReport] = useState<WanderReport | null>(null);
   const [running, setRunning] = useState(false);
+  const active = state.survivors.find((s) => s.id === state.activeSurvivorId);
+  const remainClock = `${Math.floor(ap.remainMs / 60000)}:${String(
+    Math.floor((ap.remainMs % 60000) / 1000),
+  ).padStart(2, '0')}`;
+
   const runOnce = () => {
-    const active = state.survivors.find((s) => s.id === state.activeSurvivorId);
     if (!active) return;
-    const loadout = buildSortieLoadout(state, active.id);
-    if (!loadout) return;
-    const zone = DANGER_ZONES[Math.floor(rng() * DANGER_ZONES.length)];
-    const seed = Math.floor(rng() * 2 ** 31);
-    const localRng = mulberry32(seed);
-    const run = createRun(loadout, zone);
-    search(run, localRng);
-    rollRescue(run, localRng, () => generateSurvivor(rng));
-    const enemy = run.encounter?.enemy;
-    if (enemy) fight(run, enemy, localRng);
-    search(run, localRng);
-    extract(run);
-    const outcome = run.phase === 'dead' ? 'death' : 'success';
-    const bankedValue = sumValue(run.bankedLoot);
-    mutate((s) => {
-      let ns = bankLoot(s, run.bankedLoot);
-      if (run.bankedNpc) ns = addRecruit(ns, run.bankedNpc);
-      return applySortieResult(ns, {
-        survivorId: active.id,
-        survivorName: active.name,
-        zoneName: zone.name,
-        outcome,
-        bankedItems: run.bankedLoot.length,
-        bankedValue,
-        enemyFaced: enemy?.name,
-        rescued: !!run.bankedNpc,
-        finalHp: run.condition.resources.hp.current,
-        maxHp: run.condition.resources.hp.max ?? 100,
-      });
-    });
-    setLog([`[${new Date().toLocaleTimeString()}] ${active.name} → ${zone.name}：${outcome === 'success' ? `入库 ${run.bankedLoot.length} 件` : '阵亡，丢装'}`, ...log].slice(0, 10));
+    const { state: nextState, report: r } = simulateWanderSortie(state, { rng });
+    if (!r.ok) {
+      setReport(r);
+      return;
+    }
+    setReport(r);
+    mutate(() => nextState);
   };
+
+  const logs = state.wanderLog ?? [];
+
   return (
-    <Section title="漫游搜打撤" subtitle="随机选出击者+区域，自动跑一次出击。">
-      <div className="mb-4 flex items-center gap-3">
-        <button onClick={() => { setRunning(true); runOnce(); setRunning(false); }} disabled={running} className="rounded bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 disabled:opacity-40">
+    <Section
+      title="漫游搜打撤"
+      subtitle="派出击者自动下一次副本：会真的搜刮、遇敌、战斗、掉血、负伤，甚至阵亡濒死；结算规则与手动出击完全一致。"
+    >
+      <Card className="mb-3 !bg-zinc-900">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <span className="text-zinc-300">
+            ⚡ 行动点{' '}
+            <span
+              className={`font-mono font-semibold ${
+                ap.current >= ACTION_POINT_CAP ? 'text-emerald-400' : 'text-amber-400'
+              }`}
+            >
+              {ap.current}
+            </span>
+            <span className="text-zinc-500"> / {ap.cap}</span>
+          </span>
+          <span className="text-xs text-zinc-400">
+            {ap.full ? '已满（暂停恢复）' : `下一点 ${remainClock} 后 · 每 5 分钟 +1`}
+          </span>
+        </div>
+      </Card>
+
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <button
+          onClick={() => {
+            setRunning(true);
+            runOnce();
+            setRunning(false);
+          }}
+          disabled={running || !active || ap.current < 6}
+          className="rounded bg-emerald-600 px-4 py-2 text-white hover:bg-emerald-700 disabled:opacity-40"
+        >
           派出一支小队
         </button>
-        <span className="text-xs text-zinc-400">最近 10 次记录（仅本菜单会话内存）</span>
+        <span className="text-xs text-zinc-400">
+          消耗：危1 6 点 … 危7 12 点（区域随机，派出瞬间扣除）· 出击者：
+          {active ? active.name : '未指定'}
+        </span>
       </div>
+
+      <div className="mb-4 rounded border border-amber-900/60 bg-amber-950/20 px-3 py-2 text-[11px] leading-relaxed text-amber-200/90">
+        ⚠ 漫游并非无损：会按副本真实流程掉血、附加战后伤势，阵亡/超时同样进入<b>濒死</b>并可能
+        <b>被夺走已穿戴装备</b>（安全箱内物品 100% 保留）。撤离失败时经验与搜刮废土币一律作废。
+      </div>
+
+      {report && !report.ok && (
+        <div className="mb-3 rounded border border-rose-800 bg-rose-950/30 px-3 py-1.5 text-xs text-rose-300">
+          {report.reason}
+        </div>
+      )}
+
+      {report && report.ok && (
+        <Card className="mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-semibold text-zinc-100">本局战报</h3>
+            <Pill tone={report.outcome === 'success' ? 'green' : 'red'}>
+              {report.outcome === 'success' ? '撤离成功' : report.outcome === 'timeout' ? '超时失败' : '阵亡'}
+            </Pill>
+          </div>
+          <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+            <div className="text-zinc-300">
+              区域：<span className="text-zinc-100">{report.zoneName}</span>（危{report.dangerLevel}）· 消耗{' '}
+              <span className="font-mono text-amber-300">{report.apCost}</span> 行动点
+            </div>
+            <div className="text-zinc-300">
+              生命：
+              <span className="font-mono text-zinc-100">
+                {report.hpBefore} → {report.hpAfter}
+              </span>
+              <span className="text-zinc-500"> / {report.maxHp}</span>
+            </div>
+            <div className="text-zinc-300">
+              入库：<span className="text-zinc-100">{report.items}</span> 件（估值{' '}
+              <span className="font-mono text-amber-300">{report.value}</span>）
+            </div>
+            <div className="text-zinc-300">
+              废土币：<span className="font-mono text-amber-300">+{report.credits}</span> · 经验：
+              <span className="font-mono text-sky-300">+{report.xp}</span>
+            </div>
+            {report.enemyFaced && (
+              <div className="text-zinc-300">
+                遭遇：<span className="text-rose-300">{report.enemyFaced}</span>
+              </div>
+            )}
+            {report.rescued && <div className="text-emerald-300">救出 1 名幸存者（已入花名册）</div>}
+          </div>
+          {(report.injuries.length > 0 || report.lostGear > 0 || report.dying) && (
+            <div className="mt-2 space-y-1 text-xs">
+              {report.injuries.length > 0 && (
+                <div className="text-rose-300">
+                  🩹 新增伤势：{report.injuries.map((i) => INJURY_LABEL[i]).join('、')}
+                </div>
+              )}
+              {report.lostGear > 0 && <div className="text-rose-300">💀 被夺走装备 {report.lostGear} 件</div>}
+              {report.dying && (
+                <div className="text-rose-300">⚠ 已进入濒死状态，需救治后才能再次出击</div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       <div className="space-y-1">
-        {log.map((l, i) => (
-          <div key={i} className="rounded bg-zinc-950 px-3 py-1 text-xs text-zinc-200">{l}</div>
+        {logs.map((l, i) => (
+          <div key={i} className="rounded bg-zinc-950 px-3 py-1 text-xs text-zinc-200">
+            {l}
+          </div>
         ))}
-        {log.length === 0 && <div className="text-sm text-zinc-500">还没有记录。</div>}
+        {logs.length === 0 && <div className="text-sm text-zinc-500">还没有记录。</div>}
       </div>
     </Section>
   );
@@ -536,30 +766,91 @@ export const ViewMirage: React.FC<ViewProps> = ({ state, mutate, rng }) => {
   );
 };
 
-// ===== 9. 重塑天赋 =====
-export const ViewRerollTrait: React.FC<ViewProps> = ({ state, mutate, rng }) => {
+// ===== 9. 重塑六维（v1.1.0：取代旧「重塑天赋」，只重随初始基础六维） =====
+export const ViewRerollAttributes: React.FC<ViewProps> = ({ state, mutate, rng }) => {
+  // v1.1.0 补充：花费 500 币且不可逆，需要内联二次确认（window.confirm 在本壳内不可靠）
+  const [confirming, setConfirming] = useState(false);
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId);
-  if (!active) return <Section title="重塑天赋"><div className="text-zinc-400">未指定出击者。</div></Section>;
-  const cost = 80 + active.tier * 60;
-  const reroll = () => {
-    if (state.coins < cost) return;
-    mutate((s) => {
-      const idx = s.survivors.findIndex((x) => x.id === active.id);
-      if (idx < 0) return s;
-      const fresh = generateSurvivor(rng, { name: active.name });
-      const next = [...s.survivors];
-      next[idx] = fresh;
-      return { ...s, survivors: next, coins: s.coins - cost, log: [`【重塑】${active.name} 天赋重置。`, ...s.log].slice(0, 50) };
-    });
+  if (!active) {
+    return (
+      <Section title="重塑六维">
+        <div className="text-zinc-400">未指定出击者。</div>
+      </Section>
+    );
+  }
+  const base = active.baseAttributes;
+  const afford = state.coins >= REROLL_ATTR_COST;
+  const doReroll = () => {
+    if (!afford) return;
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    mutate((s) => rerollBaseAttributes(s, active.id, rng));
+    setConfirming(false);
   };
   return (
-    <Section title="重塑天赋" subtitle={`当前出击者：${active.name}（${active.tierName}）`}>
+    <Section title="重塑六维" subtitle={`当前出击者：${active.name}（${active.tierName}）`}>
       <Card>
-        <div className="text-sm text-zinc-200">保留名字/段位，词条与基础属性全部重随。</div>
-        <div className="mt-2 text-xs text-zinc-400">费用：{cost} 废土币 · 当前余额 {state.coins}</div>
-        <button onClick={reroll} disabled={state.coins < cost} className="mt-3 rounded bg-amber-600 px-4 py-2 text-white hover:bg-amber-700 disabled:opacity-40">
-          消耗 {cost} 重塑
-        </button>
+        <div className="text-sm text-zinc-200">
+          消耗 <span className="font-semibold text-amber-300">{REROLL_ATTR_COST}</span> 废土币，把{' '}
+          <span className="text-zinc-100">{active.name}</span> 的
+          <b> 初始六维基础属性 </b>重新随机（每项 6~20）。
+        </div>
+        <div className="mt-2 text-xs text-zinc-400">
+          只重随「最原始的初始基础属性」——词条加成、升级加点、等级、经验、装备与伤势全部保留；段位随新战力重算。
+        </div>
+        {base ? (
+          <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
+            {ALL_ATTR_KEYS.map((k) => (
+              <div
+                key={k}
+                className="rounded border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-center"
+              >
+                <div className="text-[11px] text-zinc-500">{attrLabel(k)}</div>
+                <div className="font-mono text-sm text-zinc-100">{base[k]}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-3 text-xs text-zinc-500">（该存档尚未记录初始基础属性，重随时会自动补齐）</div>
+        )}
+        <div className="mt-3 text-xs text-zinc-400">
+          费用：{REROLL_ATTR_COST} 废土币 · 当前余额 {state.coins}
+        </div>
+        {confirming ? (
+          <div className="mt-3 rounded border border-amber-700 bg-amber-950/30 px-3 py-2">
+            <div className="text-sm text-amber-200">
+              ⚠ 确认消耗 {REROLL_ATTR_COST} 废土币，将 {active.name} 的初始六维基础属性全部重新随机（6~20）？
+            </div>
+            <div className="mt-1 text-xs text-amber-300/80">此操作不可撤销，可能抽到比现在更差的属性。</div>
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={doReroll}
+                className="rounded bg-amber-600 px-3 py-1 text-xs text-white hover:bg-amber-700"
+              >
+                确认重塑
+              </button>
+              <button
+                onClick={() => setConfirming(false)}
+                className="rounded bg-zinc-700 px-3 py-1 text-xs text-white hover:bg-zinc-600"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={doReroll}
+            disabled={!afford}
+            className="mt-3 rounded bg-amber-600 px-4 py-2 text-white hover:bg-amber-700 disabled:opacity-40"
+          >
+            消耗 {REROLL_ATTR_COST} 重塑六维
+          </button>
+        )}
+        {!afford && (
+          <p className="mt-2 text-xs text-rose-300">⚠ 废土币不足，还差 {REROLL_ATTR_COST - state.coins} 币。</p>
+        )}
       </Card>
     </Section>
   );
@@ -603,6 +894,23 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
   // v1.0.2：购买需二次确认防误触；支持批量 ×1 / ×5；确认后扣币入库
   const [pending, setPending] = useState<{ id: MedicineSpec['id']; qty: number } | null>(null);
   const [bought, setBought] = useState<string | null>(null);
+  // v1.1.0：出售区 —— 材料按基础价 ×2；装备按稀有度阶级浮动计价
+  const [soldMsg, setSoldMsg] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const equippedIds = useMemo(
+    () =>
+      new Set(
+        Object.values(state.equipped).flatMap((slots) =>
+          Object.values(slots).filter((x): x is string => typeof x === 'string'),
+        ),
+      ),
+    [state.equipped],
+  );
+  const sellable = state.gear.filter((g) => !equippedIds.has(g.id));
+  const selectedTotal = selected.reduce((acc, id) => {
+    const g = state.gear.find((x) => x.id === id);
+    return acc + (g ? gearSellPrice(g) : 0);
+  }, 0);
 
   const doBuy = (id: MedicineSpec['id'], qty: number) => {
     const spec = MEDICINES.find((m) => m.id === id);
@@ -610,10 +918,30 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
     mutate((s) => buyMedicine(s, id, qty));
     setBought(`✅ 已购买 ${spec.name}×${qty}，消耗 ${spec.costCoins * qty} 废土币（库存 +${qty}）。`);
     setPending(null);
+    setSoldMsg(null);
+  };
+
+  const doSellMaterial = (m: MaterialItem, qty: number) => {
+    const sell = Math.min(Math.floor(qty), m.quantity);
+    if (sell <= 0) return;
+    const gain = materialSellPrice(m) * sell;
+    mutate((s) => sellMaterials(s, m.id, sell));
+    setSoldMsg(`✅ 卖出 ${m.name}×${sell}，+${gain} 废土币。`);
+    setBought(null);
+  };
+
+  const doSellGear = () => {
+    if (selected.length === 0) return;
+    const gain = selectedTotal;
+    const n = selected.length;
+    mutate((s) => recycleGear(s, selected));
+    setSoldMsg(`✅ 卖出 ${n} 件装备，+${gain} 废土币。`);
+    setBought(null);
+    setSelected([]);
   };
 
   return (
-    <Section title="废土市场" subtitle="从市集购入医疗物资、卖出多余材料。">
+    <Section title="废土市场" subtitle="从市集购入医疗物资，出售多余材料与仓库装备。">
       <div className="grid gap-3 sm:grid-cols-2">
         <Card>
           <h3 className="font-semibold text-zinc-100">购入医疗品</h3>
@@ -686,30 +1014,125 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
           </div>
         </Card>
         <Card>
-          <h3 className="font-semibold text-zinc-100">回收材料（10 币/件）</h3>
-          <p className="mt-1 text-xs text-zinc-400">将 1 件任意材料按 10 废土币出售（演示用，简化模型）。</p>
-          <button
-            onClick={() => mutate((s) => {
-              if (s.materials.length === 0) return s;
-              const next = [...s.materials];
-              const m = next[0];
-              const left = m.quantity - 1;
-              const mats = left > 0 ? next.map((x, i) => i === 0 ? { ...x, quantity: left } : x) : next.filter((_, i) => i !== 0);
-              return { ...s, materials: mats, coins: s.coins + 10, log: [`【回收】卖出 ${m.name}×1，+10 废土币。`, ...s.log].slice(0, 50) };
-            })}
-            disabled={state.materials.length === 0}
-            className="mt-3 rounded bg-stone-600 px-3 py-1 text-xs text-white hover:bg-stone-700 disabled:opacity-40"
-          >出售 1 件</button>
+          <h3 className="font-semibold text-zinc-100">出售物资</h3>
+          <p className="mt-1 text-xs text-zinc-400">
+            材料按基础价 ×2 回收；装备按稀有度阶级浮动计价（白 1.0× → 红 2.2×）。已穿戴的装备需先卸下。
+          </p>
+          {soldMsg && (
+            <div className="mt-2 rounded border border-emerald-800 bg-emerald-950/30 px-2 py-1 text-xs text-emerald-300">
+              {soldMsg}
+            </div>
+          )}
+
+          <div className="mt-3">
+            <div className="text-xs text-zinc-400">材料</div>
+            <div className="mt-1.5 space-y-1.5">
+              {state.materials.length === 0 && (
+                <div className="text-xs text-zinc-500">暂无材料可出售。</div>
+              )}
+              {state.materials.map((m) => (
+                <div
+                  key={m.id}
+                  className="flex items-center justify-between gap-2 rounded border border-zinc-800 px-2 py-1.5"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm text-zinc-100">{m.name}</div>
+                    <div className="text-[11px] text-zinc-500">
+                      库存 ×{m.quantity} · 单价 {materialSellPrice(m)} 币
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={() => doSellMaterial(m, 1)}
+                      className="rounded bg-stone-600 px-2 py-1 text-xs text-white hover:bg-stone-700"
+                    >
+                      ×1
+                    </button>
+                    <button
+                      onClick={() => doSellMaterial(m, 5)}
+                      className="rounded bg-stone-600 px-2 py-1 text-xs text-white hover:bg-stone-700"
+                    >
+                      ×5
+                    </button>
+                    <button
+                      onClick={() => doSellMaterial(m, m.quantity)}
+                      className="rounded bg-stone-700 px-2 py-1 text-xs text-white hover:bg-stone-600"
+                    >
+                      全部
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-xs text-zinc-400">
+              <span>仓库装备（{sellable.length} 件可出售）</span>
+              <span>
+                已选 {selected.length} 件 · 可得{' '}
+                <span className="font-mono text-amber-300">{selectedTotal}</span> 币
+              </span>
+            </div>
+            {sellable.length === 0 ? (
+              <div className="mt-1.5 text-xs text-zinc-500">
+                仓库没有可出售的装备（已穿戴的需先卸下）。
+              </div>
+            ) : (
+              <div className="mt-1.5 max-h-56 space-y-1 overflow-y-auto pr-1">
+                {sellable.map((g) => {
+                  const on = selected.includes(g.id);
+                  return (
+                    <button
+                      key={g.id}
+                      onClick={() =>
+                        setSelected((prev) =>
+                          on ? prev.filter((x) => x !== g.id) : [...prev, g.id],
+                        )
+                      }
+                      className={`flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left transition ${
+                        on
+                          ? 'border-amber-600 bg-amber-950/30'
+                          : 'border-zinc-800 hover:border-zinc-600'
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span
+                          className="block truncate text-sm"
+                          style={{ color: g.tierColor ?? '#e4e4e7' }}
+                        >
+                          {g.name}
+                        </span>
+                        <span className="block text-[11px] text-zinc-500">
+                          {g.rarityName ?? g.rarity} · {g.affixes.length} 词条
+                        </span>
+                      </span>
+                      <span className="shrink-0 font-mono text-xs text-amber-300">
+                        {gearSellPrice(g)} 币
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <button
+              onClick={doSellGear}
+              disabled={selected.length === 0}
+              className="mt-2 rounded bg-stone-600 px-3 py-1 text-xs text-white hover:bg-stone-700 disabled:opacity-40"
+            >
+              出售选中装备
+            </button>
+          </div>
         </Card>
       </div>
     </Section>
   );
 };
 
-// ===== 12. 鉴物回收（消耗材料随机得装备） =====
-export const ViewRecycle: React.FC<ViewProps> = ({ state, mutate, rng }) => {
+// ===== 12. 装备改装（v1.1.0 由「鉴物回收」改名：本页是消耗材料造装备，出售请去废土市场） =====
+export const ViewReforge: React.FC<ViewProps> = ({ state, mutate, rng }) => {
   return (
-    <Section title="鉴物回收" subtitle="消耗材料随机改装为装备，有概率产出高稀有度词缀。">
+    <Section title="装备改装" subtitle="消耗材料随机改装为装备，有概率产出高稀有度词缀。">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {RECIPES.map((r) => {
           const can = (() => {
@@ -783,7 +1206,8 @@ export const ViewAuction: React.FC = () => (
 
 // ===== 15. 英雄榜 =====
 export const ViewLeaderboard: React.FC<ViewProps> = ({ state }) => {
-  const sorted = [...state.survivors].sort((a, b) => b.power - a.power);
+  // v1.1.0：文案自称「前 30 名」，此前漏了截断；战团上限 10 人，实为兜底
+  const sorted = [...state.survivors].sort((a, b) => b.power - a.power).slice(0, 30);
   return (
     <Section title="英雄榜" subtitle="按战力排序的花名册（前 30 名）。">
       <Card>
@@ -955,6 +1379,155 @@ export const ViewFeedback: React.FC = () => (
   </Section>
 );
 
+// ===== 23b. GM 调试面板（v1.1.0：需密钥解锁） =====
+const GM_UNLOCK_FLAG = 'wasteland-gm-unlocked';
+
+function readGmUnlocked(): boolean {
+  try {
+    return window.localStorage.getItem(GM_UNLOCK_FLAG) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeGmUnlocked(on: boolean): void {
+  try {
+    if (on) window.localStorage.setItem(GM_UNLOCK_FLAG, '1');
+    else window.localStorage.removeItem(GM_UNLOCK_FLAG);
+  } catch {
+    /* 隐私模式等场景下忽略 */
+  }
+}
+
+/** GM 加经验的固定额度 */
+const GM_XP_AMOUNT = 200;
+/** GM 加废土币的固定额度 */
+const GM_COIN_AMOUNT = 500;
+
+const GmPanel: React.FC<{ state: SurvivalGameState; mutate: Mutate }> = ({ state, mutate }) => {
+  const [unlocked, setUnlocked] = useState(() => readGmUnlocked());
+  const [keyInput, setKeyInput] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const active = state.survivors.find((s) => s.id === state.activeSurvivorId);
+
+  const tryUnlock = () => {
+    if (verifyGmKey(keyInput)) {
+      writeGmUnlocked(true);
+      setUnlocked(true);
+      setErr(null);
+      setKeyInput('');
+      setToast('✅ GM 功能已解锁（本机记住，可随时锁定）。');
+    } else {
+      setErr('密钥错误，无法使用 GM 功能。');
+    }
+  };
+
+  const lock = () => {
+    writeGmUnlocked(false);
+    setUnlocked(false);
+    setToast(null);
+  };
+
+  if (!unlocked) {
+    return (
+      <Card>
+        <h3 className="font-semibold text-zinc-100">GM 功能（未解锁）</h3>
+        <div className="mt-1 text-xs text-zinc-400">
+          输入 GM 密钥以启用调试功能（仅本机有效，不影响其他存档）。
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            type="password"
+            value={keyInput}
+            onChange={(e) => {
+              setKeyInput(e.target.value);
+              setErr(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') tryUnlock();
+            }}
+            placeholder="请输入 GM 密钥"
+            className="rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+          />
+          <button
+            onClick={tryUnlock}
+            disabled={keyInput.trim().length === 0}
+            className="rounded bg-zinc-700 px-3 py-1 text-xs text-white hover:bg-zinc-600 disabled:opacity-40"
+          >
+            验证密钥
+          </button>
+        </div>
+        {err && <div className="mt-2 text-xs text-rose-300">⚠ {err}</div>}
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-emerald-300">GM 功能（已解锁）</h3>
+          <div className="mt-1 text-xs text-zinc-400">
+            当前出击者：
+            <span className="text-zinc-100">
+              {active ? `${active.name}（Lv.${active.level ?? 1} · ${active.tierName}）` : '未指定'}
+            </span>
+          </div>
+        </div>
+        <button
+          onClick={lock}
+          className="shrink-0 rounded bg-zinc-700 px-3 py-1 text-xs text-white hover:bg-zinc-600"
+        >
+          锁定 GM
+        </button>
+      </div>
+
+      {toast && <div className="mt-2 text-xs text-emerald-300">{toast}</div>}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          onClick={() => {
+            if (!active) return;
+            mutate((s) => gmGrantXp(s, active.id, GM_XP_AMOUNT));
+            setToast(`✅ ${active.name} 经验 +${GM_XP_AMOUNT}（满经验会自动升级并发放属性点）。`);
+          }}
+          disabled={!active}
+          className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-40"
+        >
+          出击者经验 +{GM_XP_AMOUNT}
+        </button>
+        <button
+          onClick={() => {
+            mutate((s) => gmGrantCoins(s, GM_COIN_AMOUNT));
+            setToast(`✅ 废土币 +${GM_COIN_AMOUNT}。`);
+          }}
+          className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700"
+        >
+          废土币 +{GM_COIN_AMOUNT}
+        </button>
+        <button
+          onClick={() => {
+            const before = state.actionPoints ?? 0;
+            mutate((s) => gmGrantActionPoints(s));
+            setToast(
+              before >= 120
+                ? `ℹ️ 行动点已是 ${before}/120，无需恢复。`
+                : `✅ 行动点恢复至 ${before} → 120/120。`,
+            );
+          }}
+          className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700"
+        >
+          恢复行动点 120
+        </button>
+      </div>
+      <div className="mt-2 text-[11px] text-zinc-500">
+        经验按正常升级流程结算：满经验升级会给自由属性点、触发词条三选一，并将状态回满。
+      </div>
+    </Card>
+  );
+};
+
 // ===== 23. 系统设置 =====
 export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }) => {
   // v1.0.10：重置存档不再沿用「玩家代号」，改为弹窗输入重生者姓名
@@ -965,7 +1538,6 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
     state.survivors[0]?.name ||
     ''
   ).trim();
-  const seed = ((state as { worldSeed?: number }).worldSeed ?? new Date(state.createdAt).getTime()) || 1;
   return (
     <Section title="系统设置">
       <Card>
@@ -993,17 +1565,9 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
           />
         ) : null}
       </Card>
-      <Card>
-        <h3 className="font-semibold text-zinc-100">世界种子</h3>
-        <div className="mt-1 text-xs text-zinc-400">不同种子会让区域、敌人、战利品生成有微妙差异。</div>
-        <div className="mt-3 flex items-center gap-2">
-          <span className="font-mono text-sm">{seed}</span>
-          <button
-            onClick={() => mutate((s) => ({ ...s, worldSeed: Date.now() } as SurvivalGameState))}
-            className="rounded bg-stone-600 px-3 py-1 text-xs text-white hover:bg-stone-700"
-          >换种子</button>
-        </div>
-      </Card>
+
+      {/* v1.1.0：GM 调试面板（需密钥解锁） */}
+      <GmPanel state={state} mutate={mutate} />
     </Section>
   );
 };

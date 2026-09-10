@@ -1242,7 +1242,52 @@ function buildBattleReplay(
  * 胜利后留下可搜刮的敌方尸体。
  * v1.0.2：生成逐回合战斗回放（battles）+ 霸主击杀额外战利品。
  */
+/** 危3+ 副本一次遭遇的敌群规模上限（1~GROUP_MAX 个小怪，boss 不参与群怪） */
+const GROUP_MIN_DANGER = 3;
+const GROUP_MAX = 3;
+
+/** 把敌人六维基础属性整体乘以 mult（用于 boss 狂暴），派生属性由 buildEnemyUnit 重算 */
+function scaleEnemyAttributes(base: Attributes, mult: number): Attributes {
+  const out = { ...base };
+  for (const k of ['vitality', 'strength', 'spirit', 'endurance', 'speed', 'willpower'] as (keyof Attributes)[]) {
+    out[k] = Math.max(1, Math.round((base[k] ?? 0) * mult));
+  }
+  return out;
+}
+
 export function fight(
+  state: ExtractionRunState,
+  enemy: EnemyArchetype,
+  rng: () => number = Math.random,
+): void {
+  if (state.phase !== 'searching') return;
+  // 危3+ 副本非 boss 遭遇：随机 1~3 个小怪成队，逐个击破、HP 跨场继承（伤势死亡螺旋）
+  const groupSize =
+    !enemy.boss && state.zone.dangerLevel >= GROUP_MIN_DANGER
+      ? 1 + Math.floor(rng() * GROUP_MAX)
+      : 1;
+  if (groupSize > 1) {
+    plog(state, `⚔ 遭遇敌群（共 ${groupSize} 个）—— 首个【${enemy.name}】`);
+  }
+  for (let i = 0; i < groupSize; i++) {
+    const mob = i === 0 ? enemy : pickEnemy(state, rng);
+    fightOne(state, mob, rng);
+    if ((state.phase as string) === 'dead') break;
+    if (i < groupSize - 1 && (state.phase as string) === 'searching') {
+      plog(
+        state,
+        `⚔ 你击倒了【${mob.name}】，但队友还在——还有 ${groupSize - 1 - i} 个敌人扑上来！`,
+      );
+      spendTime(state, Math.floor(rng() * 15));
+    }
+  }
+}
+
+/**
+ * 单体战斗（一次遭遇中的一只敌人）。群组战斗会循环调用本函数，
+ * 玩家血量在多次战斗间自然继承，配合战后伤势判定形成「死亡螺旋」。
+ */
+function fightOne(
   state: ExtractionRunState,
   enemy: EnemyArchetype,
   rng: () => number = Math.random,
@@ -1336,19 +1381,62 @@ export function fight(
           { ...enemy.attributes } as Attributes,
         ),
       };
-  const enemyUnit = buildEnemyUnit(runtime, scaledEnemy);
+  let enemyUnit = buildEnemyUnit(runtime, scaledEnemy);
   // v1.0.2 伤害类投掷物自动使用：快捷·投掷槽装备了破片手雷时，45% 概率战斗先手引爆
   if (state.quickThrow === 'grenade' && rng() < 0.45) {
     const dmg = Math.max(10, Math.round(enemyUnit.getMaxHp() * 0.2));
     enemyUnit.takeDamage(dmg);
     plog(state, `💣 你抢先拉开破片手雷掷向【${enemy.name}】，轰然爆炸造成 ${dmg} 点伤害！`);
   }
-  const duel = resolveDuelToCompletion({
-    battleId: 'extraction-duel',
-    player: survivorUnit,
-    opponent: enemyUnit,
-    runtime,
-  });
+  // ===== Boss 狂暴（两阶段实现）=====
+  // 第一阶段：基础形态。玩家取胜（boss 已被压到残血、越过 50%）→ 进入第二阶段狂暴形态（六维 ×1.5），
+  // 玩家血量自然继承。若玩家在第一阶段阵亡，则 boss 从未跌破 50%，不触发狂暴。
+  // 危1~危7 全部 boss 生效；狂暴在危险度缩放（ENEMY_DANGER_SCALE）之上再叠加。
+  let duel: ReturnType<typeof resolveDuelToCompletion>;
+  let enrageApplied = false;
+  let replayEnemy: EnemyArchetype = enemy;
+  if (enemy.boss) {
+    const phase1 = resolveDuelToCompletion({
+      battleId: 'extraction-duel',
+      player: survivorUnit,
+      opponent: enemyUnit,
+      runtime,
+    });
+    if (phase1.winner === survivorUnit.id) {
+      const hpCarry = Math.max(1, phase1.winnerSnapshot.hp.current);
+      survivorUnit.initializeResources({ hp: hpCarry });
+      const enragedEnemy: EnemyArchetype = {
+        ...enemy,
+        attributes: scaleEnemyAttributes(scaledEnemy.attributes, 1.5),
+      };
+      const enragedUnit = buildEnemyUnit(runtime, enragedEnemy);
+      if (state.quickThrow === 'grenade' && rng() < 0.45) {
+        const dmg = Math.max(10, Math.round(enragedUnit.getMaxHp() * 0.2));
+        enragedUnit.takeDamage(dmg);
+        plog(state, `💣 狂暴阶段的【${enemy.name}】也被破片手雷先手炸中，造成 ${dmg} 点伤害！`);
+      }
+      plog(state, `👹【${enemy.name}】血量跌破 50%，进入狂暴——六维骤升 ×1.5，第二阶段开战！`);
+      const phase2 = resolveDuelToCompletion({
+        battleId: 'extraction-duel',
+        player: survivorUnit,
+        opponent: enragedUnit,
+        runtime,
+      });
+      duel = phase2;
+      enrageApplied = true;
+      enemyUnit = enragedUnit;
+      replayEnemy = enragedEnemy;
+    } else {
+      duel = phase1;
+    }
+  } else {
+    duel = resolveDuelToCompletion({
+      battleId: 'extraction-duel',
+      player: survivorUnit,
+      opponent: enemyUnit,
+      runtime,
+    });
+  }
   const survivorWon = duel.winner === survivorUnit.id;
   const sSnap = survivorWon ? duel.winnerSnapshot : duel.loserSnapshot;
   const eSnap = survivorWon ? duel.loserSnapshot : duel.winnerSnapshot;
@@ -1359,7 +1447,7 @@ export function fight(
   plog(state, `⚔ 与【${enemy.name}】${affixNote}交战（${enemy.threatNote ?? ''}），历时 ${duel.turns} 回合`);
   // 战斗回放：逐回合交互 + 属性点评（UI 点击 ⚔ 行可展开）
   state.battles.push(
-    buildBattleReplay(state, enemy, survivorUnit, enemyUnit, duel, survivorWon, battleLogIndex),
+    buildBattleReplay(state, replayEnemy, survivorUnit, enemyUnit, duel, survivorWon, battleLogIndex),
   );
 
   const hpAfterBattle = sSnap.hp.current;
@@ -1435,6 +1523,9 @@ export function fight(
     // v1.0.9 补充：boss 尸体不再可搜刮，避免「放弃撤离→再搜一次 boss」额外刷装备
     state.corpse = undefined;
   }
+  if (enrageApplied) {
+    plog(state, `👹【${enemy.name}】血量跌破 50%，进入狂暴——六维骤升 ×1.5，火力与血量大幅强化！`);
+  }
   state.scene = [
     '⚔ 战斗爆发！',
     `${enemy.name} 扑击而来，${armorNote}。`,
@@ -1442,6 +1533,9 @@ export function fight(
     `✅ 战斗胜利：击倒【${enemy.name}】，你剩余生命 ${state.condition.resources.hp.current}/${state.condition.resources.hp.max}。`,
     '可以【搜刮敌方尸体】获取战利品。',
   ].join('\n');
+  if (enrageApplied) {
+    state.scene = `👹【${enemy.name}】曾狂暴（血量 <50% 时六维 ×1.5）！\n` + state.scene;
+  }
   plog(
     state,
     `✔ 击退【${enemy.name}】（敌方残余生命 ${eSnap.hp.current}），你剩余生命 ${state.condition.resources.hp.current}/${state.condition.resources.hp.max}`,

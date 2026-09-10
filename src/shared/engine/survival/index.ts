@@ -8,3 +8,4 @@ export * from './economy';
 export * from './equipment';
 export * from './state';
 export * from './persistence';
+export * from './wander';
