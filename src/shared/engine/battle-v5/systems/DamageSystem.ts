@@ -117,19 +117,27 @@ export class DamageSystem {
     if (caster === target || event.hitPolicy === 'guaranteed') {
       hitCheckEvent.isHit = true;
     } else {
-      // ===== ① 身法闪避判定 =====
-      // 目标 EVASION_RATE 减去施法者 ACCURACY，转为百分比并保留闪避手感上下限
-      const evasionRate = target.attributes.getValue(
+      // ===== ① 身法命中/闪避判定（独立结算）=====
+      // 命中率 H = 施法者 ACCURACY；闪避率 D = 目标 EVASION_RATE
+      // 有效命中 = max(命中地板, H × (1 − D))；未命中按原比例拆为"闪避/落空"用于表现
+      const HIT_FLOOR = 0.2;
+      const dodgeRate = target.attributes.getValue(
         AttributeType.EVASION_RATE,
       );
-      const accuracy = caster.attributes.getValue(AttributeType.ACCURACY);
-      const dodgeChance = Math.max(
-        3,
-        Math.min(45, (evasionRate - accuracy) * 100),
-      );
-      if (this.random.next() * 100 < dodgeChance) {
-        hitCheckEvent.isDodged = true;
+      const hitRate = caster.attributes.getValue(AttributeType.ACCURACY);
+      const effectiveHit = Math.max(HIT_FLOOR, hitRate * (1 - dodgeRate));
+      const roll = this.random.next() * 100;
+      const effHitPct = effectiveHit * 100;
+      if (roll < effHitPct) {
+        hitCheckEvent.isHit = true;
+        hitCheckEvent.isDodged = false;
+      } else {
         hitCheckEvent.isHit = false;
+        const baseMiss = 1 - hitRate * (1 - dodgeRate);
+        const dodgeShare =
+          baseMiss > 1e-6 ? (hitRate * dodgeRate) / baseMiss : 0;
+        const missRoll = (roll - effHitPct) / Math.max(1e-6, 100 - effHitPct);
+        hitCheckEvent.isDodged = missRoll < dodgeShare;
       }
 
       // 神识抵抗在 ApplyBuffEffect 内按控制效果逐个结算，不能阻断伤害链。

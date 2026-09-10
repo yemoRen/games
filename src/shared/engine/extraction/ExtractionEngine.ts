@@ -137,7 +137,7 @@ function freshCondition(maxHp: number, maxMp: number): CultivatorCondition {
 
 /**
  * 六维深化派生值（引擎与 UI 共用一套口径）：
- *  - 力量 → 背包容量（每 5 点 +1 格）、近战输出（进 battle-v5）
+ *  - 力量 → 背包容量（白字每 1 点 = 1 格）、近战输出（进 battle-v5）
  *  - 敏捷 → 行动耗时系数、潜行成功率
  *  - 耐力 → 续航时限（每 1 点 = 1.5 分钟），超限开始判定疲惫
  *  - 体质 → 气血/回血（battle-v5 + recovery）、失血抗性
@@ -1024,7 +1024,7 @@ export function resolveEncounter(state: ExtractionRunState, action: EncounterAct
       if (state.phase !== 'searching') return;
       // 精英/Boss 更难绕开；v1.0.3 敏捷加成潜行成功率
       const sneakBonus = deriveAttrEffects(runEffectiveAttributes(state)).sneakBonus;
-      const successP = Math.max(0.1, Math.min(0.95, (enc.enemy.boss ? 0.35 : 0.72) + sneakBonus));
+      const successP = Math.max(0.1, Math.min(0.95, (enc.enemy.boss ? 0.15 : 0.30) + sneakBonus));
       if (rng() < successP) {
         state.encounter = undefined;
         state.scene = `你贴着断墙，压低呼吸从侧翼绕行……\n【${enc.enemy.name}】在废墟间逡巡片刻，最终没有发现你的踪迹。\n危险暂时解除，但时间已悄悄流逝。`;

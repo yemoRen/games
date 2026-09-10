@@ -953,7 +953,14 @@ function CharacterPanel(props: {
                   <TraitChip key={t.id} trait={t} />
                 ))}
                 {!s.isProtagonist && (
-                  isDying ? (
+                  inSortie ? (
+                    <span
+                      className="ml-auto rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-600"
+                      title="该成员正在副本中出击，无法遣散，请先撤离或返回基地"
+                    >
+                      出击中·不可遣散
+                    </span>
+                  ) : isDying ? (
                     <span
                       className="ml-auto rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-600"
                       title="成员正处于濒死状态，无法遣散，请先救治"

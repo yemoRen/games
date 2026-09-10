@@ -159,6 +159,18 @@ bun run test       # 运行 src/shared 下的纯引擎单测
 
 ## 版本更新日志
 
+### v1.0.13（2026-09-09 · 累积中）— 出击中成员禁止遣散
+- **出击中成员禁止遣散**：战团成员在副本中出击时（同卡片已定义的 `inSortie = sortieId === s.id`），其战团卡片的遣散入口改为灰态「出击中·不可遣散」并禁用，避免副本进行中误遣散正在出击的成员。逻辑与既有「濒死·不可遣散」并列。
+- 实现说明：`run`（副本运行态）是 React 组件层 `useState/useRef`，不进 `SurvivalGameState` 存档，故引擎 `dismissSurvivor` 读不到「谁在副本中」，拦截点放在 UI 层（play/route.tsx 战团列表）。变量 `inSortie` 在同作用域已定义，仅需补入遣散分支判断。落点：`src/react-app/routes/survival/play/route.tsx`（`inSortie` 分支）。
+
+- **潜行绕行成功率下调（难度调整）**：`ExtractionEngine.ts` 的 `resolveEncounter` 潜行分支基准值 `普通敌 0.72→0.30`、`Boss 0.35→0.15`（敏捷 10 基准时普通敌 30% / Boss 15%，钳制 10%~95% 不变）。效果：低/中敏捷段绕行容错被压低，Boss 几乎遇必战，逼玩家改用「投掷物脱离」（烟雾弹/闪光弹）保底。敏捷仍按 `sneakBonus=(speed-10)*0.03` 线性加成。
+
+- **力量背包注释修正（顺手修）**：`ExtractionEngine.ts` 的 `deriveAttrEffects` 文档注释把力量背包容量误写为「每 5 点 +1 格」，实际自 v1.0.5 起代码为「白字每 1 点 = 1 格」（`runPackCapacity`，见 L155/L258 注释）。仅修正注释，不影响逻辑。
+
+- **伤势抗性注释修正（顺手修 · 第④项）**：`recovery.ts` 的 `rollCombatInjuries` 两处抗性注释与代码不符——「意志 10 → ×1.0」实际为 `1 − 10×0.015 = 0.85`；「体质 10 → ×1.0」实际 `1 − 10×0.01 = 0.90`。已改写为真实系数（意志 10→0.85 / 20→0.70 / 30→0.55封底；体质 10→0.90 / 25→0.75 / 40→0.60封底）。纯注释，逻辑不变。
+
+- **命中/闪避重做（独立结算 + 软曲线 + 命中地板 · 第⑤项）**：原 `DamageSystem` 用 `dodge = clamp(闪避率 − 命中率, 3, 45)`，而命中/闪避同源 SPEED 同形曲线，导致净闪避恒为负、永远 3% 地板（闪避形同虚设）。改为：① `AttributeSet` 中 `命中率 = 0.70 + curve(max(0,SPEED-10), 11, 0.28)`（软曲线渐近 0.98）、`闪避率 = 0.10 + curve(max(0,SPEED-10), 25, 0.50)`（软曲线渐近 0.60），不再硬封顶；② `DamageSystem` 改为独立结算 `有效命中 = max(0.20, 命中率 × (1 − 闪避率))`，单次掷骰定命中，未命中再按原比例拆「闪避/落空」。落点：`battle-v5/units/AttributeSet.ts`、`battle-v5/systems/DamageSystem.ts`；同步更新 `AttributeSet.test.ts` 与 `ActionExecutionSystemIntegration.test.ts` 断言。
+
 ### v1.0.12（2026-09-09）— 霸主唯一性修复 + 出击页 UI 重构
 
 本版累计五批改动：① 修复副本反复转移刷 boss 的漏洞；② 把出击页头部与面板彻底重排成手机优先的紧凑布局；③ 整合场景叙事与系统消息日志；④ 合并药物与增益补给区；⑤ 当前区域外框随深度 1~7 从白变红。

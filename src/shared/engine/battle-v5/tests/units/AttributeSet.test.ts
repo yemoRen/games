@@ -11,11 +11,11 @@ describe('AttributeSet derived combat attributes', () => {
     });
 
     expect(attributes.getBaseValue(AttributeType.ACCURACY)).toBeCloseTo(
-      0.05 + (0.27 * 20) / (20 + 240),
+      0.7 + (0.28 * 10) / (10 + 11),
       8,
     );
     expect(attributes.getValue(AttributeType.ACCURACY)).toBeCloseTo(
-      0.05 + (0.27 * 20) / (20 + 240),
+      0.7 + (0.28 * 10) / (10 + 11),
       8,
     );
   });
@@ -28,7 +28,7 @@ describe('AttributeSet derived combat attributes', () => {
     });
 
     expect(attributes.getBaseValue(AttributeType.ACCURACY)).toBeCloseTo(
-      0.05 + (0.27 * 3000) / (3000 + 240),
+      0.7 + (0.28 * 2990) / (2990 + 11),
       8,
     );
   });
@@ -42,11 +42,11 @@ describe('AttributeSet derived combat attributes', () => {
     });
 
     expect(attributes.getBaseValue(AttributeType.EVASION_RATE)).toBeCloseTo(
-      0.02 + (0.24 * 1000) / (1000 + 240),
+      0.1 + (0.5 * 990) / (990 + 25),
       8,
     );
     expect(cappedAttributes.getBaseValue(AttributeType.EVASION_RATE)).toBeCloseTo(
-      0.02 + (0.24 * 3000) / (3000 + 240),
+      0.1 + (0.5 * 2990) / (2990 + 25),
       8,
     );
   });
@@ -74,11 +74,11 @@ describe('AttributeSet derived combat attributes', () => {
     });
 
     expect(attributes.getValue(AttributeType.ACCURACY)).toBeCloseTo(
-      0.05 + (0.27 * 1000) / (1000 + 240) + 0.05,
+      0.7 + (0.28 * 990) / (990 + 11) + 0.05,
       8,
     );
     expect(attributes.getValue(AttributeType.EVASION_RATE)).toBeCloseTo(
-      0.02 + (0.24 * 1000) / (1000 + 240) + 0.04,
+      0.1 + (0.5 * 990) / (990 + 25) + 0.04,
       8,
     );
   });

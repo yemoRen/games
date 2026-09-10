@@ -205,8 +205,8 @@ describe('DamageSystem hit check', () => {
     return hitCheckEvent!;
   }
 
-  it('caps final dodge chance at 45%', () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+  it('never lets effective hit drop below the 20% floor even with massive evade', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.1);
     const caster = new Unit('caster', '施法者', {
       [AttributeType.ENDURANCE]: 0,
       [AttributeType.WILLPOWER]: 0,
@@ -228,14 +228,14 @@ describe('DamageSystem hit check', () => {
     expect(hitCheckEvent.isHit).toBe(true);
   });
 
-  it('keeps a 3% minimum dodge chance when accuracy exceeds evasion', () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0.02);
+  it('lets a much faster defender still evade a slow attacker', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     const caster = new Unit('caster', '施法者', {
       [AttributeType.ENDURANCE]: 3000,
       [AttributeType.WILLPOWER]: 3000,
     });
     const target = new Unit('target', '目标', {
-      [AttributeType.SPEED]: 0,
+      [AttributeType.SPEED]: 3000,
     });
 
     const hitCheckEvent = publishSkillCast(caster, target);

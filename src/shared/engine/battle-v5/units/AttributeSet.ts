@@ -148,8 +148,8 @@ class Attribute {
  * - ACTION_SPEED       行动速度   = SPEED
  * - CRIT_RATE          暴击率     = 0.05
  * - CRIT_DAMAGE_MULT   暴击伤害   = 1.5
- * - EVASION_RATE       闪避率     = 0.02 + curve(SPEED, 240, 0.24)
- * - ACCURACY           命中       = 0.05 + curve(SPEED, 240, 0.27)
+ * - EVASION_RATE       闪避率     = 0.10 + curve(max(0,SPEED-10), 25, 0.50)   // 软曲线，渐近 0.60
+ * - ACCURACY           命中率     = 0.70 + curve(max(0,SPEED-10), 11, 0.28)   // 软曲线，渐近 0.98
  * - CONTROL_HIT        控制命中   = 0.04 + curve(WILLPOWER, 240, 0.30)
  * - CONTROL_RESISTANCE 控制抗性   = 0.04 + curve(WILLPOWER, 240, 0.34)
  * - MAX_HP             最大气血   = 400 + VITALITY×20 + ENDURANCE×3
@@ -257,17 +257,19 @@ export class AttributeSet {
       new Attribute(AttributeType.CRIT_DAMAGE_MULT, 0, true, () => 1.5),
     );
 
+    // 命中/闪避：敏捷(SPEED)软曲线，base10 起、封顶渐近；独立结算见 DamageSystem
+    const speedOver = Math.max(0, this.getValue(AttributeType.SPEED) - 10);
     this._attributes.set(
       AttributeType.EVASION_RATE,
       new Attribute(AttributeType.EVASION_RATE, 0, true, () =>
-        0.02 + curve(this.getValue(AttributeType.SPEED), 240, 0.24),
+        0.1 + curve(speedOver, 25, 0.5),
       ),
     );
 
     this._attributes.set(
       AttributeType.ACCURACY,
       new Attribute(AttributeType.ACCURACY, 0, true, () =>
-        0.05 + curve(this.getValue(AttributeType.SPEED), 240, 0.27),
+        0.7 + curve(speedOver, 11, 0.28),
       ),
     );
 

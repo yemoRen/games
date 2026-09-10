@@ -145,9 +145,9 @@ export function rollCombatInjuries(
 ): Injury[] {
   const p = Math.max(0, Math.min(100, hpPct)) / 100;
   const out: Injury[] = [];
-  // 意志抗性：意志 10 → ×1.0；意志 20 → ×0.7（下限 0.55）
+  // 意志抗性：意志 10 → ×0.85；意志 20 → ×0.70（下限 0.55）；意志 30 → ×0.55（封底）
   const willResist = Math.max(0.55, 1 - (attrs.willpower ?? 10) * 0.015);
-  // 体质抗性：体质 10 → ×1.0；体质 25 → ×0.75（下限 0.6）
+  // 体质抗性：体质 10 → ×0.90；体质 25 → ×0.75（下限 0.6）；体质 40 → ×0.60（封底）
   const vitResist = Math.max(0.6, 1 - (attrs.vitality ?? 10) * 0.01);
 
   // 震伤（全阶段）：血量满 ~12%，血量 30% ~39%，血量 10% ~46%
