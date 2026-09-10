@@ -208,3 +208,6 @@ sponsorkit/.cache*.json
 sponsorkit/sponsors.json
 
 .venv*
+
+# WorkBuddy 临时脚本/日志目录（不推远程）
+.workbuddy/scratch/

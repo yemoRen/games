@@ -56,10 +56,28 @@
 - boss 仅能在「霸主区第三次搜刮」由 `rollEncounter` 登场；**转移伏击（moveToNode / advanceBranch）的敌池必须排除 `boss`**，否则身处/进入霸主区会被伏击抽出 boss，造成「反复转移刷 boss」漏洞。
 - 伏击取敌统一用 `pickEnemy(state, rng, ambushPool)`，其中 `ambushPool = state.zone.enemies.filter(e => !e.boss)`；若霸主区敌池只有 boss，则 `ambushPool` 为空 → 跳过伏击。
 - 调副本/加地图时务必守住这条，别让 boss 在非「第三次搜刮」路径出现。
-## ⚠️ recomputeMaxHpFor 不要早返（v1.0.12 补充）
-- 旧实现 `if (newMax <= st.maxHp) return state` 是为了防「穿戴气血装备 newMax 被低估」；公式已修（v1.0.5/1.0.6 加入 `gearC.hpBonus`），该守卫仍残留。
-- **正确做法**：与 `recomputeMaxHpIncludingGear` 同口径，始终按 derived 写回 `maxHp`。否则旧档若 `st.maxHp` 因历史 bug 偏高，后续体质加点的 `newMax < st.maxHp` 会被早返吞，表现为「角色页加点偶而不加血」。
+## ⚠️ recomputeMaxHpFor 早返守卫【必须保留】（v1.0.12 第5项回归修正 · 重要）
+- `state.ts:recomputeMaxHpFor` 的 `if (newMax <= st.maxHp) return state` 早返守卫**必须保留**。删掉它会让 `freshStatus` 给新人的 600「新手保护」缓冲被压垮，造成「副本中角色页加体质血量倒扣」回归（issue ⑤）。
+- 根因：新人按 `Math.max(600, deriveMaxHp(...))` 固化缓冲（6 体质 derived≈538 但 `st.maxHp=600`）。删守卫后加 1 体质 → derived≈558 < 600 → `st.maxHp` 被无条件压到 558；`syncProfileMaxHpDeltaToRun` 仅 `delta>0` 同步当前血，于是副本 `hp.max`↓ 而 `hp.current` 不变 → UI「当前>上限」怪象（倒扣）。
+- 历史误诊：v1.0.12 补充曾误删此守卫（归咎于它「吞掉角色页加点」），实则 ①普通角色加点 derived 本就 >st.maxHp，守卫不触发也照常生效；②新人「加点不加血」是缓冲吸收、非扣血 bug。删守卫既没修好，反而造出 issue ⑤。
+- **结论**：保留早返（仅 derived 严格更大才提升上限），新人缓冲随加点自愈。装备/卸装走 `recomputeMaxHpIncludingGear`（无守卫、始终按 derived 写回）——两函数口径不同、各司其职，勿混为一谈。
 ## ⚠️ 词条三选一累积（v1.0.12 补充）
 - `SurvivorProfile.pendingTraitPick: SurvivorTrait[]` 为扁平数组，每升 1 级 `grantSortieXp` 追加 3 候选。
 - `chooseTraitPick(state, id, pickSetIndex, candidateIndex)` 双下标，选中后整组（3 个）一次性从列表移除（`[...flat.slice(0, start), ...flat.slice(start + 3)]`），未选中的 2 个随整组淘汰、不入档。
 - UI 把 `pendingTraitPick` 按 3 个一组 chunk 渲染多个「三选一」区块，多组时标题显示 `（1/3, 三选一）` 进度。
+
+## ⚠️ 副本运行态（run）不在存档，波及「成员是否在副本」判断（v1.0.13①）
+- `run` / `runRef` 是 `src/react-app/routes/survival/play/route.tsx` 的 `useState/useRef`，**不进 `SurvivalGameState`**；存档里只有 `activeSurvivorId`（选中出击者，≠正在副本中）。
+- 凡要判断「成员正在副本中」，只能用组件层 `sortieId = run?.survivor.profile?.id`（route.tsx ~L726）；引擎函数（state.ts）读不到。
+- 拦截类逻辑（遣散/换装/治疗等针对出击中成员的限制）必须放在 UI 层，勿在引擎层加基于存档的不可靠守卫（如用 activeSurvivorId 误判会误伤「选中但未进副本」的换人场景）。
+
+## ⚠️ 命中/闪避独立结算 + 软曲线（v1.0.13⑤ · 战斗引擎）
+- **旧坑根因**：原 `DamageSystem` 用 `dodge = clamp(闪避率 − 命中率, 3, 45)`，命中/闪避同源 SPEED 同形曲线（命中 base/渐近恒高于闪避）→ net dodge 恒为负 → 永远 3% 地板，闪避形同虚设。
+- **新模型（已落地）**：①`AttributeSet` 中 `命中率 = 0.70 + curve(max(0,SPEED-10), 11, 0.28)`（软曲线渐近 0.98）、`闪避率 = 0.10 + curve(max(0,SPEED-10), 25, 0.50)`（软曲线渐近 0.60），curve 复用 `cap*t/(t+scale)`；②`DamageSystem` 独立结算 `有效命中 = max(0.20, 命中率 × (1 − 闪避率))`，单次掷骰定命中，未命中再按 `H*D/(1−H*(1−D))` 比例拆「闪避/落空」。
+- **调参锚点**：KH=11 / KD=25 / 命中渐近 0.98 / 闪避渐近 0.60 / 命中地板 HIT_FLOOR=0.20；闪避 base=10（用户 2026-09-10 指定）。
+- **注意**：battle-v5 是搜打撤+修仙共享引擎，此改动全局生效；调闪避/命中务必同步更新 `AttributeSet.test.ts` 与 `ActionExecutionSystemIntegration.test.ts` 断言。
+
+## ⚠️ 发包 GCM 非交互挂起（2026-09-10 实测）
+- 本机 git credential helper = git-credential-manager.exe。非 GUI/沙箱环境跑 `git push` 时 GCM 默认想弹 GitHub 登录 GUI，无显示即挂起（命令被 SIGTERM 超时）。
+- 解决：`GCM_INTERACTIVE=never GIT_TERMINAL_PROMPT=0 git push ...`，GCM 改从 Windows 凭据管理器读已缓存 token（桌面端登录过即缓存，`git credential-manager get` 退出码 0 即证明）。
+- 仅影响需认证的 push/pull；本地 commit/tag 不受影响。
