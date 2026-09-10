@@ -340,8 +340,8 @@ export interface ExtractionRunState {
   // ===== v1.0.2 追加 =====
   /** 出击前快捷·投掷槽装备的投掷物 id（伤害类手雷在战斗中概率自动使用） */
   quickThrow?: string;
-  /** 增益药剂备战次数（UI 使用增益时 +1；每次交战消耗 1 次，属性临时提升） */
-  buffCharges: number;
+  /** v1.1.1⑥ 肾上腺素增益：副本内生效截止时间（elapsedSec 秒）；0 表示未激活。激活期间六维全属性 +5 */
+  buffUntilSec: number;
   // ===== v1.0.3 追加 =====
   /** 本局累积的伤势（战斗中按血量阶段产生 / 耐力透支产生），实时影响六维与战斗 */
   injuries: Injury[];

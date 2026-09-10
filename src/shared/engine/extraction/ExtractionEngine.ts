@@ -195,6 +195,12 @@ export function runEffectiveAttributes(state: ExtractionRunState): Attributes {
   for (const k of Object.keys(fixed) as (keyof Attributes)[]) {
     out[k] += fixed[k] ?? 0;
   }
+  // v1.1.1⑥ 肾上腺素增益：副本时间 10 分钟内六维全属性 +5（计时窗口内持续生效，战斗与页面显示统一从此处取数）
+  if ((state.buffUntilSec ?? 0) > (state.elapsedSec ?? 0)) {
+    for (const k of ['vitality', 'strength', 'spirit', 'endurance', 'speed', 'willpower'] as (keyof Attributes)[]) {
+      out[k] = (out[k] ?? 0) + 5;
+    }
+  }
   return out;
 }
 
@@ -425,7 +431,7 @@ function actionCost(state: ExtractionRunState, base: number): number {
 
 /**
  * v1.0.3 耐力·续航：超过「耐力 × 1.5 分钟」的行动时限后，越拖越容易疲惫。
- * 疲惫 = 全六维 -1/4 的 debuff；可用兴奋剂 / 营养剂消除。
+ * 疲惫 = 全六维 -1/4 的 debuff；可用肾上腺素 / 营养剂消除。
  * 每次时间推进后判定一次，概率 = 5% × 超时分钟数（上限 60%）。
  */
 function checkFatigue(state: ExtractionRunState, rng: () => number): void {
@@ -441,7 +447,7 @@ function checkFatigue(state: ExtractionRunState, rng: () => number): void {
       state,
       `😮‍💨 连续行动 ${Math.floor(elapsedMin)} 分钟（耐力续航上限 ${capMin} 分钟）——体力透支，陷入【疲惫】：全六维 -1/4。`,
     );
-    state.scene = `😮‍💨 你的双腿开始打颤，呼吸带着铁锈味。\n连续行动已超过耐力续航上限（${capMin} 分钟），【疲惫】debuff 生效：全六维 -1/4。\n使用兴奋剂 / 营养剂可以消除疲惫。`;
+    state.scene = `😮‍💨 你的双腿开始打颤，呼吸带着铁锈味。\n连续行动已超过耐力续航上限（${capMin} 分钟），【疲惫】debuff 生效：全六维 -1/4。\n使用肾上腺素 / 营养剂可以消除疲惫。`;
   }
 }
 
@@ -701,7 +707,7 @@ export function createRun(
     atExtract: false,
     battles: [],
     xpGained: 0,
-    buffCharges: 0,
+    buffUntilSec: 0,
     // ===== v1.0.3 =====
     injuries: [...(opts.injuries ?? [])],
     equipped,
@@ -1269,8 +1275,12 @@ export function fight(
   if (groupSize > 1) {
     plog(state, `⚔ 遭遇敌群（共 ${groupSize} 个）—— 首个【${enemy.name}】`);
   }
+  const groupHpStart = state.condition.resources.hp.current;
   for (let i = 0; i < groupSize; i++) {
     const mob = i === 0 ? enemy : pickEnemy(state, rng);
+    if (groupSize > 1 && (state.phase as string) === 'searching') {
+      plog(state, `⚔ 敌群第 ${i + 1}/${groupSize} 只：【${mob.name}】扑了上来！`);
+    }
     fightOne(state, mob, rng);
     if ((state.phase as string) === 'dead') break;
     if (i < groupSize - 1 && (state.phase as string) === 'searching') {
@@ -1280,6 +1290,13 @@ export function fight(
       );
       spendTime(state, Math.floor(rng() * 15));
     }
+  }
+  if (groupSize > 1 && (state.phase as string) !== 'dead') {
+    const lost = Math.max(0, groupHpStart - state.condition.resources.hp.current);
+    plog(
+      state,
+      `⚔ 敌群清缴完毕：共 ${groupSize} 只，累计损失 ${lost} 点生命（剩余 ${state.condition.resources.hp.current}/${state.condition.resources.hp.max}）。`,
+    );
   }
 }
 
@@ -1311,17 +1328,9 @@ function fightOne(
   const runtime = new BattleRuntime();
   // v1.0.3：战斗属性 = 本局有效六维（基础 − 伤势削减 + 当前穿戴装备 + 固定加成）
   let effAttrs = runEffectiveAttributes(state);
-  // v1.0.2 增益药剂：出战前使用了增益补给（buffCharges>0）时，本场交战六维临时强化，消耗 1 次
-  if (state.buffCharges > 0) {
-    state.buffCharges -= 1;
-    effAttrs = {
-      ...effAttrs,
-      strength: (effAttrs.strength ?? 0) + 5,
-      speed: (effAttrs.speed ?? 0) + 5,
-      endurance: (effAttrs.endurance ?? 0) + 3,
-      willpower: (effAttrs.willpower ?? 0) + 2,
-    };
-    plog(state, '🧪 增益药剂生效：力量/敏捷/耐力/意志临时提升（剩余备战 ' + state.buffCharges + ' 次）。');
+  // v1.1.1⑥ 肾上腺素增益：计时窗口内六维 +5 已并入 runEffectiveAttributes（上方 effAttrs 已含）；此处仅播报状态
+  if ((state.buffUntilSec ?? 0) > state.elapsedSec) {
+    plog(state, `🧪 增益补给【肾上腺素】生效中：六维全属性 +5（剩余 ${Math.max(0, Math.ceil((state.buffUntilSec - state.elapsedSec) / 60))} 分钟）。`);
   }
   // 本局实时战斗加成（换装后立即生效）
   const runBonus = runCombatBonus(state);

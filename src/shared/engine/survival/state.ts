@@ -906,8 +906,8 @@ export const MEDICINES: MedicineSpec[] = [
   { id: 'bandage', name: '止血绷带', healPct: 0.12, healFlat: 20, costCoins: 15, description: '立即回复 12% 生命 + 20 点，无伤势治疗。' },
   { id: 'antibiotic', name: '抗生素', healPct: 0.10, healFlat: 16, treats: ['infection'], costCoins: 25, description: '立即回复 10% 生命 + 16 点，清除感染。' },
   { id: 'medkit', name: '急救箱', healPct: 0.30, healFlat: 60, treats: ['bleeding', 'shellShock'], costCoins: 60, description: '立即回复 30% 生命 + 60 点，清除失血/震伤。' },
-  // —— 新增恢复道具 ——（v1.0.3：兴奋剂/营养剂可消除「疲惫」，营养剂兼具厚血兜底）
-  { id: 'stim', name: '兴奋剂', healPct: 0.20, healFlat: 25, treats: ['fatigue'], costCoins: 40, description: '立即回复 20% 生命 + 25 点，消除疲惫（应急续航）。' },
+  // —— 新增恢复道具 ——（v1.0.3：肾上腺素/营养剂可消除「疲惫」，营养剂兼具厚血兜底）
+  { id: 'stim', name: '肾上腺素', healPct: 0.20, healFlat: 25, treats: ['fatigue'], costCoins: 40, description: '回复 20% 生命 + 25 点并消除疲惫；作为增益补给使用时，激活副本时间 10 分钟内六维全属性 +5。' },
   { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, treats: ['fatigue'], costCoins: 35, description: '立即回复 10% 生命 + 50 点，消除疲惫（厚血兜底）。' },
   { id: 'serum', name: '血清', healPct: 0.25, healFlat: 50, treats: ['infection', 'bleeding'], costCoins: 70, description: '立即回复 25% 生命 + 50 点，清除感染与失血。' },
   { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection', 'fatigue'], costCoins: 120, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
@@ -1016,7 +1016,7 @@ export interface MedCraftRecipe {
 
 export const MED_CRAFT_RECIPES: MedCraftRecipe[] = [
   { id: 'craft-bandage', name: '自制绷带', medicine: 'bandage', costMaterials: [{ kind: 'chems', qty: 1 }], costCoins: 5 },
-  { id: 'craft-stim', name: '调配兴奋剂', medicine: 'stim', costMaterials: [{ kind: 'chems', qty: 2 }], costCoins: 12 },
+  { id: 'craft-stim', name: '调配肾上腺素', medicine: 'stim', costMaterials: [{ kind: 'chems', qty: 2 }], costCoins: 12 },
   { id: 'craft-nutrient', name: '调配营养剂', medicine: 'nutrient', costMaterials: [{ kind: 'food', qty: 1 }, { kind: 'chems', qty: 1 }], costCoins: 8 },
   { id: 'craft-serum', name: '提纯血清', medicine: 'serum', costMaterials: [{ kind: 'chems', qty: 2 }, { kind: 'electronics', qty: 1 }], costCoins: 18 },
   { id: 'craft-nanogel', name: '合成纳米凝胶', medicine: 'nanogel', costMaterials: [{ kind: 'chems', qty: 3 }, { kind: 'electronics', qty: 1 }], costCoins: 35 },

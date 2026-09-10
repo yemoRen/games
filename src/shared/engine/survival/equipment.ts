@@ -52,7 +52,7 @@ export interface QuickSlotSpec {
 export const QUICK_SLOTS: QuickSlotSpec[] = [
   { key: 'quickMed', label: '医疗', icon: '💊', desc: '急救包 / 绷带 / 血清，战斗中回血' },
   { key: 'quickThrow', label: '投掷物', icon: '💣', desc: '手雷 / 烟雾弹 / 闪光弹，断后掩护撤离' },
-  { key: 'quickBuff', label: '增益补给', icon: '🧪', desc: '能量饮料 / 兴奋剂，临时战斗 buff' },
+  { key: 'quickBuff', label: '增益补给', icon: '🧪', desc: '肾上腺素：副本时间 10 分钟内六维全属性 +5' },
 ];
 
 export const QUICK_SLOT_MAP: Record<QuickSlotKey, QuickSlotSpec> = QUICK_SLOTS.reduce(

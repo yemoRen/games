@@ -179,6 +179,8 @@ export interface ShelterFacilitySpec {
   recoveryPerLevel: number;
   /** 每级提供的属性加成（叠加到出击者） */
   attrPerLevel: Partial<Attributes>;
+  /** 每级减少种植时间比例（0~1，菜园专用；其余设施为 0） */
+  plantTimeReductionPerLevel?: number;
 }
 
 export const SHELTER_FACILITIES: ShelterFacilitySpec[] = [
@@ -233,7 +235,7 @@ export const SHELTER_FACILITIES: ShelterFacilitySpec[] = [
   {
     id: 'garden',
     name: '避难所菜园',
-    description: '种植草药/口粮，定期收成换医疗品。',
+    description: '种植草药/口粮，定期收成换医疗品；每级减少 10% 种植时间。',
     maxLevel: 5,
     upgradeCost: [150, 350, 600, 1000, 1500],
     lootPerLevel: 0,
@@ -241,6 +243,7 @@ export const SHELTER_FACILITIES: ShelterFacilitySpec[] = [
     discountPerLevel: 0,
     recoveryPerLevel: 0,
     attrPerLevel: {},
+    plantTimeReductionPerLevel: 0.1,
   },
 ];
 

@@ -67,7 +67,7 @@ export const LOOT: Record<string, LootItem> = {
   coolant: { id: 'coolant', name: '冷却剂', kind: 'consumable', value: 16 },
   medkit: { id: 'medkit', name: '急救包', kind: 'consumable', value: 40 },
   blueprint: { id: 'blueprint', name: '科技蓝图', kind: 'material', value: 60 },
-  stim: { id: 'stim', name: '兴奋剂', kind: 'consumable', value: 22 },
+  stim: { id: 'stim', name: '肾上腺素', kind: 'consumable', value: 22 },
   nutrient: { id: 'nutrient', name: '营养剂', kind: 'consumable', value: 18 },
   nanogel: { id: 'nanogel', name: '纳米凝胶', kind: 'consumable', value: 60 },
   splint: { id: 'splint', name: '夹板绷带', kind: 'consumable', value: 25 },

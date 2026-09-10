@@ -128,7 +128,7 @@ const AttrBar: React.FC<{ label: string; value: number; max: number }> = ({ labe
 
 const hpBar = (current: number, max: number) => {
   const pct = max > 0 ? Math.max(0, Math.min(100, (current / max) * 100)) : 0;
-  const tone = pct > 60 ? 'bg-emerald-950/300' : pct > 30 ? 'bg-amber-950/300' : 'bg-rose-950/300';
+  const tone = pct > 60 ? 'bg-emerald-500' : pct > 30 ? 'bg-amber-400' : 'bg-rose-500';
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="w-6 text-zinc-400">HP</span>

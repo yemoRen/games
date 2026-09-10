@@ -158,7 +158,7 @@ const MATERIAL_TO_LOOT: Record<string, string> = {
 const MED_LOOT_TEMPLATE: Partial<Record<MedicineId, { id: string; name: string; value: number }>> = {
   bandage: { id: 'meds', name: '绷带', value: 12 },
   medkit: { id: 'medkit', name: '急救包', value: 40 },
-  stim: { id: 'stim', name: '兴奋剂', value: 22 },
+  stim: { id: 'stim', name: '肾上腺素', value: 22 },
   nutrient: { id: 'nutrient', name: '营养剂', value: 18 },
   serum: { id: 'serum', name: '抗辐射血清', value: 30 },
   nanogel: { id: 'nanogel', name: '纳米凝胶', value: 60 },
@@ -1194,10 +1194,15 @@ function InventoryPanel(props: {
                         id: t.id,
                         name: `${t.name}×${state.throwables?.[t.id] ?? 0}`,
                       }))
-                    : MEDICINES.filter((m) => (state.medicines[m.id] ?? 0) > 0).map((m) => ({
-                        id: m.id,
-                        name: `${m.name}×${state.medicines[m.id] ?? 0}`,
-                      }));
+                    : qs.key === 'quickBuff'
+                      ? MEDICINES.filter((m) => m.id === 'stim' && (state.medicines[m.id] ?? 0) > 0).map((m) => ({
+                          id: m.id,
+                          name: `${m.name}×${state.medicines[m.id] ?? 0}`,
+                        }))
+                      : MEDICINES.filter((m) => m.id !== 'stim' && (state.medicines[m.id] ?? 0) > 0).map((m) => ({
+                          id: m.id,
+                          name: `${m.name}×${state.medicines[m.id] ?? 0}`,
+                        }));
                 return (
                   <div
                     key={qs.key}
@@ -1558,7 +1563,7 @@ function BasePanel(props: {
                   </div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">{f.description}</div>
                   <div className="mt-0.5 text-[11px] text-emerald-400/80">
-                    每级：{[f.lootPerLevel > 0 ? `搜刮运势 +${(f.lootPerLevel * 100).toFixed(0)}%` : null, f.recoveryPerLevel > 0 ? `恢复速率 +${(f.recoveryPerLevel * 100).toFixed(0)}%` : null, f.discountPerLevel > 0 ? `改装折扣 -${(f.discountPerLevel * 100).toFixed(0)}%` : null, ...(Object.keys(f.attrPerLevel).map((k) => `${attrLabel(k as keyof Attributes)} +${f.attrPerLevel[k as keyof Attributes]}/级`))].filter(Boolean).join(' · ') || '暂无数值加成'}
+                    每级：{[f.lootPerLevel > 0 ? `搜刮运势 +${(f.lootPerLevel * 100).toFixed(0)}%` : null, f.recoveryPerLevel > 0 ? `恢复速率 +${(f.recoveryPerLevel * 100).toFixed(0)}%` : null, f.discountPerLevel > 0 ? `改装折扣 -${(f.discountPerLevel * 100).toFixed(0)}%` : null, (f.plantTimeReductionPerLevel ?? 0) > 0 ? `种植时间 -${((f.plantTimeReductionPerLevel ?? 0) * 100).toFixed(0)}%` : null, ...(Object.keys(f.attrPerLevel).map((k) => `${attrLabel(k as keyof Attributes)} +${f.attrPerLevel[k as keyof Attributes]}/级`))].filter(Boolean).join(' · ') || '暂无数值加成'}
                   </div>
                 </div>
                 {maxed ? (
@@ -2025,7 +2030,27 @@ function SortiePanel(props: {
     sync();
   };
 
-  /** v1.0.3c 出击临时制作台：判断能否用本局背包材料 + 本局废土币合成某药品 */
+  /** v1.1.1② 副本内从临时背包检索使用搜到的投掷物：装入基地投掷袋（state.throwables），供 quickThrow / 投掷物脱离 使用 */
+  const useCarriedThrowable = (index: number) => {
+    const s = runRef.current;
+    if (!s || s.phase !== 'searching') return;
+    const it = s.carriedLoot[index];
+    if (!it) return;
+    if (!THROWABLES.some((t) => t.id === it.id)) return;
+    const moved = 1;
+    const consumed = consumeCarriedItem(s, index);
+    if (!consumed) return;
+    setState((prev) => ({
+      ...prev,
+      throwables: { ...(prev.throwables ?? {}), [it.id]: (prev.throwables?.[it.id] ?? 0) + moved },
+    }));
+    s.log.push(
+      `[${fmtClock(s.elapsedSec)}] 💣 从战利品背包检索【${it.name}】×${moved}，装入投掷袋（基地投掷库存，可于战斗投掷或脱离时使用）。`,
+    );
+    sync();
+  };
+
+    /** v1.0.3c 出击临时制作台：判断能否用本局背包材料 + 本局废土币合成某药品 */
   const canCraftInSortie = (r: SortieCraftDef): boolean => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return false;
@@ -2111,16 +2136,17 @@ function SortiePanel(props: {
     }));
   };
 
-  /** v1.0.2 使用增益补给：消耗快捷·增益槽对应的基地库存，为下场交战储备 1 次属性强化 */
+  /** v1.1.1⑥ 使用增益补给：消耗快捷·增益槽对应的基地库存，激活「副本时间 10 分钟内六维全属性 +5」计时增益 */
   const applyBuff = () => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching' || !active) return;
     const quickBuffId = state.equipped[active.id]?.quickBuff;
     if (!quickBuffId || (state.medicines[quickBuffId] ?? 0) <= 0) return;
     const spec = MEDICINES.find((m) => m.id === quickBuffId);
-    s.buffCharges += 1;
+    // 计时窗口：当前 elapsedSec 起 10 分钟内持续生效（六维 +5 由 runEffectiveAttributes 统一注入）
+    s.buffUntilSec = (s.elapsedSec ?? 0) + 600;
     s.log.push(
-      `[${fmtClock(s.elapsedSec)}] 🧪 使用增益补给【${spec?.name ?? quickBuffId}】，下场交战属性强化（备战 ${s.buffCharges} 次）。`,
+      `[${fmtClock(s.elapsedSec)}] 🧪 使用增益补给【${spec?.name ?? quickBuffId}】，激活肾上腺素：副本时间 10 分钟内六维全属性 +5（剩余约 10 分钟）。`,
     );
     sync();
     setState((prev) => ({
@@ -2193,6 +2219,16 @@ function SortiePanel(props: {
   const armorCur = armor?.current ?? 0;
   const armorMax = armor?.max ?? 0;
   const carried = run?.carriedLoot ?? [];
+  const carriedSorted = carried
+    .map((it, idx) => ({ it, idx }))
+    .sort((a, b) => {
+      const rank = (k: string) => (k === 'consumable' ? 0 : k === 'material' ? 1 : k === 'gear' ? 2 : 3);
+      const ra = rank(a.it.kind), rb = rank(b.it.kind);
+      if (ra !== rb) return ra - rb;
+      if (a.it.kind === 'gear' && b.it.kind === 'gear') return (b.it.tier ?? 0) - (a.it.tier ?? 0);
+      return (a.it.name ?? '').localeCompare(b.it.name ?? '');
+    })
+    .map((x) => ({ item: x.it, index: x.idx }));
   // v1.0.4：携带估值仅统计战局背包内的物资（材料/装备/药品等）；废土币为单独直接钱财，已在独立行展示，不计入此处估值
   const carriedValue = carried.reduce((a, b) => a + b.value * (b.qty ?? 1), 0);
   const banked = run?.bankedLoot ?? [];
@@ -2207,7 +2243,7 @@ function SortiePanel(props: {
   const quickBuffId = active ? state.equipped[active.id]?.quickBuff : undefined;
   const buffSpec = quickBuffId ? MEDICINES.find((m) => m.id === quickBuffId) : undefined;
   const buffStock = quickBuffId ? state.medicines[quickBuffId] ?? 0 : 0;
-  const buffCharges = run?.buffCharges ?? 0;
+  const buffRemainMin = run?.buffUntilSec ? Math.max(0, Math.ceil((run.buffUntilSec - (run.elapsedSec ?? 0)) / 60)) : 0;
   const isOver = run?.phase === 'dead' || run?.phase === 'extracted' || run?.phase === 'timeout';
   const failed = run?.phase === 'dead' || run?.phase === 'timeout';
   /** ⚔ 摘要行下标 → 战斗回放（日志行内展开用） */
@@ -2493,13 +2529,13 @@ function SortiePanel(props: {
                   ))}
                   <span
                     className={
-                      run.buffCharges > 0
+                      buffRemainMin > 0
                         ? "rounded bg-sky-900/40 px-2 py-0.5 text-sky-300"
                         : "rounded bg-zinc-800 px-2 py-0.5 text-zinc-500"
                     }
-                    title="备战可叠加：下场战斗 力量/敏捷/耐力/意志 +5/+5/+3/+2"
+                    title="肾上腺素生效中：副本时间 10 分钟内六维全属性 +5"
                   >
-                    🧪 增益 buff · 备战 {run.buffCharges} 次
+                    🧪 增益 buff · 剩余 {buffRemainMin} 分钟
                   </span>
                   {run.injuries.length > 0 ? (
                     <>
@@ -2953,7 +2989,7 @@ function SortiePanel(props: {
                     <h2 className="mb-2 flex items-center gap-1 text-sm font-medium text-zinc-300">
                       🧪 增益补给
                       <span className="text-[11px] font-normal text-zinc-500">
-                        （使用后下场交战力量/敏捷/耐力/意志临时提升；消耗基地库存）
+                        （使用后激活副本时间 10 分钟内六维全属性 +5；消耗基地库存）
                       </span>
                     </h2>
                     <button
@@ -2962,8 +2998,8 @@ function SortiePanel(props: {
                     >
                       使用 {buffSpec.name}
                       <span className="ml-1 opacity-70">×{buffStock}</span>
-                      {buffCharges > 0 && (
-                        <span className="ml-1 text-sky-300">（已备战 {buffCharges} 次）</span>
+                      {buffRemainMin > 0 && (
+                        <span className="ml-1 text-sky-300">（剩余 {buffRemainMin} 分钟）</span>
                       )}
                     </button>
                   </div>
@@ -3012,7 +3048,7 @@ function SortiePanel(props: {
                 <div className="text-[11px] text-zinc-600">出击前未携带 / 未穿戴任何装备。</div>
               ) : (
                 <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-                  {run.equipped.map((e) => {
+                  {[...run.equipped].sort((a, b) => MAIN_EQUIP_SLOTS.findIndex((s) => s.key === a.slot) - MAIN_EQUIP_SLOTS.findIndex((s) => s.key === b.slot)).map((e) => {
                     const gColor = e.gear.tier != null ? tierColor(e.gear.tier) : '#a1a1aa';
                     return (
                       <div
@@ -3050,7 +3086,7 @@ function SortiePanel(props: {
               <p className="text-sm text-zinc-600">尚未搜到任何物资。</p>
             ) : (
               <ul className="max-h-[320px] space-y-1 overflow-y-auto pr-1 text-sm">
-                {carried.map((it, i) => {
+                {carriedSorted.map(({ item: it, index: origIdx }) => {
                   const color = it.tier != null ? tierColor(it.tier) : '#a1a1aa';
                   const qty = it.qty ?? 1;
                   // 预计算该道具对应的医疗品及其可治伤势（避免在渲染闭包里即时调用函数表达式）
@@ -3058,8 +3094,9 @@ function SortiePanel(props: {
                   const med = medId ? MEDICINES.find((m) => m.id === medId) : undefined;
                   const canTreat = med ? (med.treats ?? []).some((inj) => (run?.injuries ?? []).includes(inj)) : false;
                   const medDisabled = hpCur >= hpMax && !canTreat;
+                  const isThrowable = THROWABLES.some((t) => t.id === it.id);
                   return (
-                    <li key={`${it.id}-${i}`} className="border-b border-zinc-800/60 py-1">
+                    <li key={`${it.id}-${origIdx}`} className="border-b border-zinc-800/60 py-1">
                       <div className="flex items-center justify-between">
                         <span className="flex items-center gap-2">
                           {it.tier != null && (
@@ -3077,7 +3114,7 @@ function SortiePanel(props: {
                         </span>
                         <span className="text-emerald-400">{it.value * qty}</span>
                       </div>
-                      {it.affixes && it.affixes.length > 0 && (
+                      {it.affixes && it.affixes.length > 0 && !it.gear && (
                         <div className="mt-0.5 flex flex-wrap gap-1">
                           {it.affixes.map((a, j) => (
                             <span key={j} className="rounded px-1 text-[11px]" style={{ color: a.color }}>
@@ -3091,7 +3128,7 @@ function SortiePanel(props: {
                         <div className="mt-1 flex flex-wrap gap-1">
                           {med && (
                             <button
-                              onClick={() => applyCarriedMed(i)}
+                              onClick={() => applyCarriedMed(origIdx)}
                               disabled={medDisabled}
                               className="rounded border border-emerald-700/60 px-1.5 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-900/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
                               title="在本局内立即使用，恢复生命；可消除对应伤势"
@@ -3106,22 +3143,31 @@ function SortiePanel(props: {
                           )}
                           {it.gear && (
                             <button
-                              onClick={() => doEquipCarried(i)}
+                              onClick={() => doEquipCarried(origIdx)}
                               className="rounded border border-sky-700/60 px-1.5 py-0.5 text-[10px] text-sky-300 hover:bg-sky-900/40"
                               title="佩戴此装备（同槽已有则替换，旧装备回背包）"
                             >
                               🎽 佩戴
                             </button>
                           )}
+                          {isThrowable && (
+                            <button
+                              onClick={() => useCarriedThrowable(origIdx)}
+                              className="rounded border border-orange-700/60 px-1.5 py-0.5 text-[10px] text-orange-300 hover:bg-orange-900/40"
+                              title="检索装入投掷袋，供战斗投掷 / 投掷物脱离使用（占用背包格子直到装入）"
+                            >
+                              💣 检索使用
+                            </button>
+                          )}
                           <button
-                            onClick={() => doToSecure(i)}
+                            onClick={() => doToSecure(origIdx)}
                             disabled={secureUsed >= SECURE_BOX_SLOTS}
                             className="rounded border border-amber-700/60 px-1.5 py-0.5 text-[10px] text-amber-300 hover:bg-amber-900/40 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
                           >
                             🛡 移入安全箱
                           </button>
                           <button
-                            onClick={() => doDropCarried(i)}
+                            onClick={() => doDropCarried(origIdx)}
                             className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-rose-600 hover:text-rose-300"
                           >
                             🗑 丢弃
