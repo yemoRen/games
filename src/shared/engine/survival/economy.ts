@@ -19,11 +19,11 @@ export type MaterialKind =
   | 'misc';
 
 export const MATERIAL_LABEL: Record<MaterialKind, string> = {
-  metal: '金属 scraps',
+  metal: '废金属',
   electronics: '电子元件',
   chems: '化工制剂',
   mutant: '异变组织',
-  food: 'compact口粮',
+  food: '压缩口粮',
   misc: '杂项物资',
 };
 

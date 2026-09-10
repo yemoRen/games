@@ -2,7 +2,7 @@
 
 > 末世废土 · 文字放置 ·「搜—打—撤」硬核生存
 >
-> 当前版本：**v1.1.2** ｜ 纯前端 `localStorage` 存档，开箱即玩，无需后端
+> 当前版本：**v1.1.3** ｜ 纯前端 `localStorage` 存档，开箱即玩，无需后端
 
 当文明崩塌，废土成为唯一的世界。一个名为「系统」的存在向每一位幸存者发布指令：**进入危险区域，搜刮物资，击退威胁，活着撤出来。**
 
@@ -158,6 +158,69 @@ bun run test       # 运行 src/shared 下的纯引擎单测
 ```
 
 ## 版本更新日志
+
+### v1.1.3（2026-09-11 · 已发布）
+
+> 末世行止·掌握技能优化、医疗制作台与战术手册 UI 美化、材料文案正名；追加四大菜单页 UI 美化（花名册 / 战团技能 / 全部战绩 / 英雄榜）；段位扩至 7 档（白→红）并全站配色；旧存档段位迁移修复；角色页/英雄榜去重 rarity 标签。
+
+**① 掌握技能词条按品质着色**
+- 原 `ViewSkills`（末世行止·掌握技能）把所有已掌握天赋词条统一用翠绿（emerald）显示，看不出品质差异。现改用 `affixColor` / `affixLabel` 按词条品质（白/绿/蓝/紫/黄/橙/红）渲染文字、边框与半透明底色，并附小型品质标签，与装备词缀、升级三选一卡片同套配色。`menu/views.tsx: ViewSkills`
+
+**② 花费废土币重洗单项词条（二次确认 + 三选一，不重复已掌握）**
+- 每个已掌握词条旁新增「重洗」按钮 → 弹**二次确认**弹窗：明示花费 `1000` 废土币、替换后不可撤销、新词条不会与已掌握项重复；废土币不足时禁用确认并提示差额。
+- 确认后从「该成员当前已拥有的全部词条（含被重洗那一条）」之外的池中抽取 **3 枚三选一**；选定其一即替换原词条（旧词条属性增量回退、新词条叠加，并重新计算战力/段位与最大生命上限），同时扣除 1000 废土币。已掌握全部则提示「无可用候选」。
+- `state.ts` 新增 `rerollTrait(state, survivorId, oldTraitId, newTrait)` 与常量 `REROLL_TRAIT_COST = 1000`（复用 `chooseTraitPick` 的属性回退/重算口径）。`menu/views.tsx` / `state.ts`
+
+**③ 医疗·制作台 UI 美化 + 材料文案正名**
+- 材料类别名修正：`MATERIAL_LABEL` 中 `food` 由 `compact口粮` → `压缩口粮`、`metal` 由 `金属 scraps` → `废金属`。该映射被「医疗·制作台」「装备改装」「副本背包材料栏」等全部引用点共用，故**一处修正、全局生效**，其余出现此类中英混排文案的地方一并替换。
+- 医疗·制作台（`ViewCraft`）卡片重排：标题加 ⚗️ 图标与「就地补给」标签；产出改为右上角红色 pill；材料清单改为「持有/需求（have/qty）」左右对照、足/不足双色高亮；合成按钮统一圆角与 hover 态。`menu/views.tsx: ViewCraft`
+
+**④ 战术手册 UI 美化 + 词条按品质着色**
+- 战术手册（`ViewTactics`）的「被动技 · 战斗词条」卡片，按词条 `quality` 用 `affixColor` / `affixLabel` 渲染**左侧色条 + 品质标签**（白/绿/蓝/紫/黄/橙/红），并与「掌握技能」同套着色规范；标题加 📓 图标与「按品质着色」提示，六维基础属性条保留。`menu/views.tsx: ViewTactics`
+- 副本背包「材料」栏同步美化：每项材料前加按类别着色的圆点（金属/电子/化工/异变/口粮/杂项），与材料名、数量、价值同排展示。`play/route.tsx`
+
+**⑤ 幸存者花名册 UI 美化（`ViewRecruits`）**
+- 标题加 🪪 图标；卡片按「稀有度」用 `rarityColor` 着色边框与姓名；「稀有度」标签改用 `rarityLabel` 圆角 pill；战力/段位维持。
+- 词条列表由统一天蓝改为**按品质用 `affixColor` 渲染**（文字色 + 半透明底色 + 同色描边 + 色点），与「掌握技能」「战术手册」同套。
+- 招募费改为独立右上角展示，并按「是否可负担 / 战团是否满员」自动切换 `emerald-400` / `rose-400` 配色；「招募」按钮改为整行主按钮（招募入团）、「放走」改为次级灰色按钮。修复原「放走」按钮类名 `bg-zinc-9500`（非法 Tailwind 类，渲染无效）笔误。
+
+**⑥ 战团技能 UI 美化（`ViewFactionSkills`）**
+- 标题加 🏛️ 图标；每个势力配专属图标 + 主题色（铁壁🛡️红 / 银手💰金 / 自由侦察兵🧭蓝），卡片边框与进度条按主题色着色。
+- 新增 5 格「声望进度条」（lv 0~5 点亮），并实时汇总「当前全团加成」（如 力量+3 · 体质+3），原「每级 +N」列表保留。`menu/views.tsx: FACTION_META`
+
+**⑦ 全部战绩 UI 美化（`ViewBattleLog`）**
+- 标题加 📜 图标；每条战绩改为「左侧 outcome 色条 + 内容」卡片，按结果着色（撤离成功✅绿 / 阵亡💀红 / 超时⏳金），结果标签用同色圆角徽标。
+- 元数据分行排版：日期时间、入库件数（绿）、废土币（金）、遭遇敌人、救援徽标（天蓝），信息密度更高且一目了然。`menu/views.tsx: SORTIE_OUTCOME_META`
+
+**⑧ 英雄榜 UI 美化（`ViewLeaderboard`）**
+- 标题加 🏆 图标；榜首三名显示 🥇🥈🥉 奖牌（其余显示数字排名）；姓名与「稀有度」标签按 `rarityColor` 同色渲染（文字色 + 半透明底色 pill）。
+- 战力列加金色高亮，新增「词条」列显示该成员已掌握词条数；表头补齐、行 hover 高亮。`menu/views.tsx: LEADERBOARD_MEDAL`
+
+**⑨ 段位阶梯扩展至 7 档 + 段位配色 UI**
+- 段位由 5 档扩至 **7 档**，颜色对应白→红（与词条品质同套色板）：
+  - T1 废土新人（白 ≥0）· T2 资深拾荒者（绿 ≥55）· T3 战团骨干（蓝 ≥75）· T4 钢铁幸存者（紫 ≥95）· **T5 旷野狂徒（黄 ≥120，新增）** · **T6 荒域掌控者（橙 ≥160，新增）** · **T7 末世传奇（红 ≥200）**。
+  - 用户指定：末世传奇=段位7 且战力 ≥200；T5/T6 名称如题；其余阈值顺延原梯度的 55/75/95 并补齐中段 120/160。
+- `chargen.ts`：`TIERS` 常量增加 `color` 字段（白绿蓝紫黄橙红）；新增 `tierColor(tier)` 按段位取配色；`tierFromPower` 不变（仍返回 `{tier,name}`）。`theme/survival.ts: SURVIVAL_TIERS` 同步更新为 7 档名。
+- UI 配色：新增 `TierBadge`（菜单页）与副本内联徽标，均按段位取色（文字+描边+底色同色系半透明）；覆盖 花名册/英雄榜/战团成员/战术手册/掌握技能/重塑六维（菜单）与 副本内角色卡/招募卡/出击者条（route.tsx）。`menu/views.tsx` / `play/route.tsx`
+- 顺带修复：上轮 ⑤⑥⑦⑧ 给 `Card` 传 `style` 的依赖（当时未跑 tsc 未发现）——`Card` 补 `style?: React.CSSProperties` 支持；副本内 `tierColor` 复用 `affixes.tierColor`（0 索引，传 `tier-1`）避免与 chargen 导入重名。
+
+**⑩ 修复旧存档段位名称/颜色不一致（5→7 档迁移）**
+- 问题：旧存档按原 5 档段位写入 `tierName`（≥120 即「末世传奇」），扩到 7 档后加载会出现「战力 182 仍显示末世传奇」或「颜色与名称不匹配」。
+- 修复：
+  - `persistence.ts: loadGame` 增加加载迁移：所有 `survivors` / `recruits` 按当前 `power` 重新调用 `tierFromPower` 写入 `tier` 与 `tierName`。
+  - `chargen.ts` 导出 `TIERS` 并新增 `tierNameFromTier(tier)`；`menu/views.tsx: TierBadge` 改为从 `tier` 推导名称（不再信任可能 stale 的 `tierName`），确保徽标颜色与名称永远一致。
+  - `play/route.tsx` 副本内三处 inline 段位徽标文本也由 `tierNameFromTier(s.tier)`/`r.tier`/`active.tier` 推导，避免 stale 文本。
+- 结果：战力 182 → T6「荒域掌控者」（橙）；战力 ≥200 → T7「末世传奇」（红），颜色与名称一致。
+
+> 校验：`bun run tsc -b tsconfig.app.json`（exit 0）、`bun run build:client`（exit 0，built in 3.40s / 3.45s）。`chargen.ts` / `persistence.ts` / `menu/views.tsx` / `play/route.tsx`
+
+**⑪ 角色页 / 英雄榜去掉独立 rarity（品质）标签，仅留段位徽标**
+- 背景：`rarity`（普通/精锐/精英/传奇）为生成时的「先天资质」（每维属性加成 + 初始词条数），`tier` 为后天战力段位。两者语义不同，但 UI 上双双并排展示显得重复。
+- 处理（用户选 A 方案）：
+  - 去掉独立 rarity 标签——`menu/views.tsx: ViewSkills`（掌握技能/角色页）移除右上角 `{rarityLabel} Pill`；`ViewLeaderboard`（英雄榜）移除「稀有度」整列（表头+单元格），姓名颜色由 rarity 色改回中性 `text-zinc-100`。
+  - 副本内 `play/route.tsx` 角色列表卡同样删掉 rarity 小标签（段位徽标紧随其后，已不重复）。
+  - **保留**：`ViewRecruits`（花名册）与副本内招募卡的 rarity 标签——此处用于判断「兵胚值不值得招募」，仍有独立价值。
+- 校验：`bun run tsc -b`（exit 0）、`bun run build:client`（exit 0，built in 3.40s）。`rarity` 字段与生成逻辑不动，仅去展示冗余，无任何数值/玩法影响。
 
 ### v1.1.2（2026-09-10 首发 · 2026-09-11 补发 · 已发布）
 

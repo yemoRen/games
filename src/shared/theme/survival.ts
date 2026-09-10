@@ -42,13 +42,15 @@ export const SYSTEM_LINES = {
   timeout: '【生存系统】区域封锁！未能及时撤离，物资遗失。',
 } as const;
 
-/** 段位阶梯（对应原「境界」） */
+/** 段位阶梯（对应原「境界」），与 chargen.ts 的 TIERS 同步 */
 export const SURVIVAL_TIERS = [
-  '落难者',
-  '据点成员',
-  '佣兵',
-  '战团领袖',
-  '避难所长',
+  '废土新人',
+  '资深拾荒者',
+  '战团骨干',
+  '钢铁幸存者',
+  '旷野狂徒',
+  '荒域掌控者',
+  '末世传奇',
 ] as const;
 
 export function noun(key: SurvivalNounKey): string {

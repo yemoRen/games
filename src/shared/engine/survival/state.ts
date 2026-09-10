@@ -288,6 +288,8 @@ export const ACTION_POINT_CAP = 120;
 export const ACTION_POINT_REGEN_MS = 5 * 60 * 1000;
 /** 「重塑六维」费用（废土币） */
 export const REROLL_ATTR_COST = 500;
+/** v1.1.3（攒）：重洗已掌握词条的费用 */
+export const REROLL_TRAIT_COST = 1000;
 
 /** 出击一次的消耗：危1 = 6 点 … 危7 = 12 点（每级 +1） */
 export function sortieActionPointCost(dangerLevel: number): number {
@@ -1446,6 +1448,66 @@ export function chooseTraitPick(
     log: [`【系统】${p.name} 觉醒词条「${trait.name}」！`, ...state.log].slice(0, 50),
   };
   // v1.0.3b：词条可能改体质/带气血加成，重算最大生命上限
+  return recomputeMaxHpFor(next, survivorId);
+}
+
+/**
+ * v1.1.3（攒）：重洗某成员一项已掌握词条。
+ * 花费 REROLL_TRAIT_COST 废土币，将该词条替换为从「全部未拥有词条」中抽出的 3 选 1 之一。
+ *  - 旧词条属性增量先回退，再叠加新词条增量；
+ *  - 抽取侧（rollTraitCandidates）应已排除该成员当前拥有的全部词条（含被重洗的那条），保证不重复；
+ *  - 余额不足 / 待替换项不存在时原样返回。
+ */
+export function rerollTrait(
+  state: SurvivalGameState,
+  survivorId: string,
+  oldTraitId: string,
+  newTrait: SurvivorTrait,
+): SurvivalGameState {
+  const idx = state.survivors.findIndex((s) => s.id === survivorId);
+  if (idx < 0) return state;
+  if (state.coins < REROLL_TRAIT_COST) return state;
+  const p = { ...state.survivors[idx] };
+  const oldIdx = p.traits.findIndex((t) => t.id === oldTraitId);
+  if (oldIdx < 0) return state;
+  const oldTrait = p.traits[oldIdx];
+
+  // 1) 回退旧词条属性增量
+  const attributes = { ...p.attributes };
+  for (const k of ALL_ATTR_KEYS) {
+    const delta = oldTrait.modifiers[k];
+    if (delta) attributes[k] -= delta;
+  }
+  // 2) 替换并叠加新词条属性增量
+  const traits = [...p.traits];
+  traits[oldIdx] = newTrait;
+  for (const k of ALL_ATTR_KEYS) {
+    const delta = newTrait.modifiers[k];
+    if (delta) attributes[k] += delta;
+  }
+  p.traits = traits;
+  p.attributes = attributes;
+  // 3) 重算战力 / 段位
+  const tmpState: SurvivalGameState = {
+    ...state,
+    survivors: state.survivors.map((s, i) => (i === idx ? p : s)),
+  };
+  p.power = computePower(effectiveAttributes(tmpState, survivorId));
+  const { tier, name: tierName } = tierFromPower(p.power);
+  p.tier = tier;
+  p.tierName = tierName;
+  const survivors = [...state.survivors];
+  survivors[idx] = p;
+  const next: SurvivalGameState = {
+    ...state,
+    survivors,
+    coins: state.coins - REROLL_TRAIT_COST,
+    log: [
+      `【词条重洗】${p.name} 将「${oldTrait.name}」重洗为「${newTrait.name}」，消耗 ${REROLL_TRAIT_COST} 废土币。`,
+      ...state.log,
+    ].slice(0, 50),
+  };
+  // 词条气血变动，重算最大生命上限（沿用 chooseTraitPick 的口径）
   return recomputeMaxHpFor(next, survivorId);
 }
 

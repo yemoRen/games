@@ -8,7 +8,9 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { ResetSaveDialog } from '../components/ResetSaveDialog';
-import { attrLabel, rarityLabel, ALL_ATTR_KEYS } from '@shared/engine/survival/chargen';
+import { attrLabel, rarityLabel, rarityColor, tierColor, tierNameFromTier, ALL_ATTR_KEYS, rollTraitCandidates, type SurvivorTrait } from '@shared/engine/survival/chargen';
+import { affixColor, affixLabel } from '@shared/engine/survival/affixes';
+import type { AffixTierKey } from '@shared/engine/survival/affixes';
 import type { Attributes } from '@shared/types/cultivator';
 import type { SurvivalGameState, SortieLog } from '@shared/engine/survival/state';
 import {
@@ -50,7 +52,9 @@ import {
   trySpendActionPoints,
   sortieActionPointCost,
   REROLL_ATTR_COST,
+  REROLL_TRAIT_COST,
   rerollBaseAttributes,
+  rerollTrait,
   // v1.1.0 补充：GM 调试工具
   verifyGmKey,
   gmGrantXp,
@@ -88,7 +92,7 @@ interface ViewProps {
   onResetGame?: (name: string) => void;
 }
 
-const Section: React.FC<{ title: string; subtitle?: string; children: React.ReactNode; right?: React.ReactNode }> = ({ title, subtitle, children, right }) => (
+const Section: React.FC<{ title: string; subtitle?: React.ReactNode; children: React.ReactNode; right?: React.ReactNode }> = ({ title, subtitle, children, right }) => (
   <div className="space-y-4">
     <div className="flex items-end justify-between gap-4 border-b border-zinc-800 pb-3">
       <div>
@@ -101,8 +105,8 @@ const Section: React.FC<{ title: string; subtitle?: string; children: React.Reac
   </div>
 );
 
-const Card: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
-  <div className={`rounded-xl border border-zinc-800 bg-zinc-900 p-4 shadow-sm ${className ?? ''}`}>{children}</div>
+const Card: React.FC<{ children: React.ReactNode; className?: string; style?: React.CSSProperties }> = ({ children, className, style }) => (
+  <div className={`rounded-xl border border-zinc-800 bg-zinc-900 p-4 shadow-sm ${className ?? ''}`} style={style}>{children}</div>
 );
 
 const Pill: React.FC<{ children: React.ReactNode; tone?: 'green' | 'red' | 'amber' | 'sky' | 'stone' }> = ({ children, tone = 'stone' }) => {
@@ -114,6 +118,24 @@ const Pill: React.FC<{ children: React.ReactNode; tone?: 'green' | 'red' | 'ambe
     stone: 'bg-zinc-800 text-zinc-200',
   };
   return <span className={`inline-block rounded px-2 py-0.5 text-xs ${map[tone]}`}>{children}</span>;
+};
+
+/** 段位徽标：按段位序号取配色与名称（白→红），文字+描边+底色同色系
+ * 名称从 tier 推导，避免旧存档 stale tierName 与颜色不一致。
+ */
+const TierBadge: React.FC<{ tier: number; name?: string; size?: 'sm' | 'md' }> = ({ tier, size = 'md' }) => {
+  const c = tierColor(tier);
+  const name = tierNameFromTier(tier);
+  const pad = size === 'sm' ? 'px-1.5 py-0 text-[10px]' : 'px-2 py-0.5 text-xs';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full border font-semibold ${pad}`}
+      style={{ color: c, borderColor: `${c}66`, background: `${c}1a` }}
+    >
+      <span className="h-1.5 w-1.5 rounded-full" style={{ background: c }} />
+      {name}
+    </span>
+  );
 };
 
 const AttrBar: React.FC<{ label: string; value: number; max: number }> = ({ label, value, max }) => (
@@ -363,34 +385,55 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
 // ===== 1b. 医疗制作 =====
 export const ViewCraft: React.FC<ViewProps> = ({ state, mutate }) => {
   return (
-    <Section title="医疗·制作台" subtitle="用废土材料合成医疗品，无副本也能补给。">
+    <Section
+      title="⚗️ 医疗·制作台"
+      subtitle="用废土材料合成医疗品，无副本也能补给。"
+      right={<span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400">就地补给</span>}
+    >
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {MED_CRAFT_RECIPES.map((r) => {
           const med = MEDICINES.find((m) => m.id === r.medicine);
           const ok = canCraftMedicine(state, r);
           return (
-            <Card key={r.id}>
-              <div className="text-base font-semibold text-zinc-100">{r.name}</div>
-              <div className="mt-1 text-xs text-zinc-400">
-                产出：{med ? `${med.name}（${Math.round(med.healPct * 100)}%生命+${med.healFlat}）` : r.medicine}
+            <Card key={r.id} className="flex flex-col">
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-base font-semibold text-zinc-100">{r.name}</div>
+                <span className="shrink-0 rounded-full bg-rose-900/40 px-2 py-0.5 text-[11px] text-rose-300">
+                  {med ? `产出 ${med.name}` : r.medicine}
+                </span>
               </div>
-              <ul className="mt-2 space-y-1 text-xs">
+              <div className="mt-1 text-xs text-zinc-400">
+                效果：{med ? `${Math.round(med.healPct * 100)}% 生命 +${med.healFlat}` : '—'}
+              </div>
+              <ul className="mt-3 space-y-1.5 text-xs">
                 {r.costMaterials.map((c) => {
                   const have = materialCount(state.materials, c.kind);
+                  const enough = have >= c.qty;
                   return (
-                    <li key={c.kind} className={have >= c.qty ? 'text-emerald-300' : 'text-rose-300'}>
-                      {MATERIAL_LABEL[c.kind]} ×{c.qty}（持有 {have}）
+                    <li
+                      key={c.kind}
+                      className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1"
+                    >
+                      <span className={enough ? 'text-emerald-300' : 'text-rose-300'}>
+                        {MATERIAL_LABEL[c.kind]}
+                      </span>
+                      <span className={enough ? 'font-mono text-emerald-300' : 'font-mono text-rose-300'}>
+                        {have}/{c.qty}
+                      </span>
                     </li>
                   );
                 })}
-                <li className="text-zinc-400">废土币 ⛁{r.costCoins}</li>
+                <li className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-zinc-300">
+                  <span>废土币</span>
+                  <span className="font-mono">⛁{r.costCoins}</span>
+                </li>
               </ul>
               <button
                 onClick={() => mutate((s) => craftMedicine(s, r.id))}
                 disabled={!ok}
-                className="mt-3 w-full rounded bg-sky-600 px-3 py-1.5 text-xs text-white hover:bg-sky-700 disabled:opacity-40"
+                className="mt-3 w-full rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
               >
-                {ok ? '合成' : '材料/币不足'}
+                {ok ? '合成' : '材料 / 币不足'}
               </button>
             </Card>
           );
@@ -403,9 +446,16 @@ export const ViewCraft: React.FC<ViewProps> = ({ state, mutate }) => {
 // ===== 2. 战术手册 =====
 export const ViewTactics: React.FC<ViewProps> = ({ state }) => {
   const active = state.survivors.find((s) => s.id === state.activeSurvivorId);
-  if (!active) return <Section title="战术手册"><div className="text-zinc-400">未指定出击者。</div></Section>;
+  if (!active) return <Section title="📓 战术手册"><div className="text-zinc-400">未指定出击者。</div></Section>;
   return (
-    <Section title="战术手册" subtitle={`当前出击者：${active.name}（${active.tierName}）`}>
+    <Section
+      title="📓 战术手册"
+      subtitle={
+        <span>
+          当前出击者：{active.name}（<TierBadge tier={active.tier} name={active.tierName} size="sm" />）
+        </span>
+      }
+    >
       <Card>
         <h3 className="text-sm font-semibold text-zinc-200">六维基础属性</h3>
         <div className="mt-3 space-y-2">
@@ -415,33 +465,56 @@ export const ViewTactics: React.FC<ViewProps> = ({ state }) => {
         </div>
       </Card>
       <Card>
-        <h3 className="text-sm font-semibold text-zinc-200">被动技·战斗词条</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-zinc-200">被动技 · 战斗词条</h3>
+          <span className="text-[11px] text-zinc-500">按品质着色</span>
+        </div>
         {active.traits.length === 0 ? (
           <div className="mt-2 text-sm text-zinc-400">无词条。</div>
         ) : (
-          <ul className="mt-2 space-y-2 text-sm text-zinc-200">
-            {active.traits.map((t) => (
-              <li key={t.id} className="rounded bg-zinc-950 p-2">
-                <div className="font-medium text-zinc-100">{t.name}</div>
-                <div className="text-xs text-zinc-400">{t.description}</div>
-                {(t.combat ||
-                  Object.keys(t.modifiers ?? {}).some(
-                    (k) => (t.modifiers?.[k as keyof Attributes] ?? 0) !== 0,
-                  )) && (
-                  <div className="mt-1 flex flex-wrap gap-1 text-xs">
-                    {(Object.keys(t.modifiers ?? {}) as (keyof Attributes)[])
-                      .filter((k) => (t.modifiers?.[k] ?? 0) !== 0)
-                      .map((k) => (
-                        <Pill key={k} tone="green">{attrLabel(k)} +{t.modifiers?.[k]}</Pill>
-                      ))}
-                    {t.combat?.hpBonus && <Pill tone="green">HP +{t.combat.hpBonus}</Pill>}
-                    {t.combat?.critBonus && <Pill tone="amber">暴击 +{Math.round(t.combat.critBonus * 100)}%</Pill>}
-                    {t.combat?.lootLuck && <Pill tone="sky">搜刮 +{Math.round(t.combat.lootLuck * 100)}%</Pill>}
-                    {t.combat?.startHpRatio && <Pill>初始 HP +{Math.round(t.combat.startHpRatio * 100)}%</Pill>}
+          <ul className="mt-3 space-y-2">
+            {active.traits.map((t) => {
+              const c = affixColor(t.quality);
+              const qlabel = affixLabel(t.quality);
+              const hasBonus =
+                t.combat ||
+                Object.keys(t.modifiers ?? {}).some(
+                  (k) => (t.modifiers?.[k as keyof Attributes] ?? 0) !== 0,
+                );
+              return (
+                <li
+                  key={t.id}
+                  className="rounded-lg border bg-zinc-950/40 p-3"
+                  style={{ borderColor: `${c}66`, boxShadow: `inset 3px 0 0 ${c}` }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-medium" style={{ color: c }}>
+                      {t.name}
+                    </div>
+                    <span
+                      className="shrink-0 rounded px-1.5 py-0.5 text-[10px]"
+                      style={{ color: c, border: `1px solid ${c}88`, backgroundColor: `${c}1f` }}
+                    >
+                      {qlabel}
+                    </span>
                   </div>
-                )}
-              </li>
-            ))}
+                  <div className="mt-1 text-xs text-zinc-400">{t.description}</div>
+                  {hasBonus && (
+                    <div className="mt-2 flex flex-wrap gap-1 text-xs">
+                      {(Object.keys(t.modifiers ?? {}) as (keyof Attributes)[])
+                        .filter((k) => (t.modifiers?.[k] ?? 0) !== 0)
+                        .map((k) => (
+                          <Pill key={k} tone="green">{attrLabel(k)} +{t.modifiers?.[k]}</Pill>
+                        ))}
+                      {t.combat?.hpBonus && <Pill tone="green">HP +{t.combat.hpBonus}</Pill>}
+                      {t.combat?.critBonus && <Pill tone="amber">暴击 +{Math.round(t.combat.critBonus * 100)}%</Pill>}
+                      {t.combat?.lootLuck && <Pill tone="sky">搜刮 +{Math.round(t.combat.lootLuck * 100)}%</Pill>}
+                      {t.combat?.startHpRatio && <Pill>初始 HP +{Math.round(t.combat.startHpRatio * 100)}%</Pill>}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </Card>
@@ -450,50 +523,188 @@ export const ViewTactics: React.FC<ViewProps> = ({ state }) => {
 };
 
 // ===== 3. 掌握技能（词条总览） =====
-export const ViewSkills: React.FC<ViewProps> = ({ state }) => (
-  <Section title="掌握技能" subtitle="全员词条与被动一览。">
-    <div className="space-y-3">
-      {state.survivors.map((s) => (
-        <Card key={s.id}>
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-base font-semibold text-zinc-100">{s.name}</span>
-              <span className="ml-2 text-xs text-zinc-400">{s.tierName} · 战力 {s.power}</span>
+// v1.1.3（攒）：① 词条按品质着色；② 花费废土币重洗单项词条（二次确认 + 三选一，且不重复已掌握项）
+const traitStyle = (q: AffixTierKey): React.CSSProperties => {
+  const c = affixColor(q);
+  return { color: c, borderColor: `${c}88`, backgroundColor: `${c}1f` };
+};
+
+export const ViewSkills: React.FC<ViewProps> = ({ state, mutate, rng }) => {
+  const [confirm, setConfirm] = useState<{ survivorId: string; traitId: string; traitName: string } | null>(null);
+  const [options, setOptions] = useState<{ survivorId: string; traitId: string; list: SurvivorTrait[] } | null>(null);
+
+  const beginReroll = (survivorId: string, t: SurvivorTrait) => {
+    setOptions(null);
+    setConfirm({ survivorId, traitId: t.id, traitName: t.name });
+  };
+
+  const doConfirm = () => {
+    if (!confirm) return;
+    const s = state.survivors.find((x) => x.id === confirm.survivorId);
+    if (!s || state.coins < REROLL_TRAIT_COST) return;
+    // 排除该成员已拥有的全部词条（含被重洗的那条），保证新候选不重复
+    const exclude = s.traits.map((t) => t.id);
+    const list = rollTraitCandidates(rng, exclude, 3);
+    setOptions({ survivorId: confirm.survivorId, traitId: confirm.traitId, list });
+    setConfirm(null);
+  };
+
+  const pickOption = (newTrait: SurvivorTrait) => {
+    if (!options) return;
+    mutate((s) => rerollTrait(s, options.survivorId, options.traitId, newTrait));
+    setOptions(null);
+  };
+
+  return (
+    <Section title="掌握技能" subtitle="全员词条与被动一览。可花费废土币重洗单项词条（新词条不会与已掌握项重复）。">
+      <div className="space-y-3">
+        {state.survivors.map((s) => (
+          <Card key={s.id}>
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-base font-semibold text-zinc-100">{s.name}</span>
+                <TierBadge tier={s.tier} name={s.tierName} size="sm" />
+                <span className="ml-1 text-xs text-zinc-400">· 战力 {s.power}</span>
+              </div>
             </div>
-            <Pill tone="sky">{rarityLabel(s.rarity)}</Pill>
+            <ul className="mt-2 flex flex-wrap gap-1 text-xs">
+              {s.traits.map((t) => (
+                <li key={t.id} className="flex items-center gap-1 rounded border px-2 py-1" style={traitStyle(t.quality)}>
+                  <span>{t.name}</span>
+                  <span className="text-[10px] opacity-70">{affixLabel(t.quality)}</span>
+                  <button
+                    type="button"
+                    onClick={() => beginReroll(s.id, t)}
+                    className="ml-1 rounded bg-black/30 px-1 text-[10px] hover:bg-black/50"
+                    title={`花费 ${REROLL_TRAIT_COST} 废土币重洗该词条`}
+                  >重洗</button>
+                </li>
+              ))}
+              {s.traits.length === 0 && <li className="text-zinc-400">（无被动技能）</li>}
+            </ul>
+          </Card>
+        ))}
+      </div>
+
+      {/* 二次确认弹层 */}
+      {confirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-lg">
+            <h3 className="text-base font-semibold text-zinc-100">重洗词条确认</h3>
+            <p className="mt-2 text-sm text-zinc-300">
+              将花费 <span className="font-semibold text-amber-300">{REROLL_TRAIT_COST}</span> 废土币，
+              把 <span className="font-semibold text-zinc-100">{confirm.traitName}</span> 重洗为从「未掌握词条」中抽出的 3 选 1。
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">替换后不可撤销，且新词条不会与已掌握项重复。</p>
+            {state.coins < REROLL_TRAIT_COST && (
+              <p className="mt-2 text-xs text-rose-300">⚠ 废土币不足，还差 {REROLL_TRAIT_COST - state.coins} 币。</p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirm(null)} className="rounded border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800">取消</button>
+              <button
+                type="button"
+                disabled={state.coins < REROLL_TRAIT_COST}
+                onClick={doConfirm}
+                className="rounded bg-amber-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-40 hover:bg-amber-500"
+              >确认重洗</button>
+            </div>
           </div>
-          <ul className="mt-2 flex flex-wrap gap-1 text-xs">
-            {s.traits.map((t) => (
-              <li key={t.id} className="rounded bg-emerald-950/30 px-2 py-1 text-emerald-300">{t.name}</li>
-            ))}
-            {s.traits.length === 0 && <li className="text-zinc-400">（无被动技能）</li>}
-          </ul>
-        </Card>
-      ))}
-    </div>
-  </Section>
-);
+        </div>
+      )}
+
+      {/* 三选一候选 */}
+      {options && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-lg">
+            <h3 className="text-base font-semibold text-zinc-100">选择重洗后的词条</h3>
+            <p className="mt-1 text-xs text-zinc-500">选定后立即替换原词条，并扣除 {REROLL_TRAIT_COST} 废土币。</p>
+            {options.list.length === 0 ? (
+              <p className="mt-3 text-sm text-rose-300">已掌握全部词条，无可用候选。</p>
+            ) : (
+              <ul className="mt-3 space-y-2">
+                {options.list.map((t) => (
+                  <li key={t.id}>
+                    <button type="button" onClick={() => pickOption(t)} className="w-full rounded-lg border px-3 py-2 text-left hover:bg-zinc-800" style={traitStyle(t.quality)}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium">{t.name}</span>
+                        <span className="text-[10px] opacity-70">{affixLabel(t.quality)}</span>
+                      </div>
+                      <div className="mt-0.5 text-[11px] opacity-80">{t.description}</div>
+                      <div className="mt-1 flex flex-wrap gap-2 text-[11px]">
+                        {Object.entries(t.modifiers).filter(([, v]) => v).map(([k, v]) => (
+                          <span key={k}>{attrLabel(k as keyof Attributes)}+{v}</span>
+                        ))}
+                        {t.combat?.hpBonus && <span>气血+{t.combat.hpBonus}</span>}
+                        {t.combat?.critBonus && <span>暴击+{Math.round(t.combat.critBonus * 100)}%</span>}
+                        {t.combat?.lootLuck && <span>搜刮+{Math.round(t.combat.lootLuck * 100)}%</span>}
+                        {t.combat?.startHpRatio && <span>初始HP+{Math.round(t.combat.startHpRatio * 100)}%</span>}
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-4 flex justify-end">
+              <button type="button" onClick={() => setOptions(null)} className="rounded border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800">取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+};
 
 // ===== 4. 战团技能 =====
+const FACTION_META: Record<string, { icon: string; accent: string }> = {
+  'iron-wall': { icon: '🛡️', accent: '#f87171' },
+  'silver-hand': { icon: '💰', accent: '#fbbf24' },
+  'free-scouts': { icon: '🧭', accent: '#38bdf8' },
+};
+
 export const ViewFactionSkills: React.FC<ViewProps> = ({ state }) => (
-  <Section title="战团技能" subtitle="各势力达成特定声望后解锁的被动。">
+  <Section title="🏛️ 战团技能" subtitle="投资势力声望，全战团获得永久属性加成（每级 +1 档）。">
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {FACTIONS.map((f) => {
         const rep = state.factionRep[f.id] ?? 0;
+        const meta = FACTION_META[f.id] ?? { icon: '🏳️', accent: '#9ca3af' };
+        const bonusParts = Object.entries(f.attrPerRepLevel).map(
+          ([k, v]) => `${attrLabel(k as keyof Attributes)}+${(v ?? 0) * rep}`,
+        );
         return (
-          <Card key={f.id}>
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-base font-semibold text-zinc-100">{f.name}</div>
-                <div className="text-xs text-zinc-400">{f.description}</div>
+          <Card key={f.id} className="overflow-hidden" style={{ borderColor: `${meta.accent}55` }}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl leading-none">{meta.icon}</span>
+                <div>
+                  <div className="text-base font-semibold text-zinc-100">{f.name}</div>
+                  <div className="mt-0.5 text-xs text-zinc-400">{f.description}</div>
+                </div>
               </div>
-              <Pill tone={rep > 0 ? 'sky' : 'stone'}>声望 {rep} / 5</Pill>
+              <Pill tone={rep > 0 ? 'sky' : 'stone'}>声望 {rep}/5</Pill>
             </div>
-            <ul className="mt-2 text-xs text-zinc-200">
+            <div className="mt-3 flex gap-1">
+              {[0, 1, 2, 3, 4].map((lv) => (
+                <div
+                  key={lv}
+                  className="h-1.5 flex-1 rounded-full"
+                  style={{ backgroundColor: lv < rep ? meta.accent : '#3f3f46' }}
+                />
+              ))}
+            </div>
+            <ul className="mt-3 space-y-1 text-xs">
               {Object.entries(f.attrPerRepLevel).map(([k, v]) => (
-                <li key={k}>· 每级 全队 {attrLabel(k as keyof Attributes)} +{v}</li>
+                <li
+                  key={k}
+                  className="flex items-center justify-between rounded bg-zinc-950/40 px-2 py-1"
+                >
+                  <span className="text-zinc-300">{attrLabel(k as keyof Attributes)}</span>
+                  <span className="font-medium" style={{ color: meta.accent }}>+{v ?? 0} / 级</span>
+                </li>
               ))}
             </ul>
+            <div className="mt-2 text-[11px] text-zinc-500">
+              当前全团加成：{bonusParts.length ? bonusParts.join(' · ') : '—'}
+            </div>
           </Card>
         );
       })}
@@ -502,32 +713,53 @@ export const ViewFactionSkills: React.FC<ViewProps> = ({ state }) => (
 );
 
 // ===== 5. 全部战绩 =====
+const SORTIE_OUTCOME_META: Record<SortieLog['outcome'], { label: string; color: string; icon: string }> = {
+  success: { label: '撤离成功', color: '#34d399', icon: '✅' },
+  death: { label: '阵亡', color: '#f87171', icon: '💀' },
+  timeout: { label: '超时撤离', color: '#fbbf24', icon: '⏳' },
+};
+
 export const ViewBattleLog: React.FC<ViewProps> = ({ state }) => (
-  <Section title="全部战绩" subtitle={`累计出击 ${state.sortieHistory.length} 次。`}>
+  <Section title="📜 全部战绩" subtitle={`累计出击 ${state.sortieHistory.length} 次 · 展示最近 30 条`}>
     {state.sortieHistory.length === 0 ? (
       <Card><div className="text-sm text-zinc-400">尚无出击记录。前往「出击」体验首次搜打撤。</div></Card>
     ) : (
       <div className="space-y-2">
-        {state.sortieHistory.slice(0, 30).map((s: SortieLog) => (
-          <Card key={s.id} className="!p-3">
-            <div className="flex items-center justify-between text-sm">
-              <div>
-                <span className="font-semibold text-zinc-100">{s.survivorName}</span>
-                <span className="mx-1 text-zinc-500">→</span>
-                <span>{s.zoneName}</span>
+        {state.sortieHistory.slice(0, 30).map((s) => {
+          const m = SORTIE_OUTCOME_META[s.outcome];
+          const d = new Date(s.at);
+          return (
+            <Card key={s.id} className="!p-0 overflow-hidden">
+              <div className="flex">
+                <div className="w-1.5 shrink-0" style={{ backgroundColor: m.color }} />
+                <div className="flex-1 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-semibold text-zinc-100">{s.survivorName}</span>
+                      <span className="text-zinc-500">→</span>
+                      <span className="text-zinc-300">{s.zoneName}</span>
+                    </div>
+                    <span
+                      className="shrink-0 rounded px-2 py-0.5 text-xs font-medium"
+                      style={{ color: m.color, backgroundColor: `${m.color}22` }}
+                    >
+                      {m.icon} {m.label}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
+                    <span>🕒 {d.toLocaleDateString()} {d.toLocaleTimeString()}</span>
+                    <span className="text-emerald-300/80">📦 入库 {s.bankedItems} 件</span>
+                    <span className="text-amber-300/80">⛁ {s.bankedValue}</span>
+                    {s.enemyFaced && <span>· 遭遇 {s.enemyFaced}</span>}
+                    {s.rescued && (
+                      <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-sky-300">🤝 救援</span>
+                    )}
+                  </div>
+                </div>
               </div>
-              <Pill tone={s.outcome === 'success' ? 'green' : s.outcome === 'death' ? 'red' : 'amber'}>
-                {s.outcome === 'success' ? '撤离成功' : s.outcome === 'death' ? '阵亡' : '超时'}
-              </Pill>
-            </div>
-            <div className="mt-1 flex flex-wrap gap-3 text-xs text-zinc-400">
-              <span>{new Date(s.at).toLocaleString()}</span>
-              <span>入库 {s.bankedItems} 件 / {s.bankedValue} 废土币</span>
-              {s.enemyFaced && <span>· 敌人 {s.enemyFaced}</span>}
-              {s.rescued && <Pill tone="sky">救援</Pill>}
-            </div>
-          </Card>
-        ))}
+            </Card>
+          );
+        })}
       </div>
     )}
   </Section>
@@ -790,7 +1022,14 @@ export const ViewRerollAttributes: React.FC<ViewProps> = ({ state, mutate, rng }
     setConfirming(false);
   };
   return (
-    <Section title="重塑六维" subtitle={`当前出击者：${active.name}（${active.tierName}）`}>
+    <Section
+      title="重塑六维"
+      subtitle={
+        <span>
+          当前出击者：{active.name}（<TierBadge tier={active.tier} name={active.tierName} size="sm" />）
+        </span>
+      }
+    >
       <Card>
         <div className="text-sm text-zinc-200">
           消耗 <span className="font-semibold text-amber-300">{REROLL_ATTR_COST}</span> 废土币，把{' '}
@@ -1205,32 +1444,38 @@ export const ViewAuction: React.FC = () => (
 );
 
 // ===== 15. 英雄榜 =====
+const LEADERBOARD_MEDAL = ['🥇', '🥈', '🥉'];
+
 export const ViewLeaderboard: React.FC<ViewProps> = ({ state }) => {
-  // v1.1.0：文案自称「前 30 名」，此前漏了截断；战团上限 10 人，实为兜底
+  // 战团上限 10 人，前 30 名为兜底；按战力降序
   const sorted = [...state.survivors].sort((a, b) => b.power - a.power).slice(0, 30);
   return (
-    <Section title="英雄榜" subtitle="按战力排序的花名册（前 30 名）。">
-      <Card>
+    <Section title="🏆 英雄榜" subtitle={`战团悍将按战力排序（共 ${state.survivors.length} 人，展示前 30）`}>
+      <Card className="!p-0 overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-zinc-400">
-              <th className="py-1">#</th>
+              <th className="py-2 pl-3">排名</th>
               <th>姓名</th>
               <th>段位</th>
-              <th>战力</th>
-              <th>稀有度</th>
+              <th className="text-right">战力</th>
+              <th className="pr-3">词条</th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((s, i) => (
-              <tr key={s.id} className="border-t border-zinc-800">
-                <td className="py-2 font-mono text-zinc-400">{i + 1}</td>
-                <td className="font-medium">{s.name}</td>
-                <td className="text-zinc-300">{s.tierName}</td>
-                <td className="font-mono">{s.power}</td>
-                <td><Pill>{rarityLabel(s.rarity)}</Pill></td>
-              </tr>
-            ))}
+            {sorted.map((s, i) => {
+              return (
+                <tr key={s.id} className="border-t border-zinc-800/70 transition-colors hover:bg-zinc-800/30">
+                  <td className="py-2 pl-3 font-mono text-zinc-400">
+                    {i < 3 ? <span className="text-lg">{LEADERBOARD_MEDAL[i]}</span> : i + 1}
+                  </td>
+                  <td className="font-semibold text-zinc-100">{s.name}</td>
+                  <td><TierBadge tier={s.tier} name={s.tierName} size="sm" /></td>
+                  <td className="text-right font-mono font-semibold text-amber-300">{s.power}</td>
+                  <td className="pr-3 text-xs text-zinc-400">{s.traits.length} 条</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </Card>
@@ -1471,7 +1716,13 @@ const GmPanel: React.FC<{ state: SurvivalGameState; mutate: Mutate }> = ({ state
           <div className="mt-1 text-xs text-zinc-400">
             当前出击者：
             <span className="text-zinc-100">
-              {active ? `${active.name}（Lv.${active.level ?? 1} · ${active.tierName}）` : '未指定'}
+              {active ? (
+                <>
+                  {active.name}（Lv.{active.level ?? 1} · <TierBadge tier={active.tier} name={active.tierName} size="sm" />）
+                </>
+              ) : (
+                '未指定'
+              )}
             </span>
           </div>
         </div>
@@ -1577,38 +1828,62 @@ export const ViewRecruits: React.FC<ViewProps> = ({ state, mutate }) => {
   const full = state.survivors.length >= WARBAND_CAP;
   return (
     <Section
-      title="幸存者花名册"
+      title="🪪 幸存者花名册"
       subtitle={`目前 ${state.recruits.length} 名待招募 · 战团 ${state.survivors.length}/${WARBAND_CAP}`}
     >
       {state.recruits.length === 0 ? (
         <Card><div className="text-sm text-zinc-400">暂无待招募成员。出击搜打撤时，有概率在副本中救出幸存者，他们会先进入这里的花名册，用废土币招募后加入战团。越厉害的幸存者招募费越高。</div></Card>
       ) : (
-        <div className="space-y-2">
+        <div className="grid gap-3 sm:grid-cols-2">
           {state.recruits.map((r) => {
             const fee = recruitFee(r.tier);
             const canAfford = state.coins >= fee && !full;
+            const rc = rarityColor(r.rarity);
             return (
-              <Card key={r.id}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold text-zinc-100">{r.name}</div>
-                    <div className="text-xs text-zinc-400">{r.tierName} · 战力 {r.power}</div>
-                    <ul className="mt-1 flex flex-wrap gap-1 text-xs">
-                      {r.traits.map((t) => <li key={t.id} className="rounded bg-sky-950/40 px-1.5 py-0.5 text-sky-300">{t.name}</li>)}
-                    </ul>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xs text-zinc-400">招募费 {fee}</div>
-                    <div className="mt-2 flex gap-1">
-                      <button
-                        onClick={() => mutate((s) => acceptRecruit(s, r.id))}
-                        disabled={!canAfford}
-                        className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-40"
-                        title={full ? '战团已满，需先遣散' : state.coins < fee ? '废土币不足' : ''}
-                      >招募</button>
-                      <button onClick={() => mutate((s) => dismissRecruit(s, r.id))} className="rounded bg-zinc-9500 px-3 py-1 text-xs text-white hover:bg-stone-600">放走</button>
+              <Card key={r.id} className="overflow-hidden" style={{ borderColor: `${rc}55` }}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-base font-semibold" style={{ color: rc }}>{r.name}</span>
+                      <Pill tone="stone">{rarityLabel(r.rarity)}</Pill>
                     </div>
+                    <div className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">
+                      <TierBadge tier={r.tier} name={r.tierName} size="sm" /> · 战力 {r.power}
+                    </div>
+                    {r.traits.length > 0 && (
+                      <ul className="mt-2 flex flex-wrap gap-1">
+                        {r.traits.map((t) => {
+                          const c = affixColor(t.quality as AffixTierKey);
+                          return (
+                            <li
+                              key={t.id}
+                              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs"
+                              style={{ color: c, backgroundColor: `${c}22`, border: `1px solid ${c}55` }}
+                            >
+                              <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: c }} />
+                              {t.name}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
                   </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="text-[11px] text-zinc-500">招募费</span>
+                    <span className={`text-sm font-semibold ${canAfford ? 'text-emerald-400' : 'text-rose-400'}`}>⛁ {fee}</span>
+                  </div>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => mutate((s) => acceptRecruit(s, r.id))}
+                    disabled={!canAfford}
+                    className="flex-1 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
+                    title={full ? '战团已满，需先遣散' : state.coins < fee ? '废土币不足' : ''}
+                  >招募入团</button>
+                  <button
+                    onClick={() => mutate((s) => dismissRecruit(s, r.id))}
+                    className="rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                  >放走</button>
                 </div>
               </Card>
             );
@@ -1648,7 +1923,9 @@ export const ViewMedical: React.FC<ViewProps> = ({ state, mutate, setState }) =>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="font-semibold text-zinc-100">{s.name}</div>
-                  <div className="text-xs text-zinc-400">{s.tierName} · 体质 {s.attributes.vitality}</div>
+                  <div className="flex items-center gap-1 text-xs text-zinc-400">
+                    <TierBadge tier={s.tier} name={s.tierName} size="sm" /> · 体质 {s.attributes.vitality}
+                  </div>
                 </div>
                 <div className="text-right text-xs text-zinc-400">
                   恢复速率 {rate.toFixed(2)}/分<br />

@@ -9,7 +9,7 @@ import type { SurvivalGameState } from './state';
 import type { ExtractionRunState } from '../extraction/types';
 import { emptyGardenPlots, ACTION_POINT_CAP, START_SEEDS } from './state';
 import { getCurrentUser } from './account';
-import { DEPRECATED_PROTAGONIST_TRAIT_IDS, ensureBaseAttributes } from './chargen';
+import { DEPRECATED_PROTAGONIST_TRAIT_IDS, ensureBaseAttributes, tierFromPower } from './chargen';
 
 const SAVE_PREFIX = 'wqqs-survival-save-v1:';
 const RUN_PREFIX = 'wqqs-survival-run-v1:';
@@ -67,6 +67,17 @@ export function loadGame(): SurvivalGameState | null {
       data.survivors = data.survivors.map((sv) => ensureBaseAttributes(sv));
       if (Array.isArray(data.recruits)) {
         data.recruits = data.recruits.map((sv) => ensureBaseAttributes(sv));
+      }
+      // v1.1.3：段位阶梯 5→7 档后，旧存档的 tier/tierName 可能过期；按当前 power 重算一次
+      data.survivors = data.survivors.map((sv) => {
+        const { tier, name: tierName } = tierFromPower(sv.power ?? 0);
+        return { ...sv, tier, tierName };
+      });
+      if (Array.isArray(data.recruits)) {
+        data.recruits = data.recruits.map((sv) => {
+          const { tier, name: tierName } = tierFromPower(sv.power ?? 0);
+          return { ...sv, tier, tierName };
+        });
       }
       return data;
     }

@@ -694,12 +694,15 @@ export function computePower(attributes: Attributes): number {
   );
 }
 
-const TIERS: { min: number; name: string }[] = [
-  { min: 0, name: '废土新人' },
-  { min: 55, name: '资深拾荒者' },
-  { min: 75, name: '战团骨干' },
-  { min: 95, name: '钢铁幸存者' },
-  { min: 120, name: '末世传奇' },
+// 段位阶梯：从白到红 7 档，颜色与词条品质（白绿蓝紫黄橙红）一一对应
+export const TIERS: { min: number; name: string; color: string }[] = [
+  { min: 0, name: '废土新人', color: '#cbd5e1' },
+  { min: 55, name: '资深拾荒者', color: '#4ade80' },
+  { min: 75, name: '战团骨干', color: '#38bdf8' },
+  { min: 95, name: '钢铁幸存者', color: '#c084fc' },
+  { min: 120, name: '旷野狂徒', color: '#facc15' },
+  { min: 160, name: '荒域掌控者', color: '#fb923c' },
+  { min: 200, name: '末世传奇', color: '#f87171' },
 ];
 
 export function tierFromPower(power: number): { tier: number; name: string } {
@@ -712,6 +715,18 @@ export function tierFromPower(power: number): { tier: number; name: string } {
     }
   }
   return { tier, name };
+}
+
+/** 按段位序号取配色（白→红），用于 UI 段位徽标 */
+export function tierColor(tier: number): string {
+  const idx = Math.max(0, Math.min(TIERS.length - 1, (tier ?? 1) - 1));
+  return TIERS[idx].color;
+}
+
+/** 按段位序号取名称（兜底旧存档 stale tierName） */
+export function tierNameFromTier(tier: number): string {
+  const idx = Math.max(0, Math.min(TIERS.length - 1, (tier ?? 1) - 1));
+  return TIERS[idx].name;
 }
 
 let _idCounter = 0;

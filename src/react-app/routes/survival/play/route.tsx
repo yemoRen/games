@@ -124,7 +124,7 @@ import {
   type EncounterAction,
   type BattleReplayEntry,
 } from '@shared/engine/extraction';
-import { generateSurvivor } from '@shared/engine/survival/chargen';
+import { generateSurvivor, tierNameFromTier } from '@shared/engine/survival/chargen';
 import { loadGame, saveGame, clearSave, saveRun, loadRun, clearRun } from '@shared/engine/survival';
 import { ResetSaveDialog } from '../components/ResetSaveDialog';
 import {
@@ -767,13 +767,10 @@ function CharacterPanel(props: {
                       <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-[11px] text-amber-300">主角</span>
                     )}
                     <span
-                      className="rounded px-1.5 py-0.5 text-[11px]"
-                      style={{ backgroundColor: `${rarityColor(s.rarity)}22`, color: rarityColor(s.rarity) }}
+                      className="rounded-full border px-1.5 py-0.5 text-[11px] font-semibold"
+                      style={{ color: tierColor(s.tier - 1), borderColor: `${tierColor(s.tier - 1)}66`, background: `${tierColor(s.tier - 1)}1a` }}
                     >
-                      {rarityLabel(s.rarity)}
-                    </span>
-                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-300">
-                      {s.tierName}
+                      {tierNameFromTier(s.tier)}
                     </span>
                   </div>
                   <div className="mt-0.5 text-xs text-zinc-500">
@@ -1040,8 +1037,11 @@ function CharacterPanel(props: {
                       >
                         {rarityLabel(r.rarity)}
                       </span>
-                      <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-300">
-                        {r.tierName}
+                      <span
+                        className="rounded-full border px-1.5 py-0.5 text-[11px] font-semibold"
+                        style={{ color: tierColor(r.tier - 1), borderColor: `${tierColor(r.tier - 1)}66`, background: `${tierColor(r.tier - 1)}1a` }}
+                      >
+                        {tierNameFromTier(r.tier)}
                       </span>
                     </div>
                     <div className="mt-0.5 text-xs text-zinc-500">
@@ -1451,20 +1451,30 @@ function InventoryPanel(props: {
 
       {/* 材料 */}
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-        <h3 className="mb-2 text-xs uppercase tracking-wider text-zinc-500">材料</h3>
+        <h3 className="mb-2 flex items-center gap-1.5 text-xs uppercase tracking-wider text-zinc-500">
+          <span>📦</span>材料
+        </h3>
         {state.materials.length === 0 ? (
           <p className="text-sm text-zinc-600">暂无材料，出击搜刮或拆解战利品获取。</p>
         ) : (
           <>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {matPage.slice.map((m) => (
-                <div key={m.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-2">
-                  <div className="text-sm text-zinc-200">{m.name}</div>
-                  <div className="mt-0.5 text-[11px] text-zinc-500">
-                    {MATERIAL_LABEL[m.kind]} · x{m.quantity} · ⛁{m.value}
+              {matPage.slice.map((m) => {
+                const dot = (
+                  { metal: '#94a3b8', electronics: '#38bdf8', chems: '#a78bfa', mutant: '#34d399', food: '#fbbf24', misc: '#cbd5e1' } as Record<string, string>
+                )[m.kind] ?? '#cbd5e1';
+                return (
+                  <div key={m.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: dot }} />
+                      <span className="text-sm text-zinc-200">{m.name}</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-zinc-500">
+                      {MATERIAL_LABEL[m.kind]} · x{m.quantity} · ⛁{m.value}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <Pager
               page={matPage.page}
@@ -2373,8 +2383,11 @@ function SortiePanel(props: {
         <div className="space-y-4 rounded-lg border border-zinc-800 bg-zinc-900 p-5">
           <div className="text-sm text-zinc-400">
             出击者：<span className="text-zinc-100">{active.name}</span>
-            <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-300">
-              {active.tierName}
+            <span
+              className="ml-2 rounded-full border px-1.5 py-0.5 text-xs font-semibold"
+              style={{ color: tierColor(active.tier - 1), borderColor: `${tierColor(active.tier - 1)}66`, background: `${tierColor(active.tier - 1)}1a` }}
+            >
+              {tierNameFromTier(active.tier)}
             </span>
           </div>
           {/* v1.1.0：行动点（出击消耗 / 每 5 分钟恢复 1 点） */}
