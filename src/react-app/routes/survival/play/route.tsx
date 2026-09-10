@@ -122,6 +122,7 @@ import {
   FIGHT_AMMO_COST,
   type ExtractionRunState,
   type EncounterAction,
+  type BattleReplayEntry,
 } from '@shared/engine/extraction';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
 import { loadGame, saveGame, clearSave, saveRun, loadRun, clearRun } from '@shared/engine/survival';
@@ -211,12 +212,12 @@ function TraitBonusText({ trait }: { trait: SurvivorTrait }) {
   if (mods.length === 0 && combat.length === 0) return null;
   return (
     <div className="mt-1.5 space-y-1 border-t border-zinc-700 pt-1.5">
-      {mods.map((m) => (
-        <div key={m} className="text-emerald-300">{m}</div>
-      ))}
-      {combat.map((c) => (
-        <div key={c} className="text-sky-300">{c}</div>
-      ))}
+      {mods.length > 0 && (
+        <div className="text-emerald-300">属性加成：{mods.join(' · ')}</div>
+      )}
+      {combat.length > 0 && (
+        <div className="text-sky-300">增益效果：{combat.join(' · ')}</div>
+      )}
     </div>
   );
 }
@@ -927,15 +928,28 @@ function CharacterPanel(props: {
                                       {affixLabel(t.quality)}·{t.name}
                                     </div>
                                     <div className="mt-0.5 text-[10px] leading-snug text-zinc-400">{t.description}</div>
-                                    <div className="mt-0.5 text-[10px] text-emerald-300">
-                                      {(Object.keys(t.modifiers) as (keyof Attributes)[])
+                                    {(() => {
+                                      const modsTxt = (Object.keys(t.modifiers) as (keyof Attributes)[])
                                         .filter((k) => (t.modifiers[k] ?? 0) !== 0)
                                         .map((k) => `${attrLabel(k)}+${t.modifiers[k]}`)
-                                        .join(' ')}
-                                      {t.combat?.hpBonus ? ` 气血+${t.combat.hpBonus}` : ''}
-                                      {t.combat?.critBonus ? ` 暴击+${Math.round(t.combat.critBonus * 100)}%` : ''}
-                                      {t.combat?.lootLuck ? ` 搜刮+${Math.round(t.combat.lootLuck * 100)}%` : ''}
-                                    </div>
+                                        .join(' ');
+                                      const combatTxt = [
+                                        t.combat?.hpBonus ? `气血+${t.combat.hpBonus}` : '',
+                                        t.combat?.critBonus ? `暴击+${Math.round(t.combat.critBonus * 100)}%` : '',
+                                        t.combat?.lootLuck ? `搜刮+${Math.round(t.combat.lootLuck * 100)}%` : '',
+                                        t.combat?.startHpRatio ? `初始血量+${Math.round(t.combat.startHpRatio * 100)}%` : '',
+                                      ].filter(Boolean).join(' ');
+                                      return (
+                                        <>
+                                          {modsTxt && (
+                                            <div className="mt-0.5 text-[10px] text-emerald-300">属性加成：{modsTxt}</div>
+                                          )}
+                                          {combatTxt && (
+                                            <div className="mt-0.5 text-[10px] text-sky-300">增益效果：{combatTxt}</div>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
                                   </button>
                                 ))}
                               </div>
@@ -2248,6 +2262,55 @@ function SortiePanel(props: {
   const failed = run?.phase === 'dead' || run?.phase === 'timeout';
   /** ⚔ 摘要行下标 → 战斗回放（日志行内展开用） */
   const battleByLogIndex = new Map((run?.battles ?? []).map((b) => [b.logIndex, b]));
+  // v1.1.2：群怪战斗回放合并——把同一敌群（groupTotal>1 且顺序连续）的逐只回放收拢为一个可折叠「敌群战斗回放」
+  const renderReplayBody = (b: BattleReplayEntry) => (
+    <div className="mt-1.5 space-y-1.5">
+      {b.attrNotes.length > 0 && (
+        <div className="rounded bg-zinc-900/70 p-1.5">
+          <div className="mb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">六维属性与战斗</div>
+          {b.attrNotes.map((n, ni) => (
+            <p key={ni} className="text-[11px] text-sky-300/90">◈ {n}</p>
+          ))}
+        </div>
+      )}
+      {b.rounds.map((r) => (
+        <div key={r.round} className="rounded bg-zinc-900/50 p-1.5">
+          <div className="flex items-center justify-between text-[10px] text-zinc-500">
+            <span>第 {r.round} 回合</span>
+            <span className="font-mono">❤ 你 {r.hpSelf} ｜ 敌 {r.hpEnemy}</span>
+          </div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-300">{r.text}</p>
+        </div>
+      ))}
+      <p className="rounded border-l-2 border-rose-700/60 bg-zinc-900/60 p-1.5 text-[11px] italic leading-relaxed text-zinc-300">{b.narrative}</p>
+    </div>
+  );
+  const battleGroups: { entries: BattleReplayEntry[]; containerLogIndex: number }[] = [];
+  {
+    let cur: BattleReplayEntry[] | null = null;
+    for (const b of run?.battles ?? []) {
+      if (b.groupTotal && b.groupTotal > 1) {
+        if (cur && cur[0].groupTotal === b.groupTotal && cur[cur.length - 1].groupIndex === (b.groupIndex ?? 0) - 1) {
+          cur.push(b);
+        } else {
+          if (cur) battleGroups.push({ entries: cur, containerLogIndex: cur[0].logIndex });
+          cur = [b];
+        }
+      } else {
+        if (cur) { battleGroups.push({ entries: cur, containerLogIndex: cur[0].logIndex }); cur = null; }
+        battleGroups.push({ entries: [b], containerLogIndex: b.logIndex });
+      }
+    }
+    if (cur) battleGroups.push({ entries: cur, containerLogIndex: cur[0].logIndex });
+  }
+  const groupContainerByLogIndex = new Map<number, BattleReplayEntry[]>();
+  const groupSuppress = new Set<number>();
+  for (const g of battleGroups) {
+    if (g.entries.length > 1) {
+      groupContainerByLogIndex.set(g.containerLogIndex, g.entries);
+      for (let k = 1; k < g.entries.length; k++) groupSuppress.add(g.entries[k].logIndex);
+    }
+  }
   const hpPct = hpMax > 0 ? Math.max(0, (hpCur / hpMax) * 100) : 0;
   const hpStageNow = hpStage(hpPct);
   const hpMeta = HP_STAGE_META[hpStageNow];
@@ -2672,43 +2735,44 @@ function SortiePanel(props: {
                         {m && <span className="mr-1 text-zinc-600">[{m[1]}]</span>}
                         {body}
                       </p>
-                      {battle && (
+                      {battle && groupSuppress.has(i) ? null : battle && groupContainerByLogIndex.has(i) ? (() => {
+                        const entries = groupContainerByLogIndex.get(i)!;
+                        const total0 = entries.length;
+                        const sumRounds = entries.reduce((a, b) => a + b.rounds.length, 0);
+                        const sumDealt = entries.reduce((a, b) => a + b.dmgDealt, 0);
+                        const sumTaken = entries.reduce((a, b) => a + b.dmgTaken, 0);
+                        const allWin = entries.every((b) => b.win);
+                        const lastEntry = entries[entries.length - 1];
+                        const lastHp = lastEntry.rounds[lastEntry.rounds.length - 1]?.hpSelf ?? 0;
+                        return (
+                          <details className="my-1 rounded border border-rose-900/60 bg-rose-950/10 px-2 py-1">
+                            <summary className="cursor-pointer select-none text-[11px] text-rose-300/90 hover:text-rose-200">
+                              📊 展开敌群战斗回放（共 {total0} 只 · 总回合 {sumRounds} · 输出 {sumDealt} / 承伤 {sumTaken}
+                              {allWin ? ' · 全歼' : ' · 阵亡'}）
+                            </summary>
+                            <div className="mt-1 space-y-2">
+                              {entries.map((b) => (
+                                <div key={b.logIndex} className="rounded border border-zinc-800 bg-zinc-900/40 p-1.5">
+                                  <div className="mb-1 text-[11px] font-medium text-rose-200/90">
+                                    第 {b.groupIndex}/{b.groupTotal} 只：【{b.enemyName}】{b.win ? ' ✓ 击倒' : ' ✗ 阵亡'}
+                                  </div>
+                                  {renderReplayBody(b)}
+                                </div>
+                              ))}
+                              <div className="rounded bg-zinc-900/70 p-1.5 text-[10px] leading-relaxed text-zinc-400">
+                                ⚔ 敌群合计 {total0} 只，{allWin ? '全部放倒' : '未能全歼'}；累计输出 {sumDealt} / 承伤 {sumTaken}
+                                {lastHp > 0 ? `，残血 ${lastHp}` : ''}。
+                              </div>
+                            </div>
+                          </details>
+                        );
+                      })() : battle && (
                         <details className="my-1 rounded border border-rose-900/60 bg-rose-950/10 px-2 py-1">
                           <summary className="cursor-pointer select-none text-[11px] text-rose-300/90 hover:text-rose-200">
                             📊 展开战斗回放（{battle.rounds.length} 回合 · 输出 {battle.dmgDealt} / 承伤 {battle.dmgTaken}
                             {battle.win ? ' · 胜利' : ' · 战败'}）
                           </summary>
-                          <div className="mt-1.5 space-y-1.5">
-                            {/* 六维属性交互点评 */}
-                            {battle.attrNotes.length > 0 && (
-                              <div className="rounded bg-zinc-900/70 p-1.5">
-                                <div className="mb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
-                                  六维属性与战斗
-                                </div>
-                                {battle.attrNotes.map((n, ni) => (
-                                  <p key={ni} className="text-[11px] text-sky-300/90">
-                                    ◈ {n}
-                                  </p>
-                                ))}
-                              </div>
-                            )}
-                            {/* 逐回合交互 + 掉血 */}
-                            {battle.rounds.map((r) => (
-                              <div key={r.round} className="rounded bg-zinc-900/50 p-1.5">
-                                <div className="flex items-center justify-between text-[10px] text-zinc-500">
-                                  <span>第 {r.round} 回合</span>
-                                  <span className="font-mono">
-                                    ❤ 你 {r.hpSelf} ｜ 敌 {r.hpEnemy}
-                                  </span>
-                                </div>
-                                <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-300">{r.text}</p>
-                              </div>
-                            ))}
-                            {/* 一段战斗描写 */}
-                            <p className="rounded border-l-2 border-rose-700/60 bg-zinc-900/60 p-1.5 text-[11px] italic leading-relaxed text-zinc-300">
-                              {battle.narrative}
-                            </p>
-                          </div>
+                          {renderReplayBody(battle)}
                         </details>
                       )}
                     </div>

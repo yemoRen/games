@@ -1107,6 +1107,8 @@ function buildBattleReplay(
   duel: AutomaticDuelResolutionV1,
   won: boolean,
   logIndex: number,
+  groupIndex?: number,
+  groupTotal?: number,
 ): BattleReplayEntry {
   const selfId = selfUnit.id;
   const enemyId = enemyUnit.id;
@@ -1212,7 +1214,10 @@ function buildBattleReplay(
   const end = won
     ? `第 ${duel.turns} 回合，${enemy.name} 轰然倒地，废墟重归死寂。`
     : `第 ${duel.turns} 回合，你的枪声永远停在了这片废墟。`;
-  const narrative = [intro, mid, taken, end].filter(Boolean).join(' ');
+  let narrative = [intro, mid, taken, end].filter(Boolean).join(' ');
+  if (groupIndex && groupTotal) {
+    narrative = `〔敌群第 ${groupIndex}/${groupTotal} 只 · ${enemy.name}〕${narrative}`;
+  }
 
   // 六维属性交互点评（v1.0.3：用「本局有效六维」对比，debuff 会真实反映在点评里）
   const notes: string[] = [];
@@ -1234,6 +1239,8 @@ function buildBattleReplay(
     turns: duel.turns,
     win: won,
     boss: !!enemy.boss,
+    groupIndex,
+    groupTotal,
     rounds,
     narrative,
     attrNotes: notes,
@@ -1273,29 +1280,35 @@ export function fight(
       ? 1 + Math.floor(rng() * GROUP_MAX)
       : 1;
   if (groupSize > 1) {
-    plog(state, `⚔ 遭遇敌群（共 ${groupSize} 个）—— 首个【${enemy.name}】`);
+    plog(state, `⚔ 遭遇敌群（共 ${groupSize} 个）—— 为首的【${enemy.name}】率先扑来，其余在阴影里蠕动。`);
   }
   const groupHpStart = state.condition.resources.hp.current;
+  const groupDirs = ['左侧', '右侧', '身后', '正面', '斜刺里', '废墟缝隙'];
   for (let i = 0; i < groupSize; i++) {
     const mob = i === 0 ? enemy : pickEnemy(state, rng);
     if (groupSize > 1 && (state.phase as string) === 'searching') {
-      plog(state, `⚔ 敌群第 ${i + 1}/${groupSize} 只：【${mob.name}】扑了上来！`);
+      const dir = groupDirs[i % groupDirs.length];
+      plog(state, `⚔ 敌群第 ${i + 1}/${groupSize} 只：【${mob.name}】从${dir}扑了上来！`);
     }
-    fightOne(state, mob, rng);
+    fightOne(state, mob, rng, groupSize > 1 ? i + 1 : undefined, groupSize > 1 ? groupSize : undefined);
     if ((state.phase as string) === 'dead') break;
     if (i < groupSize - 1 && (state.phase as string) === 'searching') {
       plog(
         state,
-        `⚔ 你击倒了【${mob.name}】，但队友还在——还有 ${groupSize - 1 - i} 个敌人扑上来！`,
+        `⚔ 你刚击倒【${mob.name}】，残敌立刻补位——还有 ${groupSize - 1 - i} 个敌人围了上来！`,
       );
       spendTime(state, Math.floor(rng() * 15));
     }
   }
   if (groupSize > 1 && (state.phase as string) !== 'dead') {
     const lost = Math.max(0, groupHpStart - state.condition.resources.hp.current);
+    const hpMaxNow = state.condition.resources.hp.max ?? Math.max(1, state.condition.resources.hp.current);
+    const remainPct = hpMaxNow > 0
+      ? Math.round((state.condition.resources.hp.current / hpMaxNow) * 100)
+      : 0;
     plog(
       state,
-      `⚔ 敌群清缴完毕：共 ${groupSize} 只，累计损失 ${lost} 点生命（剩余 ${state.condition.resources.hp.current}/${state.condition.resources.hp.max}）。`,
+      `⚔ 敌群清缴完毕：共 ${groupSize} 只全部放倒，此役累计损失 ${lost} 点生命（剩余 ${state.condition.resources.hp.current}/${hpMaxNow}，血量 ${remainPct}%）——废墟暂归死寂。`,
     );
   }
 }
@@ -1308,6 +1321,8 @@ function fightOne(
   state: ExtractionRunState,
   enemy: EnemyArchetype,
   rng: () => number = Math.random,
+  groupIndex?: number,
+  groupTotal?: number,
 ): void {
   if (state.phase !== 'searching') return;
   state.encounter = undefined;
@@ -1390,6 +1405,11 @@ function fightOne(
           { ...enemy.attributes } as Attributes,
         ),
       };
+  const affixNote = enemy.affixes && enemy.affixes.length
+    ? `〔${enemy.affixes.map((a) => a.label).join('、')}〕`
+    : '';
+  const groupTag = groupIndex && groupTotal ? `〔敌群 ${groupIndex}/${groupTotal}〕` : '';
+
   let enemyUnit = buildEnemyUnit(runtime, scaledEnemy);
   // v1.0.2 伤害类投掷物自动使用：快捷·投掷槽装备了破片手雷时，45% 概率战斗先手引爆
   if (state.quickThrow === 'grenade' && rng() < 0.45) {
@@ -1397,22 +1417,49 @@ function fightOne(
     enemyUnit.takeDamage(dmg);
     plog(state, `💣 你抢先拉开破片手雷掷向【${enemy.name}】，轰然爆炸造成 ${dmg} 点伤害！`);
   }
+
   // ===== Boss 狂暴（两阶段实现）=====
-  // 第一阶段：基础形态。玩家取胜（boss 已被压到残血、越过 50%）→ 进入第二阶段狂暴形态（六维 ×1.5），
-  // 玩家血量自然继承。若玩家在第一阶段阵亡，则 boss 从未跌破 50%，不触发狂暴。
+  // 第一阶段：基础形态交战，玩家取胜 → 进入第二阶段狂暴形态（六维 ×1.5），玩家血量自然继承。
+  // 若玩家在第一阶段阵亡，则 boss 从未跌破 50%，不触发狂暴。
   // 危1~危7 全部 boss 生效；狂暴在危险度缩放（ENEMY_DANGER_SCALE）之上再叠加。
+  // v1.1.2 补全：第一阶段现在会单独输出交战日志与战斗回放，避免看起来像 boss 死后才狂暴。
   let duel: ReturnType<typeof resolveDuelToCompletion>;
   let enrageApplied = false;
   let replayEnemy: EnemyArchetype = enemy;
+  let phase1Duel: ReturnType<typeof resolveDuelToCompletion> | undefined;
+  let phase2Duel: ReturnType<typeof resolveDuelToCompletion> | undefined;
+  const phase1EnemyUnit = enemyUnit;
   if (enemy.boss) {
-    const phase1 = resolveDuelToCompletion({
-      battleId: 'extraction-duel',
+    phase1Duel = resolveDuelToCompletion({
+      battleId: 'extraction-duel-p1',
       player: survivorUnit,
       opponent: enemyUnit,
       runtime,
     });
-    if (phase1.winner === survivorUnit.id) {
-      const hpCarry = Math.max(1, phase1.winnerSnapshot.hp.current);
+    if (phase1Duel.winner === survivorUnit.id) {
+      // 第一阶段交战日志 + 回放：把 boss 从满血压到 50% 以下的完整过程
+      const phase1LogIndex = state.log.length;
+      plog(
+        state,
+        `⚔ ${groupTag}第一阶段：与【${enemy.name}】${affixNote}交战，历时 ${phase1Duel.turns} 回合，将其血量压至 50% 以下`,
+      );
+      state.battles.push(
+        buildBattleReplay(
+          state,
+          replayEnemy,
+          survivorUnit,
+          phase1EnemyUnit,
+          phase1Duel,
+          true,
+          phase1LogIndex,
+          groupIndex,
+          groupTotal,
+        ),
+      );
+
+      plog(state, `👹【${enemy.name}】血量跌破 50%，进入狂暴——六维骤升 ×1.5，第二阶段开战！`);
+
+      const hpCarry = Math.max(1, phase1Duel.winnerSnapshot.hp.current);
       survivorUnit.initializeResources({ hp: hpCarry });
       const enragedEnemy: EnemyArchetype = {
         ...enemy,
@@ -1424,19 +1471,18 @@ function fightOne(
         enragedUnit.takeDamage(dmg);
         plog(state, `💣 狂暴阶段的【${enemy.name}】也被破片手雷先手炸中，造成 ${dmg} 点伤害！`);
       }
-      plog(state, `👹【${enemy.name}】血量跌破 50%，进入狂暴——六维骤升 ×1.5，第二阶段开战！`);
-      const phase2 = resolveDuelToCompletion({
-        battleId: 'extraction-duel',
+      phase2Duel = resolveDuelToCompletion({
+        battleId: 'extraction-duel-p2',
         player: survivorUnit,
         opponent: enragedUnit,
         runtime,
       });
-      duel = phase2;
+      duel = phase2Duel;
       enrageApplied = true;
       enemyUnit = enragedUnit;
       replayEnemy = enragedEnemy;
     } else {
-      duel = phase1;
+      duel = phase1Duel;
     }
   } else {
     duel = resolveDuelToCompletion({
@@ -1449,15 +1495,69 @@ function fightOne(
   const survivorWon = duel.winner === survivorUnit.id;
   const sSnap = survivorWon ? duel.winnerSnapshot : duel.loserSnapshot;
   const eSnap = survivorWon ? duel.loserSnapshot : duel.winnerSnapshot;
-  const affixNote = enemy.affixes && enemy.affixes.length
-    ? `〔${enemy.affixes.map((a) => a.label).join('、')}〕`
-    : '';
-  const battleLogIndex = state.log.length;
-  plog(state, `⚔ 与【${enemy.name}】${affixNote}交战（${enemy.threatNote ?? ''}），历时 ${duel.turns} 回合`);
-  // 战斗回放：逐回合交互 + 属性点评（UI 点击 ⚔ 行可展开）
-  state.battles.push(
-    buildBattleReplay(state, replayEnemy, survivorUnit, enemyUnit, duel, survivorWon, battleLogIndex),
-  );
+
+  // 输出第二阶段交战日志 / 非 boss 交战日志 / boss 第一阶段失败日志
+  if (enrageApplied && phase2Duel) {
+    const phase2LogIndex = state.log.length;
+    plog(
+      state,
+      `⚔ ${groupTag}第二阶段：与狂暴【${enemy.name}】${affixNote}交战（${enemy.threatNote ?? ''}），历时 ${phase2Duel.turns} 回合`,
+    );
+    state.battles.push(
+      buildBattleReplay(
+        state,
+        replayEnemy,
+        survivorUnit,
+        enemyUnit,
+        phase2Duel,
+        survivorWon,
+        phase2LogIndex,
+        groupIndex,
+        groupTotal,
+      ),
+    );
+  } else if (phase1Duel) {
+    // boss 第一阶段失败：只输出第一阶段交战日志与回放
+    const phase1LogIndex = state.log.length;
+    plog(
+      state,
+      `⚔ ${groupTag}与【${enemy.name}】${affixNote}交战（${enemy.threatNote ?? ''}），历时 ${phase1Duel.turns} 回合`,
+    );
+    state.battles.push(
+      buildBattleReplay(
+        state,
+        replayEnemy,
+        survivorUnit,
+        phase1EnemyUnit,
+        phase1Duel,
+        survivorWon,
+        phase1LogIndex,
+        groupIndex,
+        groupTotal,
+      ),
+    );
+  } else {
+    const battleLogIndex = state.log.length;
+    plog(
+      state,
+      `⚔ ${groupTag}与【${enemy.name}】${affixNote}交战（${enemy.threatNote ?? ''}），历时 ${duel.turns} 回合`,
+    );
+    state.battles.push(
+      buildBattleReplay(
+        state,
+        replayEnemy,
+        survivorUnit,
+        enemyUnit,
+        duel,
+        survivorWon,
+        battleLogIndex,
+        groupIndex,
+        groupTotal,
+      ),
+    );
+  }
+
+  const totalTurns = (phase1Duel?.turns ?? 0) + (phase2Duel?.turns ?? 0) || duel.turns;
 
   const hpAfterBattle = sSnap.hp.current;
   // 护甲承伤结算：本场生命损耗的一部分由护甲吸收（耐久同步损耗）
@@ -1532,22 +1632,23 @@ function fightOne(
     // v1.0.9 补充：boss 尸体不再可搜刮，避免「放弃撤离→再搜一次 boss」额外刷装备
     state.corpse = undefined;
   }
-  if (enrageApplied) {
-    plog(state, `👹【${enemy.name}】血量跌破 50%，进入狂暴——六维骤升 ×1.5，火力与血量大幅强化！`);
-  }
+  const phaseLine = enrageApplied
+    ? `第一阶段历时 ${phase1Duel?.turns ?? 0} 回合将 ${enemy.name} 压至半血；第二阶段狂暴形态历时 ${phase2Duel?.turns ?? 0} 回合。`
+    : `你果断还击，枪声在废墟间回荡——历时 ${duel.turns} 回合。`;
   state.scene = [
     '⚔ 战斗爆发！',
     `${enemy.name} 扑击而来，${armorNote}。`,
-    `你果断还击，枪声在废墟间回荡——历时 ${duel.turns} 回合。`,
+    phaseLine,
     `✅ 战斗胜利：击倒【${enemy.name}】，你剩余生命 ${state.condition.resources.hp.current}/${state.condition.resources.hp.max}。`,
     '可以【搜刮敌方尸体】获取战利品。',
   ].join('\n');
   if (enrageApplied) {
     state.scene = `👹【${enemy.name}】曾狂暴（血量 <50% 时六维 ×1.5）！\n` + state.scene;
   }
+  const totalTurnsNote = totalTurns > duel.turns ? `整场战斗历时 ${totalTurns} 回合` : `历时 ${duel.turns} 回合`;
   plog(
     state,
-    `✔ 击退【${enemy.name}】（敌方残余生命 ${eSnap.hp.current}），你剩余生命 ${state.condition.resources.hp.current}/${state.condition.resources.hp.max}`,
+    `✔ 击退【${enemy.name}】（${totalTurnsNote}，敌方残余生命 ${eSnap.hp.current}），你剩余生命 ${state.condition.resources.hp.current}/${state.condition.resources.hp.max}`,
   );
   // 交战消耗对局时间（放在末尾：胜利后仍可能因时间耗尽而 timeout）
   spendTime(state, ACTION_COST.fight + Math.floor(rng() * 20));

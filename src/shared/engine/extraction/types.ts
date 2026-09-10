@@ -397,6 +397,10 @@ export interface BattleReplayEntry {
   dmgDealt: number;
   /** 己方总承伤 */
   dmgTaken: number;
+  /** 群怪战斗：本场为本次敌群遭遇中的第几只（1-based）；存在时表示属于一次多敌遭遇 */
+  groupIndex?: number;
+  /** 群怪战斗：本次敌群遭遇的总只数（groupIndex 存在时 > 1） */
+  groupTotal?: number;
 }
 
 export type ExtractOutcome = 'success' | 'death' | 'timeout';
