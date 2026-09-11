@@ -1831,9 +1831,9 @@ async function safeCopy(text: string): Promise<boolean> {
  * 裁剪后降到 ~1 万字符以内，远低于微信上限。
  *
  * v1.1.5 补充②：装备与待招募也会无限制累积，进一步裁剪（仅用于跨设备传输快照，
- * 本地存档完整保留）：
+ * 本地存档 / 存档文件导出 完整保留）：
  * - 已装备 gear 全部保留（防止引用断裂）
- * - 未装备 gear 按价值保留前 60 件
+ * - 未装备 gear 按价值保留前 50 件
  * - 待招募幸存者按战力保留前 10 人
  */
 function buildTransferSnapshot(state: SurvivalGameState): SurvivalGameState {
@@ -1849,7 +1849,7 @@ function buildTransferSnapshot(state: SurvivalGameState): SurvivalGameState {
   const unequippedGear = state.gear
     .filter((g) => !equippedIds.has(g.id))
     .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
-    .slice(0, 60);
+    .slice(0, 50);
 
   const trimmedRecruits = Array.isArray(state.recruits)
     ? [...state.recruits].sort((a, b) => (b.power ?? 0) - (a.power ?? 0)).slice(0, 10)
@@ -1881,6 +1881,8 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
   // 导入二次确认：先校验内容，确认后再写盘（避免 window.confirm 在部分环境失效导致导入无反应）
   const [importConfirmOpen, setImportConfirmOpen] = useState(false);
   const [importPayload, setImportPayload] = useState<SurvivalGameState | null>(null);
+  // 生成存档码二次确认：提醒用户存档码会裁剪部分信息，完整数据请用「下载存档文件」
+  const [exportConfirmOpen, setExportConfirmOpen] = useState(false);
 
   const parseSave = (text: string): SurvivalGameState | null => {
     const raw = (text || '').trim();
@@ -1942,10 +1944,10 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
     e.target.value = ''; // 允许重复选择同一文件
   };
 
-  // 导出存档文件（下载）
+  // 导出存档文件（下载）—— 完整保留所有装备与信息，不做任何裁剪
   const downloadSaveFile = () => {
     try {
-      const blob = new Blob([JSON.stringify(buildTransferSnapshot(state), null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const name = (getCurrentUser() || 'save').replace(/[^\w一-龥-]/g, '_');
@@ -1959,6 +1961,14 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
     } catch {
       setSyncToast('⚠️ 生成存档文件失败。');
     }
+  };
+
+  // 生成存档码（使用裁剪后的传输快照，确保字符数不超过微信上限）
+  const doGenerateCode = () => {
+    setExportConfirmOpen(false);
+    const code = compressToBase64(JSON.stringify(buildTransferSnapshot(state)));
+    setExportCode(code);
+    setSyncToast('✅ 已生成压缩存档码（已裁剪历史日志与低价值装备，可直接发微信），复制下方文本框内容即可。');
   };
 
   // 第二步：确认导入——写盘并刷新
@@ -2008,15 +2018,11 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
       <Card>
         <h3 className="font-semibold text-zinc-100">跨设备存档同步（存档码 / 存档文件）</h3>
         <p className="mt-1 text-xs text-zinc-400">
-          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件；②「下载存档文件」导出 .json，换设备后上传导入。两者都需在新设备登录同一账号才生效。传输快照会自动裁剪历史日志、低价值装备与待招募列表，核心进度与已装备完整保留。
+          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件，但会裁剪部分信息（详见生成时的二次提醒）；②「下载存档文件」导出 .json，<strong className="text-zinc-200">完整保留全部装备与信息</strong>，换设备后上传导入。两者都需在新设备登录同一账号才生效。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
-            onClick={() => {
-              const code = compressToBase64(JSON.stringify(buildTransferSnapshot(state)));
-              setExportCode(code);
-              setSyncToast('✅ 已生成压缩存档码（已裁剪历史日志与低价值装备，可直接发微信），复制下方文本框内容即可。');
-            }}
+            onClick={() => setExportConfirmOpen(true)}
             className="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700"
           >
             生成存档码
@@ -2046,6 +2052,35 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
             onFocus={(e) => e.currentTarget.select()}
             className="mt-2 h-24 w-full rounded border border-zinc-700 bg-zinc-900 p-2 font-mono text-[10px] text-zinc-300"
           />
+        ) : null}
+
+        {/* 生成存档码二次确认：提示存档码会裁剪部分信息 */}
+        {exportConfirmOpen ? (
+          <div className="mt-4 rounded border border-amber-600/60 bg-amber-950/30 p-3">
+            <p className="text-xs font-semibold text-amber-200">
+              ⚠️ 生成存档码须知
+            </p>
+            <p className="mt-1 text-[11px] text-amber-200/80">
+              存档码为便于微信发送已做压缩裁剪：仅保留已装备的装备，未装备装备按价值保留前 50 件，待招募保留战力前 10 人，历史日志、出击记录、漫游记录各保留近期少量。导入存档码后，被裁剪的装备与待招募信息将<strong className="text-amber-100">无法恢复</strong>。
+            </p>
+            <p className="mt-1 text-[11px] text-amber-200/80">
+              如需<strong className="text-amber-100">完整无裁剪</strong>的备份，请改用「下载存档文件」（.json）方式。确认仍要生成存档码？
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={() => setExportConfirmOpen(false)}
+                className="rounded bg-zinc-700 px-3 py-1 text-xs text-white hover:bg-zinc-600"
+              >
+                取消
+              </button>
+              <button
+                onClick={doGenerateCode}
+                className="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700"
+              >
+                确认生成
+              </button>
+            </div>
+          </div>
         ) : null}
 
         {/* 方式一：存档码（已压缩，适合微信） */}
