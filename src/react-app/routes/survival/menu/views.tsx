@@ -1883,6 +1883,8 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
   const [importPayload, setImportPayload] = useState<SurvivalGameState | null>(null);
   // 生成存档码二次确认：提醒用户存档码会裁剪部分信息，完整数据请用「下载存档文件」
   const [exportConfirmOpen, setExportConfirmOpen] = useState(false);
+  // 手机/微信环境下「下载存档文件」无法触发真实下载，回退为完整文本供复制保存
+  const [exportFileText, setExportFileText] = useState('');
 
   const parseSave = (text: string): SurvivalGameState | null => {
     const raw = (text || '').trim();
@@ -1946,11 +1948,21 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
 
   // 导出存档文件（下载）—— 完整保留所有装备与信息，不做任何裁剪
   const downloadSaveFile = () => {
+    const json = JSON.stringify(state, null, 2);
+    const name = (getCurrentUser() || 'save').replace(/[^\w一-龥-]/g, '_');
+    // 微信/手机浏览器不支持 blob 直接下载（a.click 静默失败，无报错也无文件），回退为显示完整文本供复制
+    const isMobileLike = /MicroMessenger|Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    if (isMobileLike) {
+      setExportFileText(json);
+      setSyncToast(
+        '⚠️ 当前（手机/微信）环境不支持直接下载文件，已生成完整存档文本。请长按文本框全选复制，转发给自己保存（电脑端可粘贴回「方式一」导入）。如需标准 .json 文件，请在电脑浏览器导出。',
+      );
+      return;
+    }
     try {
-      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+      const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      const name = (getCurrentUser() || 'save').replace(/[^\w一-龥-]/g, '_');
       a.href = url;
       a.download = `wasteland-save-${name}-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
@@ -1959,7 +1971,8 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
       URL.revokeObjectURL(url);
       setSyncToast('✅ 存档文件已生成，请在下载目录查收。');
     } catch {
-      setSyncToast('⚠️ 生成存档文件失败。');
+      setExportFileText(json);
+      setSyncToast('⚠️ 生成存档文件失败，已生成完整存档文本供复制。');
     }
   };
 
@@ -2018,7 +2031,7 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
       <Card>
         <h3 className="font-semibold text-zinc-100">跨设备存档同步（存档码 / 存档文件）</h3>
         <p className="mt-1 text-xs text-zinc-400">
-          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件，但会裁剪部分信息（详见生成时的二次提醒）；②「下载存档文件」导出 .json，<strong className="text-zinc-200">完整保留全部装备与信息</strong>，换设备后上传导入。两者都需在新设备登录同一账号才生效。
+          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件，但会裁剪部分信息（详见生成时的二次提醒）；②「下载存档文件」导出 .json，<strong className="text-zinc-200">完整保留全部装备与信息</strong>，换设备后上传导入。<strong className="text-amber-200">在手机 / 微信内「下载存档文件」会自动转为完整文本供复制</strong>（微信不支持直接下载文件）。两者都需在新设备登录同一账号才生效。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
@@ -2052,6 +2065,30 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
             onFocus={(e) => e.currentTarget.select()}
             className="mt-2 h-24 w-full rounded border border-zinc-700 bg-zinc-900 p-2 font-mono text-[10px] text-zinc-300"
           />
+        ) : null}
+
+        {/* 手机/微信环境：完整存档以文本形式呈现，供长按复制保存 */}
+        {exportFileText ? (
+          <div className="mt-2 rounded border border-zinc-700 bg-zinc-900 p-2">
+            <p className="text-[11px] text-amber-200/80">
+              完整存档文本（已完整保留全部装备与信息，可长按全选复制后转发保存；电脑端粘贴回「方式一 · 从存档码导入」框即可导入）：
+            </p>
+            <textarea
+              readOnly
+              value={exportFileText}
+              onFocus={(e) => e.currentTarget.select()}
+              className="mt-2 h-32 w-full rounded border border-zinc-700 bg-zinc-950 p-2 font-mono text-[10px] text-zinc-300"
+            />
+            <button
+              onClick={async () => {
+                const ok = await safeCopy(exportFileText);
+                setSyncToast(ok ? '✅ 已复制完整存档文本，可粘贴保存。' : '⚠️ 自动复制失败，请长按文本框手动全选复制。');
+              }}
+              className="mt-2 rounded bg-zinc-700 px-3 py-1 text-xs text-white hover:bg-zinc-600"
+            >
+              复制完整文本
+            </button>
+          </div>
         ) : null}
 
         {/* 生成存档码二次确认：提示存档码会裁剪部分信息 */}
