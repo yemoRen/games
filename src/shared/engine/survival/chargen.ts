@@ -13,12 +13,11 @@ import {
   type RNG,
   emptyAttributes,
   pick,
-  pickN,
   randInt,
   weightedPick,
 } from './rng';
 
-export type SurvivorRarity = 'common' | 'rare' | 'epic' | 'legendary';
+// 段位（tier）取代旧「资质 rarity」作为唯一品质维度；生成段位档见 GEN_TIERS。
 
 export interface SurvivorTrait {
   id: string;
@@ -43,7 +42,8 @@ export interface SurvivorProfile {
   name: string;
   origin: string;
   age: number;
-  rarity: SurvivorRarity;
+  /** 生成初始段位（1~4）；段位 5~7 仅由战力成长达成。旧存档可能缺失 */
+  genTier?: number;
   attributes: Attributes;
   /**
    * 初始六维「基础属性」（v1.1.0）：不含词条加成、升级加点、装备/buff 加成。
@@ -91,23 +91,30 @@ export const ALL_ATTR_KEYS: (keyof Attributes)[] = [
   'willpower',
 ];
 
-const RARITY_INFO: Record<
-  SurvivorRarity,
-  { label: string; weight: number; attrBonus: number; traitCount: number; color: string }
-> = {
-  common: { label: '普通', weight: 60, attrBonus: 0, traitCount: 1, color: '#9ca3af' },
-  rare: { label: '精锐', weight: 28, attrBonus: 3, traitCount: 2, color: '#38bdf8' },
-  epic: { label: '精英', weight: 10, attrBonus: 6, traitCount: 2, color: '#c084fc' },
-  legendary: { label: '传奇', weight: 2, attrBonus: 10, traitCount: 3, color: '#fbbf24' },
-};
-
-export function rarityColor(r: SurvivorRarity): string {
-  return RARITY_INFO[r].color;
-}
-
-export function rarityLabel(r: SurvivorRarity): string {
-  return RARITY_INFO[r].label;
-}
+// 生成段位档（1~5）：资质维度与段位合一，统一驱动「属性范围 / 词条数 / 招募金额」。
+// 段位名称与 TIERS 1~5 完全一致（白→绿→蓝→紫→黄）；段位 6~7（荒域掌控者/末世传奇）
+// 仅由战力成长达成，不在初始生成池内——初始生成最高只会是「旷野狂徒（段位5）」。
+// 每档定义：
+//   weight 抽取权重 / attrMin~attrMax 六维单维随机区间 / traitCount 初始词条数 /
+//   recruitCost 招募费（遣散返还 1/3）/ powerMin~powerMax 六维总和（战力）目标区间。
+export const GEN_TIERS: {
+  tier: number;
+  name: string;
+  color: string;
+  weight: number;
+  attrMin: number;
+  attrMax: number;
+  traitCount: number;
+  recruitCost: number;
+  powerMin: number;
+  powerMax: number;
+}[] = [
+  { tier: 1, name: '废土新人', color: '#cbd5e1', weight: 50, attrMin: 6, attrMax: 14, traitCount: 1, recruitCost: 200, powerMin: 36, powerMax: 59 },
+  { tier: 2, name: '资深拾荒者', color: '#4ade80', weight: 30, attrMin: 8, attrMax: 16, traitCount: 2, recruitCost: 800, powerMin: 60, powerMax: 83 },
+  { tier: 3, name: '战团骨干', color: '#38bdf8', weight: 14, attrMin: 10, attrMax: 18, traitCount: 2, recruitCost: 2000, powerMin: 84, powerMax: 107 },
+  { tier: 4, name: '钢铁幸存者', color: '#c084fc', weight: 5, attrMin: 12, attrMax: 22, traitCount: 3, recruitCost: 5000, powerMin: 108, powerMax: 131 },
+  { tier: 5, name: '旷野狂徒', color: '#facc15', weight: 1, attrMin: 14, attrMax: 25, traitCount: 3, recruitCost: 10000, powerMin: 132, powerMax: 150 },
+];
 
 /** 词条池：废土风味，覆盖属性、生存、搜刮等维度 */
 const TRAIT_POOL: SurvivorTrait[] = [
@@ -694,15 +701,19 @@ export function computePower(attributes: Attributes): number {
   );
 }
 
-// 段位阶梯：从白到红 7 档，颜色与词条品质（白绿蓝紫黄橙红）一一对应
+// 段位阶梯：从白到红 7 档，颜色与词条品质（白绿蓝紫黄橙红）一一对应。
+// 段位门槛 = 六维总和（战力）阈值，与「生成段位档 GEN_TIERS」的区间一一对齐：
+//   废土新人 36~59 / 资深拾荒者 60~83 / 战团骨干 84~107 / 钢铁幸存者 108~131 /
+//   旷野狂徒 132~179（区间定义 132~150）/ 荒域掌控者 180~239 / 末世传奇 ≥240。
+//   注：151~179 未单独定义，按阈值归为「旷野狂徒」。
 export const TIERS: { min: number; name: string; color: string }[] = [
   { min: 0, name: '废土新人', color: '#cbd5e1' },
-  { min: 55, name: '资深拾荒者', color: '#4ade80' },
-  { min: 75, name: '战团骨干', color: '#38bdf8' },
-  { min: 95, name: '钢铁幸存者', color: '#c084fc' },
-  { min: 120, name: '旷野狂徒', color: '#facc15' },
-  { min: 160, name: '荒域掌控者', color: '#fb923c' },
-  { min: 200, name: '末世传奇', color: '#f87171' },
+  { min: 60, name: '资深拾荒者', color: '#4ade80' },
+  { min: 84, name: '战团骨干', color: '#38bdf8' },
+  { min: 108, name: '钢铁幸存者', color: '#c084fc' },
+  { min: 132, name: '旷野狂徒', color: '#facc15' },
+  { min: 180, name: '荒域掌控者', color: '#fb923c' },
+  { min: 240, name: '末世传奇', color: '#f87171' },
 ];
 
 export function tierFromPower(power: number): { tier: number; name: string } {
@@ -736,62 +747,137 @@ function nextId(rng: RNG): string {
 }
 
 export interface GenerateOptions {
-  /** 指定稀有度（用于测试 / 招募定价），不指定则按权重抽取 */
-  rarity?: SurvivorRarity;
+  /** 指定生成段位（1~5，用于测试 / 定向招募），不指定则按权重抽取 */
+  genTier?: number;
   /** 固定名字（不指定则随机） */
   name?: string;
 }
 
 /**
- * 生成一个幸存者。纯函数：完全由 rng 决定，可复现。
+ * 按生成段位在目标战力区间 [targetMin,targetMax] 内随机基础六维，
+ * 同时每维落在单维区间 [attrMin,attrMax]。未传目标区间时默认使用 gt 的 powerMin~powerMax。
+ * 拒绝采样逼近；若 500 次内未命中，返回最接近区间的一个解，保证总有结果。
  */
-export function generateSurvivor(rng: RNG, opts: GenerateOptions = {}): SurvivorProfile {
-  const rarity: SurvivorRarity =
-    opts.rarity ??
-    weightedPick(
-      rng,
-      (Object.keys(RARITY_INFO) as SurvivorRarity[]).map((r) => ({
-        value: r,
-        weight: RARITY_INFO[r].weight,
-      })),
-    );
-  const info = RARITY_INFO[rarity];
-
-  // 1) 基础六维：每维在 6~15 浮动，再加稀有度整体加成
-  // v1.1.0：rolled = 初始基础属性（词条加成前），持久化到 baseAttributes 供「重塑六维」使用
-  const rolled = emptyAttributes();
-  for (const k of ALL_ATTR_KEYS) {
-    rolled[k] = randInt(rng, 6, 15) + info.attrBonus;
+function rollBaseAttributes(
+  rng: RNG,
+  gt: (typeof GEN_TIERS)[number],
+  targetMin?: number,
+  targetMax?: number,
+): Attributes {
+  const min = targetMin ?? gt.powerMin;
+  const max = targetMax ?? gt.powerMax;
+  let best: Attributes | null = null;
+  let bestDist = Infinity;
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const a = emptyAttributes();
+    for (const k of ALL_ATTR_KEYS) a[k] = randInt(rng, gt.attrMin, gt.attrMax);
+    const pw = computePower(a);
+    if (pw >= min && pw <= max) return a;
+    const dist = pw < min ? min - pw : pw - max;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = a;
+    }
   }
-  const base: Attributes = { ...rolled };
+  return best ?? emptyAttributes();
+}
 
-  // 2) 抽取词条并叠加属性增量
-  const traitCount = info.traitCount;
-  const traits = pickN(rng, TRAIT_POOL, traitCount);
+function buildSurvivor(
+  rng: RNG,
+  gt: (typeof GEN_TIERS)[number],
+  genTier: number,
+  opts: GenerateOptions,
+  rolled: Attributes,
+  traits: SurvivorTrait[],
+  power: number,
+): SurvivorProfile {
+  const base: Attributes = { ...rolled };
   for (const t of traits) {
     for (const k of ALL_ATTR_KEYS) {
       const delta = (t.modifiers as Record<string, number | undefined>)[k];
       if (delta) base[k] += delta;
     }
   }
-
-  // 3) 战力 / 段位
-  const power = computePower(base);
-  const { tier, name: tierName } = tierFromPower(power);
-
   return {
     id: nextId(rng),
     name: opts.name ?? randomName(rng),
     origin: pick(rng, ORIGINS),
     age: randInt(rng, 17, 58),
-    rarity,
+    genTier,
     attributes: base,
     baseAttributes: rolled,
     traits,
     power,
-    tier,
-    tierName,
+    tier: genTier,
+    tierName: tierNameFromTier(genTier),
+    recruitValue: gt.recruitCost,
   };
+}
+
+/**
+ * 生成一个幸存者。纯函数：完全由 rng 决定，可复现。
+ */
+export function generateSurvivor(rng: RNG, opts: GenerateOptions = {}): SurvivorProfile {
+  // 1) 抽生成段位（1~5），决定属性范围 / 词条数 / 招募费；段位即唯一显示维度。
+  //    段位 6~7（荒域掌控者/末世传奇）仅由战力成长达成，不在初始生成池内。
+  const idx =
+    opts.genTier != null
+      ? Math.max(1, Math.min(GEN_TIERS.length, Math.floor(opts.genTier))) - 1
+      : -1;
+  const gt =
+    idx >= 0
+      ? GEN_TIERS[idx]
+      : weightedPick(
+          rng,
+          GEN_TIERS.map((g) => ({ value: g, weight: g.weight })),
+        );
+  const genTier = gt.tier;
+
+  // 2) 抽取「与段位匹配品质」的初始词条，低段位不会附带高阶天赋。
+  //    词条 + 基础六维共同生成，并 rejection sampling 保证最终战力落在段位区间。
+  const basePowerMin = gt.attrMin * 6;
+  const basePowerMax = gt.attrMax * 6;
+  const maxAttempts = 200;
+  let best: { rolled: Attributes; traits: SurvivorTrait[]; power: number; dist: number } | null = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const traits = rollInitialTraits(rng, genTier, gt.traitCount);
+    const traitGain = traits.reduce((sum, t) => sum + weightedGain(t), 0);
+
+    // 反向确定基础战力目标区间，并裁剪到该段位可能的 base 范围
+    let targetMin = gt.powerMin - traitGain;
+    let targetMax = gt.powerMax - traitGain;
+    if (targetMin > basePowerMax || targetMax < basePowerMin) continue; // 该组词条与区间不兼容，换一组
+    targetMin = Math.max(basePowerMin, targetMin);
+    targetMax = Math.min(basePowerMax, targetMax);
+
+    const rolled = rollBaseAttributes(rng, gt, targetMin, targetMax);
+    const base: Attributes = { ...rolled };
+    for (const t of traits) {
+      for (const k of ALL_ATTR_KEYS) {
+        const delta = (t.modifiers as Record<string, number | undefined>)[k];
+        if (delta) base[k] += delta;
+      }
+    }
+    const power = computePower(base);
+    if (power >= gt.powerMin && power <= gt.powerMax) {
+      return buildSurvivor(rng, gt, genTier, opts, rolled, traits, power);
+    }
+    const dist = power < gt.powerMin ? gt.powerMin - power : power - gt.powerMax;
+    if (!best || dist < best.dist) best = { rolled, traits, power, dist };
+  }
+
+  // fallback：返回最接近区间的一次（极少发生）
+  if (best) {
+    return buildSurvivor(rng, gt, genTier, opts, best.rolled, best.traits, best.power);
+  }
+
+  // 兜底：无词条 + 取区间中点，保证总有结果
+  const fallbackTraits: SurvivorTrait[] = [];
+  const targetMid = (gt.powerMin + gt.powerMax) / 2;
+  const fallbackRolled = rollBaseAttributes(rng, gt, targetMid, targetMid);
+  const fallbackPower = computePower(fallbackRolled);
+  return buildSurvivor(rng, gt, genTier, opts, fallbackRolled, fallbackTraits, fallbackPower);
 }
 
 /** 词条的战斗增益汇总（供搜打撤引擎使用） */
@@ -841,6 +927,49 @@ export const PROTAGONIST_BASE_ATTR = 15;
  * 注意：仅作用于主角（isProtagonist），普通幸存者随机到这些词条不受影响。
  */
 export const DEPRECATED_PROTAGONIST_TRAIT_IDS: readonly string[] = ['ex-soldier', 'field-medic'];
+
+// ===== 生成时词条品质上限（按初始段位） =====
+// 避免低段位幸存者直接附带高阶天赋（如废土新人带「神速 黄」）。
+// 升级三选一不受此限制，角色成长后仍可获得全部品质天赋。
+const QUALITY_ORDER = ['white', 'green', 'blue', 'purple', 'yellow', 'orange', 'red'] as const;
+const INITIAL_MAX_QUALITY_IDX: Record<number, number> = {
+  1: 1, // 废土新人：最高 green
+  2: 2, // 资深拾荒者：最高 blue
+  3: 3, // 战团骨干：最高 purple
+  4: 4, // 钢铁幸存者：最高 yellow
+  5: 6, // 旷野狂徒：最高 red
+};
+function allowedInitialQualities(genTier: number): readonly string[] {
+  const idx = INITIAL_MAX_QUALITY_IDX[genTier] ?? 1;
+  return QUALITY_ORDER.slice(0, idx + 1);
+}
+
+function weightedGain(t: SurvivorTrait): number {
+  let g = 0;
+  for (const k of ALL_ATTR_KEYS) {
+    const d = (t.modifiers as Record<string, number | undefined>)[k];
+    if (d) {
+      const w = k === 'vitality' ? 1.2 : k === 'endurance' ? 1.1 : k === 'speed' ? 0.9 : k === 'willpower' ? 0.8 : 1.0;
+      g += d * w;
+    }
+  }
+  return g;
+}
+
+function rollInitialTraits(rng: RNG, genTier: number, count: number): SurvivorTrait[] {
+  const allowed = new Set(allowedInitialQualities(genTier));
+  let pool = TRAIT_POOL.filter((t) => allowed.has(t.quality));
+  const picked: SurvivorTrait[] = [];
+  while (picked.length < count && pool.length > 0) {
+    const t = weightedPick(
+      rng,
+      pool.map((x) => ({ value: x, weight: TRAIT_PICK_WEIGHT[x.quality] ?? 1 })),
+    );
+    picked.push(t);
+    pool = pool.filter((x) => x.id !== t.id);
+  }
+  return picked;
+}
 
 // ===== 升级词条三选一（系统流设定） =====
 
@@ -895,8 +1024,8 @@ export function makeProtagonist(name: string): SurvivorProfile {
     name,
     origin: '避难所登记者',
     age: 25,
-    // 紫（精英）品质，资质均衡固定，留待后续培养成长
-    rarity: 'epic',
+    // 主角按实际战力段位定档（资质均衡固定，留待后续培养成长）
+    genTier: tier,
     attributes,
     baseAttributes,
     traits,

@@ -9,7 +9,7 @@ import type { SurvivalGameState } from './state';
 import type { ExtractionRunState } from '../extraction/types';
 import { emptyGardenPlots, ACTION_POINT_CAP, START_SEEDS } from './state';
 import { getCurrentUser } from './account';
-import { DEPRECATED_PROTAGONIST_TRAIT_IDS, ensureBaseAttributes, tierFromPower } from './chargen';
+import { DEPRECATED_PROTAGONIST_TRAIT_IDS, ensureBaseAttributes, tierFromPower, TIERS } from './chargen';
 
 const SAVE_PREFIX = 'wqqs-survival-save-v1:';
 const RUN_PREFIX = 'wqqs-survival-run-v1:';
@@ -68,16 +68,20 @@ export function loadGame(): SurvivalGameState | null {
       if (Array.isArray(data.recruits)) {
         data.recruits = data.recruits.map((sv) => ensureBaseAttributes(sv));
       }
-      // v1.1.3：段位阶梯 5→7 档后，旧存档的 tier/tierName 可能过期；按当前 power 重算一次
-      data.survivors = data.survivors.map((sv) => {
+      // v1.1.4：仅当 tier 字段缺失或其 tierName 不在合法段位名称集合时，才按当前 power 重算；
+      // 否则保留现有 tier（保护「生成锁定的段位 genTier」与 v1.1.3 已迁移正确的 7 档旧存档）。
+      const TIER_NAMES = new Set(TIERS.map((t) => t.name));
+      const migrateTier = <T extends { tier?: number; power?: number; tierName?: string }>(
+        sv: T,
+      ): T => {
+        const valid = typeof sv.tier === 'number' && TIER_NAMES.has(sv.tierName ?? '');
+        if (valid) return sv;
         const { tier, name: tierName } = tierFromPower(sv.power ?? 0);
-        return { ...sv, tier, tierName };
-      });
+        return { ...sv, tier, tierName } as T;
+      };
+      data.survivors = data.survivors.map(migrateTier);
       if (Array.isArray(data.recruits)) {
-        data.recruits = data.recruits.map((sv) => {
-          const { tier, name: tierName } = tierFromPower(sv.power ?? 0);
-          return { ...sv, tier, tierName };
-        });
+        data.recruits = data.recruits.map(migrateTier);
       }
       return data;
     }

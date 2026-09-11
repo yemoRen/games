@@ -12,6 +12,8 @@ import {
   makeProtagonist,
   computePower,
   tierFromPower,
+  tierNameFromTier,
+  GEN_TIERS,
   rollTraitCandidates,
   ALL_ATTR_KEYS,
   ensureBaseAttributes,
@@ -31,7 +33,7 @@ import {
   rollGear,
   MATERIAL_LABEL,
 } from './economy';
-import { type RNG, randInt, emptyAttributes } from './rng';
+import { type RNG, randInt, emptyAttributes, weightedPick } from './rng';
 import {
   type MainSlotKey,
   type QuickSlotKey,
@@ -464,9 +466,9 @@ export function getGear(state: SurvivalGameState, id: string): GearItem | undefi
   return state.gear.find((g) => g.id === id);
 }
 
-/** 招募费用随花名册规模递增 */
+/** 普通招募最低门槛（实际招募费按生成段位付费，见 recruitSurvivor） */
 export function recruitCost(state: SurvivalGameState): number {
-  return 60 + (state.survivors.length - 2) * 40;
+  return GEN_TIERS[0].recruitCost;
 }
 
 export function canRecruit(state: SurvivalGameState): boolean {
@@ -477,9 +479,16 @@ export function recruitSurvivor(
   state: SurvivalGameState,
   rng: RNG,
 ): SurvivalGameState {
-  const cost = recruitCost(state);
+  // 按余额在「付得起的生成段位（1~5）」内加权抽取，避免抽到付不起的档
+  let gt = weightedPick(rng, GEN_TIERS.map((g) => ({ value: g, weight: g.weight })));
+  if (state.coins < gt.recruitCost) {
+    const affordable = GEN_TIERS.filter((g) => g.recruitCost <= state.coins);
+    if (affordable.length === 0) return state;
+    gt = weightedPick(rng, affordable.map((g) => ({ value: g, weight: g.weight })));
+  }
+  const cost = gt.recruitCost;
   if (state.coins < cost) return state;
-  const s = generateSurvivor(rng);
+  const s = generateSurvivor(rng, { genTier: gt.tier });
   return {
     ...state,
     coins: state.coins - cost,
@@ -1081,9 +1090,9 @@ export function addRecruit(state: SurvivalGameState, npc: SurvivorProfile): Surv
   };
 }
 
-/** 招募费用按段位阶梯（越厉害越贵） */
+/** 招募费用按段位阶梯（越厉害越贵）：废土新人200 / 资深拾荒者800 / 战团骨干2000 / 钢铁幸存者5000 / 旷野狂徒10000 */
 export function recruitFee(tier: number): number {
-  return [50, 200, 800, 3000, 10000][Math.min(4, Math.max(0, tier - 1))] ?? 10000;
+  return [200, 800, 2000, 5000, 10000][Math.min(4, Math.max(0, tier - 1))] ?? 10000;
 }
 
 export function acceptRecruit(
@@ -1376,9 +1385,10 @@ function recomputeMaxHpIncludingGear(state: SurvivalGameState, survivorId: strin
   const newCur = Math.min(newMax, Math.max(0, st.currentHp + delta));
   // v1.0.6：战力统计六维最终值（含装备六维加成）
   const power = computePower(eff);
-  const { tier, name: tierName } = tierFromPower(power);
+  const derived = tierFromPower(power);
+  const newTier = Math.max(p.genTier ?? derived.tier, derived.tier);
   const survivors = state.survivors.map((s) =>
-    s.id === survivorId ? { ...s, power, tier, tierName } : s,
+    s.id === survivorId ? { ...s, power, tier: newTier, tierName: tierNameFromTier(newTier) } : s,
   );
   return {
     ...state,
@@ -1403,9 +1413,10 @@ export function allocateFreePoint(
   p.freePoints = (p.freePoints ?? 0) - 1;
   p.attributes = { ...p.attributes, [attr]: (p.attributes[attr] ?? 0) + 1 };
   p.power = computePower(effectiveAttributes({ ...state, survivors: state.survivors.map((s, i) => (i === idx ? p : s)) }, survivorId));
-  const { tier, name: tierName } = tierFromPower(p.power);
-  p.tier = tier;
-  p.tierName = tierName;
+  const derived = tierFromPower(p.power);
+  const newTier = Math.max(p.genTier ?? derived.tier, derived.tier);
+  p.tier = newTier;
+  p.tierName = tierNameFromTier(newTier);
   const survivors = [...state.survivors];
   survivors[idx] = p;
   return recomputeMaxHpFor({ ...state, survivors }, survivorId);
@@ -1437,9 +1448,10 @@ export function chooseTraitPick(
   }
   p.attributes = attributes;
   p.power = computePower(effectiveAttributes({ ...state, survivors: state.survivors.map((s, i) => (i === idx ? p : s)) }, survivorId));
-  const { tier, name: tierName } = tierFromPower(p.power);
-  p.tier = tier;
-  p.tierName = tierName;
+  const derived = tierFromPower(p.power);
+  const newTier = Math.max(p.genTier ?? derived.tier, derived.tier);
+  p.tier = newTier;
+  p.tierName = tierNameFromTier(newTier);
   const survivors = [...state.survivors];
   survivors[idx] = p;
   const next = {
@@ -1493,9 +1505,10 @@ export function rerollTrait(
     survivors: state.survivors.map((s, i) => (i === idx ? p : s)),
   };
   p.power = computePower(effectiveAttributes(tmpState, survivorId));
-  const { tier, name: tierName } = tierFromPower(p.power);
-  p.tier = tier;
-  p.tierName = tierName;
+  const derived = tierFromPower(p.power);
+  const newTier = Math.max(p.genTier ?? derived.tier, derived.tier);
+  p.tier = newTier;
+  p.tierName = tierNameFromTier(newTier);
   const survivors = [...state.survivors];
   survivors[idx] = p;
   const next: SurvivalGameState = {
@@ -1541,7 +1554,7 @@ export function recycleGear(state: SurvivalGameState, gearIds: string[]): Surviv
 // ===== v1.1.0：重塑六维 =====
 
 /**
- * 重塑当前出击者的「初始六维基础属性」：六维各在 6~20 重新随机。
+ * 重塑当前出击者的「初始六维基础属性」：六维各在 6~25 重新随机。
  * 只改写 baseAttributes，词条加成 / 升级加点 / 等级 / 经验 / 装备 / 段位算法全部保留
  * （段位由新战力重算）。消耗 REROLL_ATTR_COST 废土币，余额不足时原样返回。
  * 注意：不再重建成员对象，因此成员 id 不变 —— 装备、状态、出击引用均不会断裂。
@@ -1558,7 +1571,7 @@ export function rerollBaseAttributes(
   const cur = ensureBaseAttributes(state.survivors[idx]);
 
   const rolled = emptyAttributes();
-  for (const k of ALL_ATTR_KEYS) rolled[k] = randInt(rng, 6, 20);
+  for (const k of ALL_ATTR_KEYS) rolled[k] = randInt(rng, 6, 25);
 
   // 保留「词条加成 + 升级加点」的差值，只替换基础部分
   const attrs = emptyAttributes();

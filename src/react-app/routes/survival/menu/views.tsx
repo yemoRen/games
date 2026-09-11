@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { ResetSaveDialog } from '../components/ResetSaveDialog';
-import { attrLabel, rarityLabel, rarityColor, tierColor, tierNameFromTier, ALL_ATTR_KEYS, rollTraitCandidates, type SurvivorTrait } from '@shared/engine/survival/chargen';
+import { attrLabel, tierColor, tierNameFromTier, ALL_ATTR_KEYS, rollTraitCandidates, type SurvivorTrait } from '@shared/engine/survival/chargen';
 import { affixColor, affixLabel } from '@shared/engine/survival/affixes';
 import type { AffixTierKey } from '@shared/engine/survival/affixes';
 import type { Attributes } from '@shared/types/cultivator';
@@ -1034,7 +1034,7 @@ export const ViewRerollAttributes: React.FC<ViewProps> = ({ state, mutate, rng }
         <div className="text-sm text-zinc-200">
           消耗 <span className="font-semibold text-amber-300">{REROLL_ATTR_COST}</span> 废土币，把{' '}
           <span className="text-zinc-100">{active.name}</span> 的
-          <b> 初始六维基础属性 </b>重新随机（每项 6~20）。
+          <b> 初始六维基础属性 </b>重新随机（每项 6~25）。
         </div>
         <div className="mt-2 text-xs text-zinc-400">
           只重随「最原始的初始基础属性」——词条加成、升级加点、等级、经验、装备与伤势全部保留；段位随新战力重算。
@@ -1060,7 +1060,7 @@ export const ViewRerollAttributes: React.FC<ViewProps> = ({ state, mutate, rng }
         {confirming ? (
           <div className="mt-3 rounded border border-amber-700 bg-amber-950/30 px-3 py-2">
             <div className="text-sm text-amber-200">
-              ⚠ 确认消耗 {REROLL_ATTR_COST} 废土币，将 {active.name} 的初始六维基础属性全部重新随机（6~20）？
+              ⚠ 确认消耗 {REROLL_ATTR_COST} 废土币，将 {active.name} 的初始六维基础属性全部重新随机（6~25）？
             </div>
             <div className="mt-1 text-xs text-amber-300/80">此操作不可撤销，可能抽到比现在更差的属性。</div>
             <div className="mt-2 flex gap-2">
@@ -1407,7 +1407,7 @@ export const ViewReforge: React.FC<ViewProps> = ({ state, mutate, rng }) => {
 // ===== 13. 英雄商城（钻石货币占位） =====
 export const ViewPremiumShop: React.FC<ViewProps> = ({ state, mutate }) => {
   const items = [
-    { id: 'p1', name: '传说幸存者召唤券', cost: 100, desc: '使用后获得一名传奇幸存者。' },
+    { id: 'p1', name: '钢铁幸存者召唤券', cost: 100, desc: '使用后获得一名钢铁幸存者（段位4 资质）。' },
     { id: 'p2', name: '全队满血包', cost: 30, desc: '所有幸存者立即满血。' },
     { id: 'p3', name: '装备升星符', cost: 50, desc: '将一件装备升 1 级。' },
   ];
@@ -1647,7 +1647,7 @@ function writeGmUnlocked(on: boolean): void {
 /** GM 加经验的固定额度 */
 const GM_XP_AMOUNT = 200;
 /** GM 加废土币的固定额度 */
-const GM_COIN_AMOUNT = 500;
+const GM_COIN_AMOUNT = 1000;
 
 const GmPanel: React.FC<{ state: SurvivalGameState; mutate: Mutate }> = ({ state, mutate }) => {
   const [unlocked, setUnlocked] = useState(() => readGmUnlocked());
@@ -1771,6 +1771,20 @@ const GmPanel: React.FC<{ state: SurvivalGameState; mutate: Mutate }> = ({ state
         >
           恢复行动点 120
         </button>
+        <button
+          onClick={() => {
+            // GM：随机生成一名幸存者并加入待招募（按 GEN_TIERS 权重抽段位 1~5），用于验证生成逻辑
+            const rng = mulberry32((Math.random() * 0xffffffff) >>> 0);
+            const s = generateSurvivor(rng);
+            mutate((st) => addRecruit(st, s));
+            setToast(
+              `✅ 生成幸存者 ${s.name}（${s.tierName} · 战力 ${s.power} · 六维 ${Object.values(s.attributes).reduce((a, b) => a + b, 0)}）。已加入花名册待招募区。`,
+            );
+          }}
+          className="rounded bg-amber-600 px-3 py-1 text-xs text-white hover:bg-amber-700"
+        >
+          随机生成幸存者
+        </button>
       </div>
       <div className="mt-2 text-[11px] text-zinc-500">
         经验按正常升级流程结算：满经验升级会给自由属性点、触发词条三选一，并将状态回满。
@@ -1838,14 +1852,13 @@ export const ViewRecruits: React.FC<ViewProps> = ({ state, mutate }) => {
           {state.recruits.map((r) => {
             const fee = recruitFee(r.tier);
             const canAfford = state.coins >= fee && !full;
-            const rc = rarityColor(r.rarity);
+            const tc = tierColor(r.tier);
             return (
-              <Card key={r.id} className="overflow-hidden" style={{ borderColor: `${rc}55` }}>
+              <Card key={r.id} className="overflow-hidden" style={{ borderColor: `${tc}55` }}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-base font-semibold" style={{ color: rc }}>{r.name}</span>
-                      <Pill tone="stone">{rarityLabel(r.rarity)}</Pill>
+                      <span className="text-base font-semibold" style={{ color: tc }}>{r.name}</span>
                     </div>
                     <div className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">
                       <TierBadge tier={r.tier} name={r.tierName} size="sm" /> · 战力 {r.power}

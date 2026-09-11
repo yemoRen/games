@@ -17,7 +17,6 @@ import {
   SHELTER_FACILITIES,
   FACTIONS,
   attrLabel,
-  rarityLabel,
   type SurvivalGameState,
 } from '@shared/engine/survival';
 import {
@@ -39,7 +38,7 @@ function printAttrs(a: Attributes) {
 function printSurvivors(state: SurvivalGameState) {
   for (const s of state.survivors) {
     console.log(
-      `  - ${s.name}（${rarityLabel(s.rarity)} / ${s.tierName} / 战力${s.power}）[${printAttrs(s.attributes)}]`,
+      `  - ${s.name}（${s.tierName} / 战力${s.power}）[${printAttrs(s.attributes)}]`,
     );
     console.log(`    词条：${s.traits.map((t) => t.name).join('、') || '无'}`);
   }

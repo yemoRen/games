@@ -40,8 +40,6 @@ import {
   FACTIONS,
   MATERIAL_LABEL,
   attrLabel,
-  rarityLabel,
-  rarityColor,
   recruitFee,
   dismissSurvivor,
   treatNearDeathWithCoins,
@@ -1030,13 +1028,7 @@ function CharacterPanel(props: {
                 <div className="flex items-start justify-between">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-zinc-100">{r.name}</span>
-                      <span
-                        className="rounded px-1.5 py-0.5 text-[11px]"
-                        style={{ backgroundColor: `${rarityColor(r.rarity)}22`, color: rarityColor(r.rarity) }}
-                      >
-                        {rarityLabel(r.rarity)}
-                      </span>
+                      <span className="font-semibold" style={{ color: tierColor(r.tier - 1) }}>{r.name}</span>
                       <span
                         className="rounded-full border px-1.5 py-0.5 text-[11px] font-semibold"
                         style={{ color: tierColor(r.tier - 1), borderColor: `${tierColor(r.tier - 1)}66`, background: `${tierColor(r.tier - 1)}1a` }}
