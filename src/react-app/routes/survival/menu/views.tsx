@@ -67,6 +67,7 @@ import {
 } from '@shared/engine/survival/state';
 import { saveGame } from '@shared/engine/survival/persistence';
 import { getCurrentUser } from '@shared/engine/survival/account';
+import { compressToBase64, decompressFromBase64 } from 'lz-string';
 import type { RNG } from '@shared/engine/survival/rng';
 import {
   RECIPES,
@@ -1823,6 +1824,21 @@ async function safeCopy(text: string): Promise<boolean> {
   }
 }
 
+/**
+ * 跨设备存档同步：导出前裁剪「纯展示性历史」字段，避免存档码（微信约 1.6 万字符上限）过长。
+ * log / sortieHistory / wanderLog 都是只增不减的日志/历史，删减不影响任何玩法进度，
+ * 接收端随事件会重新累积。实测：重度存档（800 条 log）压缩码 ~2.7 万字符，
+ * 裁剪后降到 ~1 万字符以内，远低于微信上限。
+ */
+function buildTransferSnapshot(state: SurvivalGameState): SurvivalGameState {
+  return {
+    ...state,
+    log: Array.isArray(state.log) ? state.log.slice(-30) : [],
+    sortieHistory: Array.isArray(state.sortieHistory) ? state.sortieHistory.slice(-20) : [],
+    wanderLog: Array.isArray(state.wanderLog) ? state.wanderLog.slice(-10) : [],
+  };
+}
+
 export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }) => {
   // v1.0.10：重置存档不再沿用「玩家代号」，改为弹窗输入重生者姓名
   const [resetOpen, setResetOpen] = useState(false);
@@ -1841,36 +1857,82 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
   const [importPayload, setImportPayload] = useState<SurvivalGameState | null>(null);
 
   const parseSave = (text: string): SurvivalGameState | null => {
-    let json = (text || '').trim();
-    if (!json) return null;
-    // 支持 base64 存档码：纯 base64 字符且较长时先解码
-    const looksB64 = /^[A-Za-z0-9+/=\r\n\s]+$/.test(json) && json.replace(/\s/g, '').length > 20;
-    if (looksB64) {
+    const raw = (text || '').trim();
+    if (!raw) return null;
+    // 统一校验：解析出的对象须含 version 且 survivors 为数组
+    const tryJson = (s: string): SurvivalGameState | null => {
       try {
-        json = decodeURIComponent(escape(atob(json.replace(/\s/g, ''))));
+        const data = JSON.parse(s);
+        if (data && data.version && Array.isArray(data.survivors)) return data as SurvivalGameState;
       } catch {
-        /* 不是合法 base64，按原文继续尝试 */
+        /* 不是合法 JSON */
       }
+      return null;
+    };
+    // 1) 原始 JSON（存档文件 / 调试粘贴）
+    const asJson = tryJson(raw);
+    if (asJson) return asJson;
+    // 2) lz-string 压缩存档码（v1.1.5 补充起导出默认格式，最短，适合微信）
+    const lz = decompressFromBase64(raw);
+    if (lz) {
+      const fromLz = tryJson(lz);
+      if (fromLz) return fromLz;
     }
-    try {
-      const data = JSON.parse(json);
-      if (data && data.version && Array.isArray(data.survivors)) return data as SurvivalGameState;
-    } catch {
-      /* 解析失败 */
+    // 3) 旧版 base64 存档码（v1.1.5 初版 btoa 编码，向后兼容）
+    if (/^[A-Za-z0-9+/=\r\n\s]+$/.test(raw) && raw.replace(/\s/g, '').length > 20) {
+      try {
+        const b64 = decodeURIComponent(escape(atob(raw.replace(/\s/g, ''))));
+        const fromB64 = tryJson(b64);
+        if (fromB64) return fromB64;
+      } catch {
+        /* 不是合法 base64 */
+      }
     }
     return null;
   };
 
-  // 第一步：校验存档码，合法则弹出内联二次确认
-  const startImport = () => {
-    const parsed = parseSave(importCode);
+  // 第一步：校验存档码/文件内容，合法则弹出内联二次确认
+  const openImportConfirm = (parsed: SurvivalGameState | null) => {
     if (!parsed) {
       setImportConfirmOpen(false);
-      setSyncToast('❌ 存档解析失败：内容不是有效的存档码。请确认已完整复制。');
+      setSyncToast('❌ 存档解析失败：内容不是有效的存档。请确认已完整复制或选择了正确文件。');
       return;
     }
     setImportPayload(parsed);
     setImportConfirmOpen(true);
+  };
+
+  // 从文本框（存档码）导入
+  const startImportFromText = () => openImportConfirm(parseSave(importCode));
+
+  // 从文件（.json 存档文件）导入
+  const startImportFromFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => openImportConfirm(parseSave(String(reader.result)));
+    reader.onerror = () => setSyncToast('❌ 读取文件失败，请重试。');
+    reader.readAsText(file);
+    e.target.value = ''; // 允许重复选择同一文件
+  };
+
+  // 导出存档文件（下载）
+  const downloadSaveFile = () => {
+    try {
+      const blob = new Blob([JSON.stringify(buildTransferSnapshot(state), null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const name = (getCurrentUser() || 'save').replace(/[^\w一-龥-]/g, '_');
+      a.href = url;
+      a.download = `wasteland-save-${name}-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSyncToast('✅ 存档文件已生成，请在下载目录查收。');
+    } catch {
+      setSyncToast('⚠️ 生成存档文件失败。');
+    }
   };
 
   // 第二步：确认导入——写盘并刷新
@@ -1916,22 +1978,28 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
         ) : null}
       </Card>
 
-      {/* v1.1.5：跨设备存档同步（方案 A，零后端，纯存档码） */}
+      {/* v1.1.5 补充：跨设备存档同步 —— 两种方式：① 压缩存档码（适合微信）② 存档文件（下载/上传） */}
       <Card>
-        <h3 className="font-semibold text-zinc-100">跨设备存档同步（存档码）</h3>
+        <h3 className="font-semibold text-zinc-100">跨设备存档同步（存档码 / 存档文件）</h3>
         <p className="mt-1 text-xs text-zinc-400">
-          点「生成存档码」得到一段文本，存到任意云盘 / 微信 / 邮件；换设备登录同一账号后，粘贴进下方「从存档码导入」即可搬走进度。
+          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件；②「下载存档文件」导出 .json，换设备后上传导入。两者都需在新设备登录同一账号才生效。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             onClick={() => {
-              const code = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+              const code = compressToBase64(JSON.stringify(buildTransferSnapshot(state)));
               setExportCode(code);
-              setSyncToast('✅ 已生成存档码，复制下方文本框内容即可。');
+              setSyncToast('✅ 已生成压缩存档码（已裁剪历史日志，可直接发微信），复制下方文本框内容即可。');
             }}
             className="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700"
           >
             生成存档码
+          </button>
+          <button
+            onClick={downloadSaveFile}
+            className="rounded bg-emerald-700 px-3 py-1 text-xs text-white hover:bg-emerald-600"
+          >
+            下载存档文件
           </button>
           {exportCode ? (
             <button
@@ -1954,9 +2022,10 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
           />
         ) : null}
 
+        {/* 方式一：存档码（已压缩，适合微信） */}
         <div className="mt-4 border-t border-zinc-800 pt-3">
-          <h4 className="text-xs font-semibold text-zinc-200">从存档码导入</h4>
-          <p className="mt-1 text-[11px] text-zinc-500">导入将覆盖当前账号存档，导入前请先备份。</p>
+          <h4 className="text-xs font-semibold text-zinc-200">方式一 · 从存档码导入</h4>
+          <p className="mt-1 text-[11px] text-zinc-500">导入将覆盖当前账号存档，导入前请先备份。粘贴「生成存档码」得到的文本即可。</p>
           <textarea
             value={importCode}
             onChange={(e) => {
@@ -1966,39 +2035,55 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
             placeholder="粘贴存档码…"
             className="mt-2 h-20 w-full rounded border border-zinc-700 bg-zinc-900 p-2 font-mono text-[10px] text-zinc-300"
           />
-          {!importConfirmOpen ? (
-            <button
-              onClick={startImport}
-              disabled={!importCode.trim()}
-              className="mt-2 rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700 disabled:opacity-40"
-            >
-              导入存档
-            </button>
-          ) : (
-            <div className="mt-2 rounded border border-amber-600/60 bg-amber-950/30 p-3">
-              <p className="text-xs font-semibold text-amber-200">
-                ⚠️ 二次确认：即将覆盖当前账号「{getCurrentUser() ?? '未登录'}」的存档
-              </p>
-              <p className="mt-1 text-[11px] text-amber-200/80">
-                此操作不可撤销，导入后当前避难所的全部进度将被存档码内容替换。确认继续？
-              </p>
-              <div className="mt-2 flex gap-2">
-                <button
-                  onClick={() => setImportConfirmOpen(false)}
-                  className="rounded bg-zinc-700 px-3 py-1 text-xs text-white hover:bg-zinc-600"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={confirmImport}
-                  className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
-                >
-                  确认导入
-                </button>
-              </div>
-            </div>
-          )}
+          <button
+            onClick={startImportFromText}
+            disabled={!importCode.trim() || importConfirmOpen}
+            className="mt-2 rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700 disabled:opacity-40"
+          >
+            导入存档码
+          </button>
         </div>
+
+        {/* 方式二：存档文件（下载 / 上传 .json） */}
+        <div className="mt-4 border-t border-zinc-800 pt-3">
+          <h4 className="text-xs font-semibold text-zinc-200">方式二 · 从存档文件导入</h4>
+          <p className="mt-1 text-[11px] text-zinc-500">选择此前「下载存档文件」得到的 .json 文件即可导入。</p>
+          <label className="mt-2 inline-block cursor-pointer rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700">
+            选择存档文件…
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={startImportFromFile}
+              className="hidden"
+            />
+          </label>
+        </div>
+
+        {/* 内联二次确认（两种导入方式共用） */}
+        {importConfirmOpen ? (
+          <div className="mt-4 rounded border border-amber-600/60 bg-amber-950/30 p-3">
+            <p className="text-xs font-semibold text-amber-200">
+              ⚠️ 二次确认：即将覆盖当前账号「{getCurrentUser() ?? '未登录'}」的存档
+            </p>
+            <p className="mt-1 text-[11px] text-amber-200/80">
+              此操作不可撤销，导入后当前避难所的全部进度将被存档内容替换。确认继续？
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={() => setImportConfirmOpen(false)}
+                className="rounded bg-zinc-700 px-3 py-1 text-xs text-white hover:bg-zinc-600"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmImport}
+                className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-700"
+              >
+                确认导入
+              </button>
+            </div>
+          </div>
+        ) : null}
         {syncToast ? <div className="mt-2 text-xs text-emerald-300">{syncToast}</div> : null}
       </Card>
 
