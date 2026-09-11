@@ -1829,10 +1829,36 @@ async function safeCopy(text: string): Promise<boolean> {
  * log / sortieHistory / wanderLog 都是只增不减的日志/历史，删减不影响任何玩法进度，
  * 接收端随事件会重新累积。实测：重度存档（800 条 log）压缩码 ~2.7 万字符，
  * 裁剪后降到 ~1 万字符以内，远低于微信上限。
+ *
+ * v1.1.5 补充②：装备与待招募也会无限制累积，进一步裁剪（仅用于跨设备传输快照，
+ * 本地存档完整保留）：
+ * - 已装备 gear 全部保留（防止引用断裂）
+ * - 未装备 gear 按价值保留前 60 件
+ * - 待招募幸存者按战力保留前 10 人
  */
 function buildTransferSnapshot(state: SurvivalGameState): SurvivalGameState {
+  const equippedIds = new Set<string>();
+  Object.values(state.equipped).forEach((slots) => {
+    if (!slots) return;
+    Object.values(slots).forEach((id) => {
+      if (typeof id === 'string') equippedIds.add(id);
+    });
+  });
+
+  const equippedGear = state.gear.filter((g) => equippedIds.has(g.id));
+  const unequippedGear = state.gear
+    .filter((g) => !equippedIds.has(g.id))
+    .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
+    .slice(0, 60);
+
+  const trimmedRecruits = Array.isArray(state.recruits)
+    ? [...state.recruits].sort((a, b) => (b.power ?? 0) - (a.power ?? 0)).slice(0, 10)
+    : [];
+
   return {
     ...state,
+    gear: [...equippedGear, ...unequippedGear],
+    recruits: trimmedRecruits,
     log: Array.isArray(state.log) ? state.log.slice(-30) : [],
     sortieHistory: Array.isArray(state.sortieHistory) ? state.sortieHistory.slice(-20) : [],
     wanderLog: Array.isArray(state.wanderLog) ? state.wanderLog.slice(-10) : [],
@@ -1982,14 +2008,14 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
       <Card>
         <h3 className="font-semibold text-zinc-100">跨设备存档同步（存档码 / 存档文件）</h3>
         <p className="mt-1 text-xs text-zinc-400">
-          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件；②「下载存档文件」导出 .json，换设备后上传导入。两者都需在新设备登录同一账号才生效。
+          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件；②「下载存档文件」导出 .json，换设备后上传导入。两者都需在新设备登录同一账号才生效。传输快照会自动裁剪历史日志、低价值装备与待招募列表，核心进度与已装备完整保留。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             onClick={() => {
               const code = compressToBase64(JSON.stringify(buildTransferSnapshot(state)));
               setExportCode(code);
-              setSyncToast('✅ 已生成压缩存档码（已裁剪历史日志，可直接发微信），复制下方文本框内容即可。');
+              setSyncToast('✅ 已生成压缩存档码（已裁剪历史日志与低价值装备，可直接发微信），复制下方文本框内容即可。');
             }}
             className="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700"
           >
