@@ -1885,6 +1885,8 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
   const [exportConfirmOpen, setExportConfirmOpen] = useState(false);
   // 手机/微信环境下「下载存档文件」无法触发真实下载，回退为完整文本供复制保存
   const [exportFileText, setExportFileText] = useState('');
+  // 手机/微信环境：点击「下载存档文件」先弹窗选择导出方式（① .json 文件 ② 完整文本）
+  const [exportFileChoiceOpen, setExportFileChoiceOpen] = useState(false);
 
   const parseSave = (text: string): SurvivalGameState | null => {
     const raw = (text || '').trim();
@@ -1946,19 +1948,15 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
     e.target.value = ''; // 允许重复选择同一文件
   };
 
-  // 导出存档文件（下载）—— 完整保留所有装备与信息，不做任何裁剪
-  const downloadSaveFile = () => {
-    const json = JSON.stringify(state, null, 2);
+  // 生成完整存档 JSON 文本（手机/微信回退方案，完整无裁剪）
+  const buildFullJson = () =>
+    JSON.stringify(state, null, 2);
+
+  // 导出存档文件（真实下载）—— 完整保留所有装备与信息，不做任何裁剪
+  // 桌面端直接成功；手机/微信端若被静默拦截（a.click 无报错也无文件），在 catch 里回退为完整文本
+  const doDownloadFile = () => {
+    const json = buildFullJson();
     const name = (getCurrentUser() || 'save').replace(/[^\w一-龥-]/g, '_');
-    // 微信/手机浏览器不支持 blob 直接下载（a.click 静默失败，无报错也无文件），回退为显示完整文本供复制
-    const isMobileLike = /MicroMessenger|Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-    if (isMobileLike) {
-      setExportFileText(json);
-      setSyncToast(
-        '⚠️ 当前（手机/微信）环境不支持直接下载文件，已生成完整存档文本。请长按文本框全选复制，转发给自己保存（电脑端可粘贴回「方式一」导入）。如需标准 .json 文件，请在电脑浏览器导出。',
-      );
-      return;
-    }
     try {
       const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -1969,11 +1967,30 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      setSyncToast('✅ 存档文件已生成，请在下载目录查收。');
+      setSyncToast('✅ 存档文件已生成，请在下载目录查收（若未弹出下载，请改用「生成完整文本」方式）。');
     } catch {
       setExportFileText(json);
       setSyncToast('⚠️ 生成存档文件失败，已生成完整存档文本供复制。');
     }
+  };
+
+  // 手机/微信环境：生成完整文本供复制保存（弹窗选项②）
+  const showExportFileText = () => {
+    setExportFileText(buildFullJson());
+    setExportFileChoiceOpen(false);
+    setSyncToast(
+      '⚠️ 已生成完整存档文本。请长按文本框全选复制，转发给自己保存（电脑端可粘贴回「方式一」导入）。如需标准 .json 文件，请在电脑浏览器导出。',
+    );
+  };
+
+  // 点击「下载存档文件」的入口：手机/微信先弹窗选择导出方式，桌面端直接下载
+  const onDownloadClick = () => {
+    const isMobileLike = /MicroMessenger|Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    if (isMobileLike) {
+      setExportFileChoiceOpen(true);
+      return;
+    }
+    doDownloadFile();
   };
 
   // 生成存档码（使用裁剪后的传输快照，确保字符数不超过微信上限）
@@ -2031,7 +2048,7 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
       <Card>
         <h3 className="font-semibold text-zinc-100">跨设备存档同步（存档码 / 存档文件）</h3>
         <p className="mt-1 text-xs text-zinc-400">
-          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件，但会裁剪部分信息（详见生成时的二次提醒）；②「下载存档文件」导出 .json，<strong className="text-zinc-200">完整保留全部装备与信息</strong>，换设备后上传导入。<strong className="text-amber-200">在手机 / 微信内「下载存档文件」会自动转为完整文本供复制</strong>（微信不支持直接下载文件）。两者都需在新设备登录同一账号才生效。
+          两种方式任选其一：①「生成存档码」得到一段<strong className="text-zinc-200">已压缩</strong>文本，可直接粘贴到微信 / 邮件，但会裁剪部分信息（详见生成时的二次提醒）；②「下载存档文件」导出 .json，<strong className="text-zinc-200">完整保留全部装备与信息</strong>，换设备后上传导入。<strong className="text-amber-200">在手机 / 微信内点击「下载存档文件」会弹出选择：可尝试导出 .json 文件，或生成完整文本供复制</strong>。两者都需在新设备登录同一账号才生效。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
@@ -2041,7 +2058,7 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
             生成存档码
           </button>
           <button
-            onClick={downloadSaveFile}
+            onClick={onDownloadClick}
             className="rounded bg-emerald-700 px-3 py-1 text-xs text-white hover:bg-emerald-600"
           >
             下载存档文件
@@ -2088,6 +2105,39 @@ export const ViewSettings: React.FC<ViewProps> = ({ state, mutate, onResetGame }
             >
               复制完整文本
             </button>
+          </div>
+        ) : null}
+
+        {/* 手机/微信环境：点击「下载存档文件」后弹出选择导出方式 */}
+        {exportFileChoiceOpen ? (
+          <div className="mt-4 rounded border border-emerald-600/60 bg-emerald-950/20 p-3">
+            <p className="text-xs font-semibold text-emerald-200">选择存档导出方式</p>
+            <p className="mt-1 text-[11px] text-emerald-200/80">
+              当前为手机 / 微信环境，请选择一种方式：① 导出 .json 文件（部分手机浏览器 / 微信可能拦截直接下载）；② 生成完整存档文本，可复制保存（兼容微信）。
+            </p>
+            <div className="mt-2 flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  setExportFileChoiceOpen(false);
+                  doDownloadFile();
+                }}
+                className="rounded bg-emerald-700 px-3 py-1.5 text-xs text-white hover:bg-emerald-600"
+              >
+                ① 导出为 .json 文件（尝试下载）
+              </button>
+              <button
+                onClick={showExportFileText}
+                className="rounded bg-zinc-700 px-3 py-1.5 text-xs text-white hover:bg-zinc-600"
+              >
+                ② 生成完整文本（可复制保存）
+              </button>
+              <button
+                onClick={() => setExportFileChoiceOpen(false)}
+                className="mt-1 self-end rounded bg-zinc-800 px-3 py-1 text-[11px] text-zinc-300 hover:bg-zinc-700"
+              >
+                取消
+              </button>
+            </div>
           </div>
         ) : null}
 
