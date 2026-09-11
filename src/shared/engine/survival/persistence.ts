@@ -10,6 +10,7 @@ import type { ExtractionRunState } from '../extraction/types';
 import { emptyGardenPlots, ACTION_POINT_CAP, START_SEEDS } from './state';
 import { getCurrentUser } from './account';
 import { DEPRECATED_PROTAGONIST_TRAIT_IDS, ensureBaseAttributes, tierFromPower, TIERS } from './chargen';
+import { buildGearName, gearTierName } from './affixes';
 
 const SAVE_PREFIX = 'wqqs-survival-save-v1:';
 const RUN_PREFIX = 'wqqs-survival-run-v1:';
@@ -82,6 +83,17 @@ export function loadGame(): SurvivalGameState | null {
       data.survivors = data.survivors.map(migrateTier);
       if (Array.isArray(data.recruits)) {
         data.recruits = data.recruits.map(migrateTier);
+      }
+      // v1.1.6：装备废土风命名迁移 —— 旧存档「白阶主武器」等按 tier+slot 重算为「锈蚀主武器」。
+      // 幂等：重算结果与当前命名一致，已迁移的存档再次读档无副作用；tierColor 不动，旧装备颜色不变。
+      if (Array.isArray(data.gear)) {
+        data.gear = data.gear.map((g) => {
+          if (!g || typeof g !== 'object') return g;
+          const tier = typeof g.tier === 'number' ? g.tier : 0;
+          const slot = (g.slot as 'weapon' | 'armor' | 'offWeapon' | 'head' | 'legs' | 'accessory') ?? 'weapon';
+          const newRarity = gearTierName(tier);
+          return { ...g, name: buildGearName(tier, slot), rarity: newRarity, rarityName: newRarity };
+        });
       }
       return data;
     }

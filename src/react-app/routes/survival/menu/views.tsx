@@ -6,13 +6,20 @@
  * 实现原则：能复用真实引擎的就复用（医疗/任务/战绩/招募集合），
  * 否则保持轻量占位（拍卖/赌战等需后端支持的项）。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ResetSaveDialog } from '../components/ResetSaveDialog';
 import { attrLabel, tierColor, tierNameFromTier, ALL_ATTR_KEYS, rollTraitCandidates, type SurvivorTrait } from '@shared/engine/survival/chargen';
 import { affixColor, affixLabel } from '@shared/engine/survival/affixes';
 import type { AffixTierKey } from '@shared/engine/survival/affixes';
 import type { Attributes } from '@shared/types/cultivator';
 import type { SurvivalGameState, SortieLog } from '@shared/engine/survival/state';
+import {
+  prepareArenaDuel,
+  arenaStep,
+  type ArenaDuelHandle,
+} from '@shared/engine/survival/arenaDuel';
+import type { UnitStateSnapshot } from '@shared/engine/battle-v5/systems/state/types';
+import type { CombatSequenceV3 } from '@shared/engine/battle-v5/v3/types';
 import {
   bankLoot,
   craftGear,
@@ -1495,14 +1502,361 @@ export const ViewWager: React.FC = () => (
   </Section>
 );
 
-// ===== 17. 擂台切磋（占位） =====
-export const ViewArena: React.FC = () => (
-  <Section title="擂台切磋" subtitle="与其他玩家 1v1 对决">
-    <Card>
-      <div className="text-sm text-zinc-300">需 PvP 匹配，本地未启用。</div>
+// ===== 17. 擂台切磋（本地 1v1 模拟对决） =====
+
+type ArenaLogTone = 'header' | 'damage' | 'dodge' | 'death' | 'heal' | 'neutral';
+interface ArenaLogLine {
+  round: number;
+  text: string;
+  tone: ArenaLogTone;
+}
+
+/** 从本回合交战序列中抽取可读的战斗日志行。 */
+function arenaLogFromSequences(seqs: CombatSequenceV3[]): { text: string; tone: ArenaLogTone }[] {
+  const out: { text: string; tone: ArenaLogTone }[] = [];
+  for (const seq of seqs) {
+    for (const fact of seq.facts) {
+      const atkName = fact.origin.kind === 'owned' ? fact.origin.owner.name : '系统';
+      if (fact.type === 'damage') {
+        out.push({
+          text: `${atkName} 对 ${fact.target.name} 造成 ${fact.amount} 点伤害${fact.critical ? '（暴击！）' : ''}`,
+          tone: 'damage',
+        });
+      } else if (fact.type === 'defense' && fact.defense === 'dodge') {
+        out.push({ text: `${fact.target.name} 灵巧地闪避了 ${atkName} 的攻击`, tone: 'dodge' });
+      } else if (fact.type === 'unit_died') {
+        out.push({ text: `${fact.target.name} 倒下了！`, tone: 'death' });
+      } else if (fact.type === 'recovery') {
+        out.push({ text: `${fact.target.name} 恢复了 ${fact.amount} 点生命`, tone: 'heal' });
+      }
+    }
+  }
+  return out;
+}
+
+function HpBar({ hp }: { hp: { current: number; max: number; percent: number } }) {
+  const pct = Math.max(0, Math.min(100, hp.percent));
+  const color = pct > 50 ? 'bg-emerald-500' : pct > 20 ? 'bg-amber-500' : 'bg-rose-500';
+  return (
+    <div className="h-3 w-full overflow-hidden rounded bg-zinc-800">
+      <div className={`h-full ${color} transition-all duration-300`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+const SIX_ATTRS: { key: keyof UnitStateSnapshot['attrs']; label: string }[] = [
+  { key: 'vitality', label: '体质' },
+  { key: 'strength', label: '力量' },
+  { key: 'spirit', label: '精神' },
+  { key: 'endurance', label: '耐力' },
+  { key: 'speed', label: '敏捷' },
+  { key: 'willpower', label: '意志' },
+];
+
+function CombatantCard({
+  snap,
+  name,
+  highlight,
+}: {
+  snap: UnitStateSnapshot | null;
+  name: string;
+  highlight?: boolean;
+}) {
+  if (!snap) {
+    return (
+      <Card className="flex-1 !p-3">
+        <div className="text-sm text-zinc-500">等待选将…</div>
+      </Card>
+    );
+  }
+  const a = snap.attrs;
+  const pct = (v: number | undefined) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : '—');
+  return (
+    <Card className={`flex-1 !p-3 ${highlight ? 'ring-2 ring-emerald-500/60' : ''}`}>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="truncate text-sm font-semibold text-zinc-100">{name}</span>
+        <span className="text-[11px] text-zinc-400">{snap.alive ? '存活' : '倒地'}</span>
+      </div>
+      <div className="mb-1 flex items-baseline justify-between text-xs">
+        <span className="flex items-center gap-1.5 text-zinc-400">
+          生命
+          {snap.hp.current >= snap.hp.max && (
+            <span className="rounded bg-emerald-900/60 px-1 text-[10px] leading-tight text-emerald-300">
+              满血
+            </span>
+          )}
+        </span>
+        <span className="tabular-nums text-zinc-200">
+          {Math.max(0, Math.round(snap.hp.current))} / {Math.round(snap.hp.max)}
+        </span>
+      </div>
+      <HpBar hp={snap.hp} />
+      <div className="mt-3">
+        <div className="mb-1 text-[11px] font-medium tracking-wide text-zinc-500">六维</div>
+        <div className="grid grid-cols-3 gap-x-2 gap-y-1 text-[11px]">
+          {SIX_ATTRS.map(({ key, label }) => (
+            <div key={label} className="flex items-center justify-between">
+              <span className="text-zinc-500">{label}</span>
+              <span className="tabular-nums text-zinc-300">{Math.round((a[key] as number) ?? 0)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mb-1 mt-3 text-[11px] font-medium tracking-wide text-zinc-500">战斗属性</div>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500">攻击</span>
+            <span className="tabular-nums text-rose-300">{Math.round(a.atk)}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500">防御</span>
+            <span className="tabular-nums text-sky-300">{Math.round(a.def)}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500">暴击</span>
+            <span className="tabular-nums text-amber-300">{pct(a.critRate)}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500">闪避</span>
+            <span className="tabular-nums text-emerald-300">{pct(a.evasionRate)}</span>
+          </div>
+        </div>
+      </div>
     </Card>
-  </Section>
-);
+  );
+}
+
+export const ViewArena: React.FC<ViewProps> = ({ state }) => {
+  const survivors = state.survivors;
+  const [selA, setSelA] = useState<string>(survivors[0]?.id ?? '');
+  const [selB, setSelB] = useState<string>(survivors[1]?.id ?? survivors[0]?.id ?? '');
+  const [duel, setDuel] = useState<ArenaDuelHandle | null>(null);
+  const duelRef = useRef<ArenaDuelHandle | null>(null);
+  const [round, setRound] = useState(0);
+  const [snaps, setSnaps] = useState<{ a: UnitStateSnapshot | null; b: UnitStateSnapshot | null }>({
+    a: null,
+    b: null,
+  });
+  const [log, setLog] = useState<ArenaLogLine[]>([]);
+  const [ended, setEnded] = useState(false);
+  const [winnerId, setWinnerId] = useState<string | null>(null);
+  const logEndRef = useRef<HTMLDivElement | null>(null);
+
+  const nameOf = (id: string) => state.survivors.find((s) => s.id === id)?.name ?? '—';
+  const ids = duel ? { a: duel.session.playerId, b: duel.session.opponentId } : { a: selA, b: selB };
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [log]);
+
+  const startDuel = () => {
+    if (!selA || !selB || selA === selB) return;
+    const handle = prepareArenaDuel(state, selA, selB);
+    if (!handle) return;
+    duelRef.current = handle;
+    setDuel(handle);
+    setRound(0);
+    setEnded(false);
+    setWinnerId(null);
+    const frame = handle.session.initialTimeline.frames[handle.session.initialTimeline.frames.length - 1];
+    setSnaps({
+      a: frame?.units[handle.session.playerId] ?? null,
+      b: frame?.units[handle.session.opponentId] ?? null,
+    });
+    setLog([{ round: 0, text: `⚔ 擂台切磋开始：${nameOf(selA)} vs ${nameOf(selB)}`, tone: 'header' }]);
+  };
+
+  const nextRound = () => {
+    const handle = duelRef.current;
+    if (!handle || ended) return;
+    const res = arenaStep(handle.session);
+    handle.session.save = res.save;
+    const r = res.round;
+    setRound(r);
+    const frame = res.stateTimeline.frames[res.stateTimeline.frames.length - 1];
+    const pa = frame?.units[handle.session.playerId] ?? null;
+    const pb = frame?.units[handle.session.opponentId] ?? null;
+    setSnaps({ a: pa, b: pb });
+    const lines = arenaLogFromSequences(res.sequences).map((l) => ({ round: r, ...l }));
+    setLog((prev) => [
+      ...prev,
+      { round: r, text: `—— 第 ${r} 回合 ——`, tone: 'neutral' },
+      ...lines,
+    ]);
+    if (res.outcome.battleEnded) {
+      setEnded(true);
+      const win = pa?.alive ? handle.session.playerId : pb?.alive ? handle.session.opponentId : null;
+      setWinnerId(win);
+      setLog((prev) => [
+        ...prev,
+        {
+          round: r,
+          text: `🏆 ${win ? nameOf(win === handle.session.playerId ? selA : selB) : '胜者'} 获胜，对决结束！`,
+          tone: 'header',
+        },
+      ]);
+    }
+  };
+
+  const resetDuel = () => {
+    duelRef.current = null;
+    setDuel(null);
+    setEnded(false);
+    setWinnerId(null);
+    setSnaps({ a: null, b: null });
+    setLog([]);
+    setRound(0);
+  };
+
+  if (survivors.length < 2) {
+    return (
+      <Section title="擂台切磋" subtitle="本地 1v1 模拟对决">
+        <Card>
+          <div className="text-sm text-zinc-300">
+            战团至少需要 2 名成员才能切磋。请先通过出击救援或花名册招募扩充战团。
+          </div>
+        </Card>
+      </Section>
+    );
+  }
+
+  const pickA = survivors.find((s) => s.id === selA);
+  const pickB = survivors.find((s) => s.id === selB);
+
+  return (
+    <Section title="擂台切磋" subtitle="选择两位战团成员进行 1v1 模拟对决（本地，不联网）">
+      <Card>
+          <p className="mb-3 text-xs text-zinc-400">
+            切磋为本地模拟，<strong className="text-zinc-200">双方以满血开局</strong>、仅按<strong className="text-zinc-200">角色六维 + 装备属性</strong>对决（不含基地/避难所/势力的各类属性 buff），<strong className="text-zinc-200">不改变成员真实状态</strong>；对决结束即自动恢复如初。
+          </p>
+
+        {/* 选将 */}
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            选手 A
+            <select
+              value={selA}
+              disabled={!!duel}
+              onChange={(e) => setSelA(e.target.value)}
+              className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100"
+            >
+              {survivors.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}（{s.tierName} · 战力 {s.power}）
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="pb-1 text-lg font-bold text-zinc-600">VS</span>
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            选手 B
+            <select
+              value={selB}
+              disabled={!!duel}
+              onChange={(e) => setSelB(e.target.value)}
+              className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100"
+            >
+              {survivors.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}（{s.tierName} · 战力 {s.power}）
+                </option>
+              ))}
+            </select>
+          </label>
+          {!duel ? (
+            <button
+              onClick={startDuel}
+              disabled={!selA || !selB || selA === selB}
+              className="rounded bg-emerald-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              开始切磋
+            </button>
+          ) : (
+            <button
+              onClick={resetDuel}
+              className="rounded bg-zinc-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-zinc-600"
+            >
+              退出切磋
+            </button>
+          )}
+        </div>
+        {!duel && selA === selB && (
+          <div className="mt-2 text-xs text-rose-300">两位选手不能是同一名成员。</div>
+        )}
+      </Card>
+
+      {/* 对决进行中 */}
+      {duel && (
+        <>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-zinc-200">
+              第 {round} 回合{ended ? '（已结束）' : ''}
+            </h3>
+            {ended && winnerId && (
+              <Pill tone="green">
+                🏆 {nameOf(winnerId === duel.session.playerId ? selA : selB)} 获胜
+              </Pill>
+            )}
+          </div>
+
+          <div className="flex gap-3">
+            <CombatantCard snap={snaps.a} name={nameOf(selA)} highlight={winnerId === duel.session.playerId} />
+            <CombatantCard snap={snaps.b} name={nameOf(selB)} highlight={winnerId === duel.session.opponentId} />
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={nextRound}
+              disabled={ended}
+              className="flex-1 rounded bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {ended ? '对决已结束' : '⚔ 下一回合'}
+            </button>
+          </div>
+
+          {/* 交战日志 */}
+          <Card className="!p-0">
+            <div className="max-h-64 overflow-y-auto p-3 text-xs leading-relaxed">
+              {log.map((l, i) => {
+                const cls =
+                  l.tone === 'header'
+                    ? 'text-emerald-300 font-semibold'
+                    : l.tone === 'damage'
+                      ? 'text-rose-300'
+                      : l.tone === 'dodge'
+                        ? 'text-sky-300'
+                        : l.tone === 'death'
+                          ? 'text-rose-400 font-semibold'
+                          : l.tone === 'heal'
+                            ? 'text-emerald-400'
+                            : 'text-zinc-400';
+                return (
+                  <div key={i} className={cls}>
+                    {l.text}
+                  </div>
+                );
+              })}
+              <div ref={logEndRef} />
+            </div>
+          </Card>
+        </>
+      )}
+
+      {!duel && (
+        <Card>
+          <div className="text-sm text-zinc-300">
+            当前候选：
+            <span className="text-zinc-100">{pickA?.name ?? '—'}</span>
+            <span className="mx-2 text-zinc-600">vs</span>
+            <span className="text-zinc-100">{pickB?.name ?? '—'}</span>
+          </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            每点击一次「下一回合」即推进一回合交手，实时显示双方血量、属性与交手日志；一方生命归零即判负，对决结束。
+          </p>
+        </Card>
+      )}
+    </Section>
+  );
+};
 
 // ===== 18. 世界传闻 =====
 export const ViewNews: React.FC<ViewProps> = ({ state }) => {

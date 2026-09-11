@@ -75,6 +75,69 @@ export function resolveDuelToCompletion(input: {
   };
 }
 
+/** 单回合对决结算的返回类型（与 resolveBattleRound 一致）。 */
+export type DuelRoundResolution = ReturnType<typeof resolveBattleRound>;
+
+/**
+ * 可逐步推进的 1v1 对决会话。
+ * save 为第 0 回合权威存档；之后每调用一次 stepDuel 推进一回合。
+ * 对决完全在战斗存档上模拟，不会改动任何真实成员数据。
+ */
+export interface DuelSession {
+  readonly battleId: string;
+  save: BattleSaveV1;
+  readonly selectionStrategies: ReadonlyMap<string, AbilitySelectionStrategy>;
+  readonly playerId: string;
+  readonly opponentId: string;
+  /** 第 0 回合（开局）状态帧，用于开战前的展示。 */
+  readonly initialTimeline: BattleStateTimelineV3;
+}
+
+/**
+ * 用两名战斗单位创建一场可逐步推进的对决会话。
+ * 双方 teamId 必须不同（构建单位时通常已按各自 id 区分）。
+ */
+export function createDuelSession(input: {
+  battleId: string;
+  player: Unit;
+  opponent: Unit;
+  runtime: BattleRuntime;
+}): DuelSession {
+  if (input.player.teamId === input.opponent.teamId) {
+    throw new Error('Duel units must belong to different teams');
+  }
+  const roster = BattleRoster.fromDuel(input.player, input.opponent);
+  const selectionStrategies = new Map<string, AbilitySelectionStrategy>();
+  for (const unit of roster.getAllUnits()) {
+    selectionStrategies.set(unit.id, unit.abilities.getSelectionStrategy());
+  }
+  const initialized = initializeBattle({
+    battleId: input.battleId,
+    roster,
+    runtime: input.runtime,
+  });
+  return {
+    battleId: input.battleId,
+    save: initialized.save,
+    selectionStrategies,
+    playerId: input.player.id,
+    opponentId: input.opponent.id,
+    initialTimeline: initialized.stateTimeline,
+  };
+}
+
+/**
+ * 推进对决一回合：自动为双方生成行动意图并执行单回合结算。
+ * 返回本回合结果（含下一回合存档 / 交战序列 / 状态帧 / 胜负判定）。
+ */
+export function stepDuel(session: DuelSession): DuelRoundResolution {
+  const commandSet = createAutomaticCommandSet(session.save, session.selectionStrategies);
+  return resolveBattleRound(
+    session.save,
+    sealRoundCommandSet(session.save, commandSet),
+  );
+}
+
 /**
  * Resolves a complete deterministic battle by repeatedly feeding automatic
  * intents into the same single-round resolver used by realtime matches.

@@ -171,6 +171,34 @@ const GEAR_SLOT_NAMES: Record<GearSlot, string> = {
   accessory: '配件',
 };
 
+/**
+ * 装备品质的废土风中文名（替代底层颜色阶级 t.label 用于装备命名/展示）。
+ * 阶梯：锈蚀(白)→改制(绿)→精工(蓝)→军用(紫)→霸主(黄)→超凡(橙)→神话(红)。
+ * 仅用于装备显示；词条/天赋的配色与阶级标识（t.label）保持不变，避免牵动整个稀有度体系。
+ */
+const GEAR_TIER_NAMES: Record<AffixTierKey, string> = {
+  white: '锈蚀',
+  green: '改制',
+  blue: '精工',
+  purple: '军用',
+  yellow: '霸主',
+  orange: '超凡',
+  red: '神话',
+};
+
+/**
+ * 按数字阶级取装备废土风品质名（锈蚀/改制/…）。装备命名统一走这里，
+ * 避免 rollGearDrop 与读档迁移两处各写一份导致不一致。
+ */
+export function gearTierName(tier: number): string {
+  return GEAR_TIER_NAMES[tierByTier(tier).key];
+}
+
+/** 装备完整显示名：废土风品质名 + 槽位名（如「锈蚀主武器」）。 */
+export function buildGearName(tier: number, slot: GearSlot): string {
+  return `${gearTierName(tier)}${GEAR_SLOT_NAMES[slot]}`;
+}
+
 const GEAR_SLOT_BASE: Record<GearSlot, Partial<Attributes>> = {
   weapon: { strength: 3, spirit: 1 },
   offWeapon: { strength: 2, speed: 1 },
@@ -398,8 +426,6 @@ export function rollGearDrop(
     { value: 'legs' as GearSlot, weight: 13 },
     { value: 'accessory' as GearSlot, weight: 13 },
   ]);
-  const slotName = GEAR_SLOT_NAMES[slot];
-
   // 词条数量：低阶通常 1 条（6% 出 2 条），阶级越高多词条概率越高（最多 3 条）
   const extraChance = tier >= 4 ? 0.75 : tier >= 2 ? 0.45 : tier >= 1 ? 0.15 : 0.06;
   let affixCount = 1;
@@ -434,16 +460,16 @@ export function rollGearDrop(
 
   const gear: GearItem = {
     id: `drop-${Date.now().toString(36)}-${Math.floor(rng() * 1e6).toString(36)}`,
-    name: `${t.label}阶${slotName}`,
+    name: buildGearName(tier, slot),
     slot,
-    rarity: t.label,
+    rarity: gearTierName(tier),
     modifiers,
     affixes: affixStrings,
     combat: Object.keys(combat).length ? combat : undefined,
     value: Math.round(40 + tier * 45 + affixInstances.length * 25),
     tier,
     tierColor: t.color,
-    rarityName: t.label,
+    rarityName: gearTierName(tier),
   };
 
   return {
@@ -452,7 +478,7 @@ export function rollGearDrop(
     kind: 'gear',
     value: gear.value,
     tier,
-    rarityName: t.label,
+    rarityName: gearTierName(tier),
     gear,
     affixes: affixInstances,
   };

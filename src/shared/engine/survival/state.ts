@@ -893,6 +893,39 @@ export function buildSortieLoadout(
   return { name: profile.name, attributes: loadout.attributes, profile, bonus };
 }
 
+/**
+ * 推导「擂台切磋单元」：仅用角色自身六维 + 已装备装备属性，
+ * 刻意排除避难所/势力（基地页）提供的各种属性 buff（驻防全属性加成、势力声望、搜刮运势等）。
+ * 即「角色页面所展示的属性」= 档案六维（基础+词条+加点）+ 装备词条/战斗加成，不与基地联动。
+ */
+export function buildArenaLoadout(
+  state: SurvivalGameState,
+  survivorId: string,
+): { name: string; attributes: Attributes; profile: SurvivorProfile; bonus: CombatBonus } | null {
+  const profile = state.survivors.find((s) => s.id === survivorId);
+  if (!profile) return null;
+  // 六维 = 档案属性（基础+词条+加点，已并入 profile.attributes）+ 已装备装备六维词条；
+  // 注意：不叠加 computeShelterBonuses 的 attrBonus / factionAttrBonus（基地页 buff）。
+  const attrs: Attributes = { ...profile.attributes };
+  for (const g of equippedGearList(state, survivorId)) {
+    for (const k of Object.keys(g.modifiers) as (keyof Attributes)[]) {
+      attrs[k] += g.modifiers[k] ?? 0;
+    }
+  }
+  // 战斗加成 = 词条 + 装备（不含避难所/势力）；搜刮运势不取基地部分。
+  const traitC = aggregateTraitCombat(profile.traits);
+  const gearC = aggregateGearCombat(state, survivorId);
+  const bonus: CombatBonus = {
+    hpBonus: traitC.hpBonus + gearC.hpBonus,
+    critBonus: traitC.critBonus + gearC.critBonus,
+    lootLuck: traitC.lootLuck + gearC.lootLuck,
+    startHpRatio: traitC.startHpRatio,
+    xpBonus: gearC.xpBonus,
+    coinBonus: gearC.coinBonus,
+  };
+  return { name: profile.name, attributes: attrs, profile, bonus };
+}
+
 export { computeShelterBonuses, MATERIAL_LABEL, RECIPES, SHELTER_FACILITIES, FACTIONS };
 
 // ===== 医疗消耗品 =====

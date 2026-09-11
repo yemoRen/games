@@ -764,7 +764,7 @@ function grantLoot(state: ExtractionRunState, raw: LootItem, rng: () => number, 
     state.carriedCreditsBonus += total - base;
     return `【废土币】×${total}（直接钱财，撤离后折算入基地货币）`;
   }
-  const tierNote = item.rarityName ? `(${item.rarityName}阶 · 估值 ${item.value})` : `(估值 ${item.value})`;
+  const tierNote = item.rarityName ? `(${item.rarityName} · 估值 ${item.value})` : `(估值 ${item.value})`;
   if (!addCarriedLoot(state, item)) return null;
   return `【${item.name}】${tierNote}`;
 }
@@ -1004,11 +1004,13 @@ export function rollEncounter(state: ExtractionRunState, rng: () => number = Mat
     if (rng() >= chance) return null;
     return pickEnemy(state, rng, nonBoss);
   }
+  // 非霸主区：霸主不应出现在普通遭遇池中（部分主题会把 boss 也放入 enemies，需显式过滤）
+  const availableEnemies = state.zone.enemies.filter((e) => !e.boss);
   // 收网期（tier3）：必遇
-  if (tier === 3) return pickEnemy(state, rng);
+  if (tier === 3) return availableEnemies.length > 0 ? pickEnemy(state, rng, availableEnemies) : null;
   const chance = Math.max(0.05, threatEncounterChance(depth, tier) - avoid);
   if (rng() >= chance) return null;
-  return pickEnemy(state, rng);
+  return availableEnemies.length > 0 ? pickEnemy(state, rng, availableEnemies) : null;
 }
 
 /**
@@ -1622,12 +1624,12 @@ function fightOne(
     // 红阶「霸主战利品」：霸主必定爆装备，品质走 BOSS 表（危1~危7）
     const bonus = rollGearDrop(rng, state.zone.dangerLevel, 0.8, 0, true);
     if (addCarriedLoot(state, bonus)) {
-      plog(state, `👑 霸主战利品：【${bonus.name}】（${bonus.rarityName}阶，估值 ${bonus.value}）。`);
+      plog(state, `👑 霸主战利品：【${bonus.name}】（${bonus.rarityName}，估值 ${bonus.value}）。`);
     }
     // 橙阶「霸主遗物」（从 lootCorpse 提取到此处，一次性发放完，不再由搜刮尸体获得）
     const relic = rollGearDrop(rng, state.zone.dangerLevel, 0.6, 0, true);
     if (addCarriedLoot(state, relic)) {
-      plog(state, `👑 霸主遗物：【${relic.name}】（${relic.rarityName}阶，估值 ${relic.value}）。`);
+      plog(state, `👑 霸主遗物：【${relic.name}】（${relic.rarityName}，估值 ${relic.value}）。`);
     }
     // v1.0.9 补充：boss 尸体不再可搜刮，避免「放弃撤离→再搜一次 boss」额外刷装备
     state.corpse = undefined;
@@ -1788,7 +1790,7 @@ export function lootCorpse(state: ExtractionRunState, rng: () => number = Math.r
     if (rng() < mobGearDropChance(state.zone.dangerLevel, luck)) {
       const bonus = rollGearDrop(rng, state.zone.dangerLevel, 0.1 + luck * 0.2);
       if (addCarriedLoot(state, bonus)) {
-        gained.push(`【${bonus.name}】(${bonus.rarityName}阶 · 估值 ${bonus.value})`);
+        gained.push(`【${bonus.name}】(${bonus.rarityName} · 估值 ${bonus.value})`);
       }
     }
   }

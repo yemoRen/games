@@ -1163,7 +1163,7 @@ function InventoryPanel(props: {
                           )}
                         </div>
                         <div className="text-[10px] text-zinc-500">
-                          {g.rarityName ?? g.rarity}阶
+                          {g.rarityName ?? g.rarity}
                         </div>
                         <GearBonusChips gear={g} />
                         <button
@@ -1911,8 +1911,10 @@ function SortiePanel(props: {
     const s = runRef.current;
     if (!s || !s.encounter || s.phase !== 'searching') return;
     if (action === 'throw') {
-      // 投掷物脱离：消耗基地库存的烟雾弹/闪光弹（无库存则不可用）
-      if ((state.throwables?.smoke ?? 0) <= 0 && (state.throwables?.flash ?? 0) <= 0) return;
+      // 投掷物脱离：优先消耗战利品临时背包里的投掷物，其次消耗基地库存；无则不可用
+      const carriedIdx = ['smoke', 'flash'].find((id) => s.carriedLoot.some((it) => it && it.id === id));
+      const hasBase = (state.throwables?.smoke ?? 0) > 0 || (state.throwables?.flash ?? 0) > 0;
+      if (carriedIdx === undefined && !hasBase) return;
     }
     // 新需求①：战斗后实时结算经验（含装备 xpBonus 加成），立即写入角色档案；途中升级则副本状态回复全满、伤势清除
     const xpBefore = s.xpGained ?? 0;
@@ -1934,17 +1936,28 @@ function SortiePanel(props: {
       setState(next);
     }
     if (action === 'throw') {
-      // 扣库存：优先烟雾弹，其次闪光弹
-      const used = (state.throwables?.smoke ?? 0) > 0 ? 'smoke' : 'flash';
-      setState((prev) => ({
-        ...prev,
-        throwables: { ...prev.throwables, [used]: Math.max(0, (prev.throwables?.[used] ?? 0) - 1) },
-      }));
-      // 日志补一条消耗记录
+      // 扣库存：先检索战利品临时背包，再检索基地库存；均优先烟雾弹、其次闪光弹
+      const carriedIdx = ['smoke', 'flash']
+        .map((id) => ({ id, idx: s.carriedLoot.findIndex((it) => it && it.id === id) }))
+        .find((x) => x.idx >= 0);
       const rs = runRef.current;
-      if (rs) {
-        const name = used === 'smoke' ? '烟雾弹' : '闪光弹';
-        rs.log.push(`[${fmtClock(rs.elapsedSec)}] 消耗【${name}】×1（基地库存同步扣减）。`);
+      if (carriedIdx) {
+        const it = s.carriedLoot[carriedIdx.idx];
+        consumeCarriedItem(s, carriedIdx.idx);
+        if (rs) {
+          const name = carriedIdx.id === 'smoke' ? '烟雾弹' : '闪光弹';
+          rs.log.push(`[${fmtClock(rs.elapsedSec)}] 消耗战利品背包中的【${name}】×1（投掷物脱离）。`);
+        }
+      } else {
+        const used = (state.throwables?.smoke ?? 0) > 0 ? 'smoke' : 'flash';
+        setState((prev) => ({
+          ...prev,
+          throwables: { ...prev.throwables, [used]: Math.max(0, (prev.throwables?.[used] ?? 0) - 1) },
+        }));
+        if (rs) {
+          const name = used === 'smoke' ? '烟雾弹' : '闪光弹';
+          rs.log.push(`[${fmtClock(rs.elapsedSec)}] 消耗【${name}】×1（基地库存同步扣减）。`);
+        }
       }
     }
     sync();
@@ -2342,7 +2355,16 @@ function SortiePanel(props: {
   const searchLeft = run ? zoneSearchLeft(run) : 0;
   const usedSearches = run ? run.zoneSearches[run.zone.id] ?? 0 : 0;
   const secureUsed = run ? run.secureBox.filter((x) => x !== null).length : 0;
-  const throwableStock = (state.throwables?.smoke ?? 0) + (state.throwables?.flash ?? 0);
+  // v1.1.6：投掷物脱离可用总量 = 基地库存 + 战利品临时背包，先消耗临时背包里的投掷物
+  const baseThrowableStock = (state.throwables?.smoke ?? 0) + (state.throwables?.flash ?? 0);
+  const carriedThrowableStock = run
+    ? run.carriedLoot.reduce(
+        (sum, it) =>
+          sum + (it && (it.id === 'smoke' || it.id === 'flash') ? (it.qty ?? 1) : 0),
+        0,
+      )
+    : 0;
+  const throwableStock = baseThrowableStock + carriedThrowableStock;
   // v1.0.5：威胁档 / 区域图派生展示
   const tier = run ? threatTierOf(run.elapsedSec) : 0;
   const tierDef = THREAT_TIERS[tier];
@@ -2885,7 +2907,7 @@ function SortiePanel(props: {
                 >
                   💣 投掷物脱离
                   <span className="ml-1 text-[11px] opacity-70">
-                    （烟雾弹/闪光弹 库存×{throwableStock}）
+                    （烟雾弹/闪光弹 可用×{throwableStock}，先扣战利品再扣基地）
                   </span>
                 </button>
               </div>

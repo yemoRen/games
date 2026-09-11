@@ -448,7 +448,7 @@ export const DANGER_ZONES: DangerZone[] = [
     dangerLevel: 7,
     flavor: '废土尽头，战争领主坐镇，掉宝最丰也最致命。',
     lootTable: [LOOT.alloy, LOOT.blueprint, LOOT.gear, LOOT.credits, LOOT.medkit, LOOT.nanogel, LOOT.serum, LOOT.chempack, LOOT.flash],
-    enemies: [ENEMIES.warlord, ENEMIES.brute, ENEMIES.drone, ENEMIES.mutant],
+    enemies: [ENEMIES.brute, ENEMIES.drone, ENEMIES.mutant],
     extractTimeSec: 300,
     bossEnemy: ENEMIES.warlord,
     branches: branches('nuclear', [
