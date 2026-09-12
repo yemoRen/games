@@ -33,6 +33,7 @@ import {
   rollGear,
   MATERIAL_LABEL,
 } from './economy';
+import { rebuildGearAtTier } from './affixes';
 import { type RNG, randInt, emptyAttributes, weightedPick } from './rng';
 import {
   type MainSlotKey,
@@ -770,6 +771,50 @@ export function craftGear(
   };
 }
 
+const REFORGE_COST = 500;
+const REFORGE_TIER_UP_CHANCE = 0.05;
+
+/**
+ * 装备改装：指定出击者已穿戴的某槽位装备，支付 500 废土币后重 roll 词缀。
+ * 有 5% 概率装备阶级 +1（最高红阶 6）。原 id、槽位保留，旧词条/灰字/名字/价值按新阶级刷新。
+ */
+export function reforgeEquippedGear(
+  state: SurvivalGameState,
+  rng: RNG,
+  survivorId: string,
+  slot: GearSlot,
+): { state: SurvivalGameState; gear?: GearItem; tierUp: boolean } {
+  if (state.coins < REFORGE_COST) return { state, tierUp: false };
+  const gearId = state.equipped[survivorId]?.[slot];
+  if (!gearId) return { state, tierUp: false };
+
+  const index = state.gear.findIndex((g) => g.id === gearId);
+  if (index < 0) return { state, tierUp: false };
+
+  const old = state.gear[index];
+  const tierUp = rng() < REFORGE_TIER_UP_CHANCE;
+  const newTier = Math.min(6, (old.tier ?? 0) + (tierUp ? 1 : 0));
+  const gear = rebuildGearAtTier(rng, old, newTier);
+
+  const nextGear = [...state.gear];
+  nextGear[index] = gear;
+
+  const log = tierUp
+    ? `【改装】${old.name} 阶级提升为 ${gear.name}（${gear.rarityName ?? gear.rarity}）：${gear.affixes.join('、')}。`
+    : `【改装】${gear.name} 词条已重 roll：${gear.affixes.join('、')}。`;
+
+  return {
+    state: {
+      ...state,
+      coins: state.coins - REFORGE_COST,
+      gear: nextGear,
+      log: [log, ...state.log].slice(0, 50),
+    },
+    gear,
+    tierUp,
+  };
+}
+
 // ===== 避难所设施 =====
 
 export function nextUpgradeCost(state: SurvivalGameState, facilityId: string): number | null {
@@ -950,8 +995,8 @@ export const MEDICINES: MedicineSpec[] = [
   { id: 'bandage', name: '止血绷带', healPct: 0.12, healFlat: 20, costCoins: 15, description: '立即回复 12% 生命 + 20 点，无伤势治疗。' },
   { id: 'antibiotic', name: '抗生素', healPct: 0.10, healFlat: 16, treats: ['infection'], costCoins: 25, description: '立即回复 10% 生命 + 16 点，清除感染。' },
   { id: 'medkit', name: '急救箱', healPct: 0.30, healFlat: 60, treats: ['bleeding', 'shellShock'], costCoins: 60, description: '立即回复 30% 生命 + 60 点，清除失血/震伤。' },
-  // —— 新增恢复道具 ——（v1.0.3：肾上腺素/营养剂可消除「疲惫」，营养剂兼具厚血兜底）
-  { id: 'stim', name: '肾上腺素', healPct: 0.20, healFlat: 25, treats: ['fatigue'], costCoins: 40, description: '回复 20% 生命 + 25 点并消除疲惫；作为增益补给使用时，激活副本时间 10 分钟内六维全属性 +5。' },
+  // —— 新增恢复道具 ——（v1.1.7：肾上腺素改为纯增益补给，不再回血/消疲惫；营养剂仍可消除「疲惫」）
+  { id: 'stim', name: '肾上腺素', healPct: 0, healFlat: 0, costCoins: 40, description: '增益补给，副本时间 10 分钟内六维全属性 +5。' },
   { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, treats: ['fatigue'], costCoins: 35, description: '立即回复 10% 生命 + 50 点，消除疲惫（厚血兜底）。' },
   { id: 'serum', name: '血清', healPct: 0.25, healFlat: 50, treats: ['infection', 'bleeding'], costCoins: 70, description: '立即回复 25% 生命 + 50 点，清除感染与失血。' },
   { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection', 'fatigue'], costCoins: 120, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
@@ -1014,7 +1059,7 @@ export function applyMedicineToSurvivor(
 }
 
 /** 用货币救治濒死成员（不消耗药品，按固定费用结算） */
-export const NEAR_DEATH_TREAT_COST = 100;
+export const NEAR_DEATH_TREAT_COST = 200;
 
 export function treatNearDeathWithCoins(
   state: SurvivalGameState,
@@ -1039,6 +1084,37 @@ export function treatNearDeathWithCoins(
     survivorStatus: { ...state.survivorStatus, [survivorId]: nextStatus },
     log: [
       `【救治】花费 ${NEAR_DEATH_TREAT_COST} 废土币稳定了 ${member?.name ?? '幸存者'} 的伤势。`,
+      ...state.log,
+    ].slice(0, 50),
+  };
+}
+
+/** v1.1.7：一键救治——支付固定费用把目标成员生命拉满、清除全部伤势与濒死（含所有 debuff） */
+export const ONE_CLICK_HEAL_COST = 500;
+
+export function oneClickHeal(
+  state: SurvivalGameState,
+  survivorId: string,
+  now: number = Date.now(),
+): SurvivalGameState {
+  const status = state.survivorStatus[survivorId];
+  if (!status) return state;
+  if (state.coins < ONE_CLICK_HEAL_COST) return state;
+  const member = state.survivors.find((s) => s.id === survivorId);
+  const nextStatus: SurvivorStatus = {
+    ...status,
+    currentHp: status.maxHp,
+    injuries: [],
+    dyingUntil: undefined,
+    lastRecoveredAt: new Date(now).toISOString(),
+    sortieReady: true,
+  };
+  return {
+    ...state,
+    coins: state.coins - ONE_CLICK_HEAL_COST,
+    survivorStatus: { ...state.survivorStatus, [survivorId]: nextStatus },
+    log: [
+      `【一键救治】花费 ${ONE_CLICK_HEAL_COST} 废土币，将 ${member?.name ?? '幸存者'} 完全治愈（生命全满、伤势清零）。`,
       ...state.log,
     ].slice(0, 50),
   };

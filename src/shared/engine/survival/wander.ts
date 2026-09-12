@@ -26,6 +26,7 @@ import {
   zoneNeighbors,
   zoneSearchLeft,
   goToExtract,
+  pickEnemy,
   type ExtractionRunState,
   type DangerZone,
 } from '../extraction';
@@ -50,19 +51,17 @@ import {
 import type { SurvivalGameState } from './state';
 
 /** 模拟一次副本最多执行几步动作（搜刮 / 转移 / 战斗都算一步） */
-const WANDER_MAX_STEPS = 14;
-/** 血量低于此比例时模拟「见好就收、主动撤离」 */
-const WANDER_RETREAT_HP_PCT = 0.4;
-/** 血量低于此比例时遭遇改为「潜行绕行」而非硬拼 */
-const WANDER_SNEAK_HP_PCT = 0.35;
+const WANDER_MAX_STEPS = 9;
+/** 血量低于此比例时模拟「见好就收、主动撤离」（低于起步门槛 0.5，留 10% 缓冲避免死区） */
+const WANDER_RETREAT_HP_PCT = 0.45;
 /**
  * 出击前血量低于此比例则拒绝派出。
- * ⚠️ 必须 ≥ WANDER_RETREAT_HP_PCT —— 否则会出现「血量在 30%~40% 之间的死区」：
- * 通过最低检查后，模拟循环第一步就因 HP < 40% 触发主动撤离而 break，
+ * ⚠️ 必须 ≥ WANDER_RETREAT_HP_PCT —— 否则会出现死区：
+ * 通过最低检查后，模拟循环第一步就因 HP < 撤退阈值而 break，
  * 整局什么也不做就 extract() 出来，行动点白扣且零收益。
- * 设为 0.4 = 撤退阈值，彻底消除该死区：低于 40% 一律拦截让玩家先治疗。
+ * 设为 0.5 = 撤退阈值，彻底消除该死区：低于 50% 一律拦截让玩家先治疗。
  */
-const WANDER_MIN_HP_PCT = 0.4;
+const WANDER_MIN_HP_PCT = 0.5;
 
 export interface WanderReport {
   ok: boolean;
@@ -180,8 +179,26 @@ export function simulateWanderSortie(
   const allowedZones = opts.zone
     ? [opts.zone]
     : DANGER_ZONES.filter((z) => meetsDangerLevelReq(activeLevel, z.dangerLevel));
-  const zone = allowedZones.length > 0
-    ? allowedZones[Math.floor(rng() * allowedZones.length)]
+  // v1.1.7：漫游区域选择改为「不低于当前等级可进最高危区 -2」，
+  // 避免后期强者反复回低危区「割草白嫖」；再按危险度平方加权，进一步倾向最高危区。
+  const maxAllowedDanger = allowedZones.length > 0
+    ? Math.max(...allowedZones.map((z) => z.dangerLevel))
+    : 1;
+  const minDanger = Math.max(1, maxAllowedDanger - 2);
+  const candidateZones = opts.zone
+    ? allowedZones
+    : allowedZones.filter((z) => z.dangerLevel >= minDanger);
+  const zonePool = candidateZones.length > 0 ? candidateZones : allowedZones;
+  const zone = zonePool.length > 0
+    ? (() => {
+        const totalWeight = zonePool.reduce((sum, z) => sum + z.dangerLevel * z.dangerLevel, 0);
+        let roll = rng() * totalWeight;
+        for (const z of zonePool) {
+          roll -= z.dangerLevel * z.dangerLevel;
+          if (roll <= 0) return z;
+        }
+        return zonePool[zonePool.length - 1];
+      })()
     : DANGER_ZONES[0];
 
   const apCost = sortieActionPointCost(zone.dangerLevel);
@@ -253,15 +270,18 @@ export function simulateWanderSortie(
     r.condition.resources.hp.current / (r.condition.resources.hp.max || 1);
 
   let enemyFaced: string | undefined;
-  /** 遭遇处理：血少则尝试潜行脱离，否则正面开战；战后顺手搜尸 */
+  let fought = false;
+  /** 遭遇处理：漫游 AI 不再潜行绕行，遇敌即正面开战；战后顺手搜尸 */
   const handleEncounter = () => {
     if (!run.encounter) return;
     enemyFaced = run.encounter.enemy.name;
-    resolveEncounter(run, hpPctOf(run) < WANDER_SNEAK_HP_PCT ? 'sneak' : 'fight', runRng);
+    resolveEncounter(run, 'fight', runRng);
+    fought = true;
     if (run.corpse) lootCorpse(run, runRng);
   };
 
   let steps = 0;
+  let searchesDone = 0;
   while (steps < WANDER_MAX_STEPS && phaseOf(run) === 'searching') {
     steps += 1;
     // 背包满（上一轮遗留的抉择）：放弃本轮拾取，继续跑
@@ -278,8 +298,18 @@ export function simulateWanderSortie(
     }
     if (zoneSearchLeft(run) > 0) {
       search(run, runRng, lootLuck);
+      searchesDone += 1;
       rollRescue(run, runRng, () => generateSurvivor(runRng));
       if (run.pendingSearch) resolveBagFull(run, 'abandon', runRng);
+      // v1.1.7：漫游搜打撤收益过高且常「搜而不战」。
+      // 首次搜刮后若未自然遭遇，强制撞上该区域一名普通敌人，确保每趟至少一战。
+      if (searchesDone === 1 && !run.encounter && phaseOf(run) === 'searching') {
+        const regulars = run.zone.enemies.filter((e) => !e.boss);
+        if (regulars.length > 0) {
+          const forced = pickEnemy(run, runRng, regulars);
+          run.encounter = { enemy: forced, intro: `你在废墟深处撞上了【${forced.name}】！` };
+        }
+      }
       handleEncounter();
     } else {
       // 本区搜刮干净 → 往更深的相邻区转移（越深越危险，也越肥）
@@ -305,8 +335,10 @@ export function simulateWanderSortie(
   }
 
   // ===== 结算：与手动出击 persistRunResult 同口径 =====
+  // v1.1.7：漫游是「托管行为」，收益系数 0.5——显著低于玩家手动打副本，避免托管反而更划算。
+  const WANDER_REWARD_EFFICIENCY = 0.5;
   let next = bankLoot(paid, run.bankedLoot);
-  const credits = failed ? 0 : Math.round(run.carriedCredits ?? 0);
+  const credits = failed ? 0 : Math.round((run.carriedCredits ?? 0) * WANDER_REWARD_EFFICIENCY);
   if (credits > 0) {
     next = { ...next, coins: next.coins + credits };
   }
@@ -316,7 +348,7 @@ export function simulateWanderSortie(
   const settleMaxHp = run.baseMaxHp || run.condition.resources.hp.max || baseMax;
   const finalHp = Math.max(0, Math.min(settleMaxHp, Math.round(finalHpRaw)));
   const injuries: Injury[] = run.injuries ?? [];
-  const xp = failed ? 0 : Math.round(run.xpGained ?? 0);
+  const xp = failed ? 0 : Math.round((run.xpGained ?? 0) * WANDER_REWARD_EFFICIENCY);
 
   const afterSortie = applySortieResult(next, {
     survivorId: active.id,

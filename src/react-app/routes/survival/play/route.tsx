@@ -26,16 +26,12 @@ import {
   unequipGear,
   applyFailureGearLoss,
   setQuickSlot,
-  craftGear,
-  craftCost,
-  canCraft,
   upgradeFacility,
   nextUpgradeCost,
   investFaction,
   nextFactionCost,
   buildSortieLoadout,
   computeShelterBonuses,
-  RECIPES,
   SHELTER_FACILITIES,
   FACTIONS,
   MATERIAL_LABEL,
@@ -797,17 +793,27 @@ function CharacterPanel(props: {
                 <div className="mt-2 rounded border border-rose-700 bg-rose-950/40 p-2 text-[12px] text-rose-200">
                   <div className="flex items-center justify-between gap-2">
                     <span>☠ 撤离失败·濒死，约 {dyingLeft} 分钟内未救治将真正离世</span>
-                    <button
-                      onClick={() => mutate((st2) => treatNearDeathWithCoins(st2, s.id))}
-                      disabled={state.coins < NEAR_DEATH_TREAT_COST}
-                      className={`rounded px-2 py-1 text-xs ${
-                        state.coins >= NEAR_DEATH_TREAT_COST
-                          ? 'bg-rose-600 text-white hover:bg-rose-500'
-                          : 'cursor-not-allowed bg-zinc-800 text-zinc-500'
-                      }`}
-                    >
-                      救治（⛁{NEAR_DEATH_TREAT_COST}）
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {((state.medicines.nanogel ?? 0) > 0) && (
+                        <button
+                          onClick={() => mutate((st2) => applyMedicineToSurvivor(st2, s.id, 'nanogel'))}
+                          className="rounded bg-fuchsia-600 px-2 py-1 text-xs text-white hover:bg-fuchsia-500"
+                        >
+                          纳米凝胶救治（×{state.medicines.nanogel}）
+                        </button>
+                      )}
+                      <button
+                        onClick={() => mutate((st2) => treatNearDeathWithCoins(st2, s.id))}
+                        disabled={state.coins < NEAR_DEATH_TREAT_COST}
+                        className={`rounded px-2 py-1 text-xs ${
+                          state.coins >= NEAR_DEATH_TREAT_COST
+                            ? 'bg-rose-600 text-white hover:bg-rose-500'
+                            : 'cursor-not-allowed bg-zinc-800 text-zinc-500'
+                        }`}
+                      >
+                        救治（⛁{NEAR_DEATH_TREAT_COST}）
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-1 text-[11px] text-rose-300/80">也可用医疗品在「末世行止·医疗中心」救治。</div>
                 </div>
@@ -1479,35 +1485,6 @@ function InventoryPanel(props: {
         )}
       </div>
 
-      {/* 装备 */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-        <h3 className="mb-2 text-xs uppercase tracking-wider text-zinc-500">装备制造</h3>
-        <div className="grid gap-2 sm:grid-cols-3">
-          {RECIPES.map((r) => {
-            const cost = craftCost(state, r);
-            const ok = canCraft(state, r);
-            return (
-              <div key={r.id} className="rounded border border-zinc-800 bg-zinc-950/50 p-3">
-                <div className="text-sm text-zinc-100">{r.name}</div>
-                <div className="mt-0.5 text-[11px] text-zinc-500">
-                  ⛁{cost.coins} +{' '}
-                  {cost.materials.map((m) => `${MATERIAL_LABEL[m.kind]}x${m.qty}`).join(' ')}
-                </div>
-                <button
-                  disabled={!ok}
-                  onClick={() => mutate((s) => craftGear(s, rng, r.id).state)}
-                  className={`mt-2 w-full rounded px-2 py-1.5 text-xs font-medium ${
-                    ok ? 'bg-sky-700 text-white hover:bg-sky-600' : 'cursor-not-allowed bg-zinc-800 text-zinc-500'
-                  }`}
-                >
-                  制造
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
     </section>
   );
 }
@@ -2028,7 +2005,7 @@ function SortiePanel(props: {
     sync();
   };
 
-  /** 副本内使用搜到的回复类道具（绷带/急救包/血清等）：立即回血并消除对应伤势 */
+  /** 副本内使用搜到的回复类道具（绷带/急救包/血清等）：立即回血并消除对应伤势；肾上腺素单独走增益buff逻辑 */
   const applyCarriedMed = (index: number) => {
     const s = runRef.current;
     if (!s || s.phase !== 'searching') return;
@@ -2040,6 +2017,17 @@ function SortiePanel(props: {
     const maxHp = s.condition.resources.hp.max ?? 0;
     const cur = s.condition.resources.hp.current;
     const canTreat = (med.treats ?? []).some((inj) => s.injuries.includes(inj));
+    // v1.1.7：肾上腺素从临时背包使用也要正确激活增益buff，允许满血使用
+    if (med.id === 'stim') {
+      const consumed = consumeCarriedItem(s, index);
+      if (!consumed) return;
+      s.buffUntilSec = (s.elapsedSec ?? 0) + 600;
+      s.log.push(
+        `[${fmtClock(s.elapsedSec)}] 🧪 使用战利品【${it.name}】，激活肾上腺素：副本时间 10 分钟内六维全属性 +5（剩余约 10 分钟）。`,
+      );
+      sync();
+      return;
+    }
     if (cur >= maxHp && !canTreat) return;
     const heal = cur >= maxHp ? 0 : Math.round(med.healPct * maxHp) + med.healFlat;
     const consumed = consumeCarriedItem(s, index);

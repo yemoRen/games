@@ -22,7 +22,6 @@ import type { UnitStateSnapshot } from '@shared/engine/battle-v5/systems/state/t
 import type { CombatSequenceV3 } from '@shared/engine/battle-v5/v3/types';
 import {
   bankLoot,
-  craftGear,
   buyMedicine,
   applyMedicineToSurvivor,
   acceptRecruit,
@@ -37,6 +36,8 @@ import {
   recruitFee,
   treatNearDeathWithCoins,
   NEAR_DEATH_TREAT_COST,
+  oneClickHeal,
+  ONE_CLICK_HEAL_COST,
   WARBAND_CAP,
   todayQuestsProgress,
   claimQuest,
@@ -71,17 +72,20 @@ import {
   gearSellPrice,
   sellMaterials,
   recycleGear,
+  activeSurvivor,
+  reforgeEquippedGear,
 } from '@shared/engine/survival/state';
 import { saveGame } from '@shared/engine/survival/persistence';
 import { getCurrentUser } from '@shared/engine/survival/account';
 import { compressToBase64, decompressFromBase64 } from 'lz-string';
 import type { RNG } from '@shared/engine/survival/rng';
 import {
-  RECIPES,
   MATERIAL_LABEL,
   materialCount,
   FACTIONS,
   type MaterialItem,
+  GEAR_SLOT_LABEL,
+  type GearSlot,
 } from '@shared/engine/survival/economy';
 import { INJURY_LABEL, regenPerMinute, timeToFullSeconds } from '@shared/engine/survival/recovery';
 import { generateSurvivor } from '@shared/engine/survival/chargen';
@@ -89,6 +93,17 @@ import { generateSurvivor } from '@shared/engine/survival/chargen';
 import { simulateWanderSortie, type WanderReport } from '@shared/engine/survival/wander';
 import { createRun, search, rollRescue, fight, extract, mulberry32, sumValue } from '@shared/engine/extraction';
 import { DANGER_ZONES } from '@shared/engine/extraction/content';
+
+/** 药品效果简写：回血型→「回复 X% 生命 +Y」；清伤型→「清除伤势：…」；纯增益（肾上腺素）→「增益补给，副本时间 10 分钟内六维全属性 +5」 */
+function medEffectShort(m: MedicineSpec): string {
+  if (m.healPct > 0 || m.healFlat > 0) {
+    return `回复 ${Math.round(m.healPct * 100)}% 生命 +${m.healFlat}`;
+  }
+  if (m.treats && m.treats.length > 0) {
+    return `清除伤势：${m.treats.map((t) => INJURY_LABEL[t]).join('、')}`;
+  }
+  return '增益补给，副本时间 10 分钟内六维全属性 +5';
+}
 
 type Mutate = (fn: (s: SurvivalGameState) => SurvivalGameState) => void;
 type SetState = React.Dispatch<React.SetStateAction<SurvivalGameState>>;
@@ -413,7 +428,7 @@ export const ViewCraft: React.FC<ViewProps> = ({ state, mutate }) => {
                 </span>
               </div>
               <div className="mt-1 text-xs text-zinc-400">
-                效果：{med ? `${Math.round(med.healPct * 100)}% 生命 +${med.healFlat}` : '—'}
+                效果：{med ? medEffectShort(med) : '—'}
               </div>
               <ul className="mt-3 space-y-1.5 text-xs">
                 {r.costMaterials.map((c) => {
@@ -1378,38 +1393,78 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
   );
 };
 
-// ===== 12. 装备改装（v1.1.0 由「鉴物回收」改名：本页是消耗材料造装备，出售请去废土市场） =====
+// ===== 12. 装备改装：选择当前出击者的已装备装备，500 币重 roll 词条，5% 升 1 阶 =====
 export const ViewReforge: React.FC<ViewProps> = ({ state, mutate, rng }) => {
+  const hero = activeSurvivor(state);
+  const slots: GearSlot[] = ['weapon', 'offWeapon', 'head', 'armor', 'legs', 'accessory'];
+  const equipped = state.equipped[hero?.id ?? ''] ?? {};
+  const [lastResult, setLastResult] = useState<{ name: string; tierUp: boolean; affixes: string[] } | null>(null);
+
   return (
-    <Section title="装备改装" subtitle="消耗材料随机改装为装备，有概率产出高稀有度词缀。">
+    <Section
+      title="装备改装"
+      subtitle={
+        hero
+          ? `选择 ${hero.name} 已穿戴的装备，消耗 500 废土币重 roll 词条（5% 概率升 1 阶，最高红阶）。`
+          : '未指定当前出击者，请先在战团界面选择一名幸存者。'
+      }
+    >
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {RECIPES.map((r) => {
-          const can = (() => {
-            if (state.coins < r.costCoins) return false;
-            for (const need of r.costMaterials) {
-              const have = state.materials.filter((m) => m.kind === need.kind).reduce((acc, m) => acc + m.quantity, 0);
-              if (have < need.qty) return false;
-            }
-            return true;
-          })();
+        {slots.map((slot) => {
+          const gearId = equipped[slot];
+          const gear = gearId ? state.gear.find((g) => g.id === gearId) : undefined;
+          const can = hero && gear && state.coins >= 500;
           return (
-            <Card key={r.id}>
-              <div className="flex items-center justify-between">
-                <div className="font-semibold text-zinc-100">{r.name}</div>
-                <Pill>{r.rarity}</Pill>
-              </div>
-              <div className="mt-2 text-xs text-zinc-400">
-                费用 {r.costCoins} 币 · 材料 {r.costMaterials.map((m) => `${MATERIAL_LABEL[m.kind]}×${m.qty}`).join('、')}
-              </div>
+            <Card key={slot}>
+              <div className="font-semibold text-zinc-100">{GEAR_SLOT_LABEL[slot]}</div>
+              {gear ? (
+                <>
+                  <div className="mt-2 text-sm font-medium" style={{ color: gear.tierColor ?? '#e4e4e7' }}>
+                    {gear.name}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-400">
+                    {gear.affixes.length ? gear.affixes.join(' / ') : '无额外词缀'}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">估值 ⛁{gear.value}</div>
+                </>
+              ) : (
+                <div className="mt-2 text-xs text-zinc-500">当前出击者在此槽位没有装备。</div>
+              )}
               <button
-                onClick={() => mutate((s) => craftGear(s, rng, r.id).state)}
+                onClick={() => {
+                  if (!hero || !gear) return;
+                  const res = reforgeEquippedGear(state, rng, hero.id, slot);
+                  if (res.gear) {
+                    mutate(() => res.state);
+                    setLastResult({
+                      name: res.gear.name,
+                      tierUp: res.tierUp,
+                      affixes: res.gear.affixes,
+                    });
+                  }
+                }}
                 disabled={!can}
                 className="mt-3 rounded bg-amber-600 px-3 py-1 text-xs text-white hover:bg-amber-700 disabled:opacity-40"
-              >改装</button>
+              >
+                改装（500 币）
+              </button>
             </Card>
           );
         })}
       </div>
+
+      {lastResult && (
+        <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-sm">
+          <div className="font-semibold text-zinc-200">
+            {lastResult.tierUp ? '🎉 改装大成功！' : '改装完成'}
+          </div>
+          <div className="mt-1 text-zinc-400">
+            {lastResult.name}
+            {lastResult.tierUp ? ' 阶级提升' : ''}：
+            {lastResult.affixes.length ? lastResult.affixes.join(' / ') : '无额外词缀'}
+          </div>
+        </div>
+      )}
     </Section>
   );
 };
@@ -1516,7 +1571,8 @@ function arenaLogFromSequences(seqs: CombatSequenceV3[]): { text: string; tone: 
   const out: { text: string; tone: ArenaLogTone }[] = [];
   for (const seq of seqs) {
     for (const fact of seq.facts) {
-      const atkName = fact.origin.kind === 'owned' ? fact.origin.owner.name : '系统';
+      const atkName =
+        seq.actor?.name ?? (fact.origin.kind === 'owned' ? fact.origin.owner.name : '系统');
       if (fact.type === 'damage') {
         out.push({
           text: `${atkName} 对 ${fact.target.name} 造成 ${fact.amount} 点伤害${fact.critical ? '（暴击！）' : ''}`,
@@ -2677,8 +2733,20 @@ export const ViewMedical: React.FC<ViewProps> = ({ state, mutate, setState }) =>
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // v1.1.7：医疗中心右上角「一键救治」——当前出击者，消耗 500 废土币，生命拉满 + 清除全部 debuff/濒死
+  const active = activeSurvivor(state);
+  const canOneClickHeal = !!active && state.coins >= ONE_CLICK_HEAL_COST;
   return (
     <Section title="医疗中心" subtitle="按时间戳结算全员恢复；伤势越重越慢。">
+      <div className="mb-3 flex items-center justify-end gap-2">
+        <button
+          onClick={() => mutate((st) => (active ? oneClickHeal(st, active.id) : st))}
+          disabled={!canOneClickHeal}
+          className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          一键救治（当前出击者：{active?.name ?? '未选出击者'} · ⛁{ONE_CLICK_HEAL_COST}）
+        </button>
+      </div>
       <div className="space-y-3">
         {state.survivors.map((s) => {
           const status = state.survivorStatus[s.id];
@@ -2726,12 +2794,12 @@ export const ViewMedical: React.FC<ViewProps> = ({ state, mutate, setState }) =>
                 </ul>
               )}
               <div className="mt-3 flex flex-wrap gap-2">
-                {MEDICINES.filter((m) => (state.medicines[m.id] ?? 0) > 0).map((m) => (
+                {MEDICINES.filter((m) => m.id !== 'stim' && (state.medicines[m.id] ?? 0) > 0).map((m) => (
                   <button
                     key={m.id}
                     onClick={() => mutate((st) => applyMedicineToSurvivor(st, s.id, m.id))}
                     className="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-700"
-                  >使用 {m.name}（{Math.round(m.healPct * 100)}%生命+{m.healFlat}）</button>
+                  >使用 {m.name}（{medEffectShort(m)}）</button>
                 ))}
                 {MEDICINES.every((m) => (state.medicines[m.id] ?? 0) === 0) && (
                   <span className="text-xs text-zinc-500">没有医疗品了，去「废土市场」购买</span>

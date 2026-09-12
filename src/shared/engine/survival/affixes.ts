@@ -495,3 +495,60 @@ export interface LootItemGear {
   gear: GearItem;
   affixes: AppliedAffix[];
 }
+
+/**
+ * 按指定阶级重铸一件已有装备（保留 id 与槽位）。
+ * 用于「装备改装」：重随机灰字基础属性与同阶级词缀；若 tier 比之前高，则按新阶级生成。
+ */
+export function rebuildGearAtTier(
+  rng: RNG,
+  gear: GearItem,
+  tier: number,
+): GearItem {
+  const slot = gear.slot;
+  const t = tierByTier(tier);
+
+  // 词条数量：与 rollGearDrop 保持一致（低阶通常 1 条，高阶概率多条，最多 3 条）
+  const extraChance = tier >= 4 ? 0.75 : tier >= 2 ? 0.45 : tier >= 1 ? 0.15 : 0.06;
+  let affixCount = 1;
+  if (rng() < extraChance) affixCount++;
+  if (affixCount === 2 && rng() < extraChance * 0.5) affixCount++;
+
+  const pool = GEAR_AFFIXES.filter((a) => (a.minTier ?? 0) <= tier);
+  const chosen = pickN(rng, pool, affixCount);
+
+  // 灰字：槽位基础属性，随装备阶级小幅成长（白 +0% → 红 +120%）
+  const baseScale = 1 + 0.2 * tier;
+  const modifiers: Partial<Attributes> = {};
+  for (const k of Object.keys(GEAR_SLOT_BASE[slot]) as (keyof Attributes)[]) {
+    modifiers[k] = Math.round((GEAR_SLOT_BASE[slot][k] ?? 0) * baseScale);
+  }
+
+  const combat: NonNullable<AppliedAffix['combat']> = {};
+  const affixStrings: string[] = [];
+
+  for (const def of chosen) {
+    const inst = instantiate(def, tier);
+    affixStrings.push(inst.text);
+    if (inst.combat) {
+      combat.hpBonus = (combat.hpBonus ?? 0) + (inst.combat.hpBonus ?? 0);
+      combat.critBonus = Number(((combat.critBonus ?? 0) + (inst.combat.critBonus ?? 0)).toFixed(3));
+      combat.lootLuck = Number(((combat.lootLuck ?? 0) + (inst.combat.lootLuck ?? 0)).toFixed(3));
+      combat.xpBonus = Number(((combat.xpBonus ?? 0) + (inst.combat.xpBonus ?? 0)).toFixed(3));
+      combat.coinBonus = Number(((combat.coinBonus ?? 0) + (inst.combat.coinBonus ?? 0)).toFixed(3));
+    }
+  }
+
+  return {
+    ...gear,
+    tier,
+    name: buildGearName(tier, slot),
+    rarity: gearTierName(tier),
+    rarityName: gearTierName(tier),
+    tierColor: t.color,
+    modifiers,
+    affixes: affixStrings,
+    combat: Object.keys(combat).length ? combat : undefined,
+    value: Math.round(40 + tier * 45 + affixStrings.length * 25),
+  };
+}

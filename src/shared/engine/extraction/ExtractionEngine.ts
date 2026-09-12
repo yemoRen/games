@@ -367,6 +367,23 @@ function zoneDepth(state: ExtractionRunState): number {
   return Math.max(1, Math.min(7, Math.round(d)));
 }
 
+// v1.1.7：副本药物产出概率 = 原概率 × 0.5（激素/血清/急救等）
+const MEDICINE_DROP_FACTOR = 0.5;
+const MEDICINE_LOOT_IDS = new Set(['meds', 'serum', 'medkit', 'stim', 'nutrient', 'nanogel', 'splint']);
+
+// v1.1.7：深3~深7 区域，移动 / 搜刮 / 战斗均有 5% 概率感染
+const INFECTION_CHANCE = 0.05;
+function maybeContractInfection(state: ExtractionRunState, rng: () => number): void {
+  if (zoneDepth(state) < 3) return;
+  if (rng() >= INFECTION_CHANCE) return;
+  if (state.injuries.includes('infection')) return;
+  state.injuries = [...state.injuries, 'infection'];
+  plog(
+    state,
+    `🤢 你在废墟的污浊环境里感染了！【感染】debuff 生效：体质/意志 -1/4，恢复速度 -50%。可用抗生素 / 血清 / 纳米凝胶清除。`,
+  );
+}
+
 /** 把分支图节点转换为战斗/搜刮用的 DangerZone */
 function nodeToZone(node: ZoneNode): DangerZone {
   return {
@@ -431,7 +448,7 @@ function actionCost(state: ExtractionRunState, base: number): number {
 
 /**
  * v1.0.3 耐力·续航：超过「耐力 × 1.5 分钟」的行动时限后，越拖越容易疲惫。
- * 疲惫 = 全六维 -1/4 的 debuff；可用肾上腺素 / 营养剂消除。
+ * 疲惫 = 全六维 -1/4 的 debuff；可用营养剂消除。
  * 每次时间推进后判定一次，概率 = 5% × 超时分钟数（上限 60%）。
  */
 function checkFatigue(state: ExtractionRunState, rng: () => number): void {
@@ -447,7 +464,7 @@ function checkFatigue(state: ExtractionRunState, rng: () => number): void {
       state,
       `😮‍💨 连续行动 ${Math.floor(elapsedMin)} 分钟（耐力续航上限 ${capMin} 分钟）——体力透支，陷入【疲惫】：全六维 -1/4。`,
     );
-    state.scene = `😮‍💨 你的双腿开始打颤，呼吸带着铁锈味。\n连续行动已超过耐力续航上限（${capMin} 分钟），【疲惫】debuff 生效：全六维 -1/4。\n使用肾上腺素 / 营养剂可以消除疲惫。`;
+    state.scene = `😮‍💨 你的双腿开始打颤，呼吸带着铁锈味。\n连续行动已超过耐力续航上限（${capMin} 分钟），【疲惫】debuff 生效：全六维 -1/4。\n使用营养剂可以消除疲惫。`;
   }
 }
 
@@ -749,6 +766,10 @@ function grantLoot(state: ExtractionRunState, raw: LootItem, rng: () => number, 
     raw.kind === 'gear' && !raw.gear
       ? rollGearDrop(rng, state.zone.dangerLevel, luck * 0.2)
       : raw;
+  // v1.1.7：副本药物产出概率调整为原来的 50%（激素/血清/急救等）
+  if (MEDICINE_LOOT_IDS.has(item.id) && rng() >= MEDICINE_DROP_FACTOR) {
+    return null;
+  }
   if (item.id === 'ammo') {
     state.ammo += AMMO_LOOT_GRANT;
     return `【弹药】×${AMMO_LOOT_GRANT}（已装填进弹匣，余 ${state.ammo} 发）`;
@@ -843,6 +864,8 @@ export function search(state: ExtractionRunState, rng: () => number = Math.rando
     return;
   }
   applySearchOutcome(state, gained, ammoGained, creditsGained, enemy, timeCost);
+  // v1.1.7：深4~深7 区域搜刮有 5% 概率感染
+  maybeContractInfection(state, rng);
 }
 
 /** 把已结算的搜刮结果写入对局（时间 / 背包 / 遭遇） */
@@ -963,7 +986,7 @@ function encounterIntro(state: ExtractionRunState, enemy: EnemyArchetype, rng: (
 }
 
 /** 按区域危险度抽一个敌人原型并结算其词缀（不做概率门控）。pool 可指定候选敌人池（默认本区敌人池） */
-function pickEnemy(state: ExtractionRunState, rng: () => number, pool?: EnemyArchetype[]): EnemyArchetype {
+export function pickEnemy(state: ExtractionRunState, rng: () => number, pool?: EnemyArchetype[]): EnemyArchetype {
   const list = pool && pool.length > 0 ? pool : state.zone.enemies;
   const base = list[Math.floor(rng() * list.length)];
   // v1.0.10：敌人词缀强度由「深度」驱动（越深越硬），与装备爆率（本图危N）解耦
@@ -1093,7 +1116,7 @@ const ATTR_NOTE_DEFS: Array<{
   { key: 'strength', label: '力量', high: '你的火力压制占据上风，正面硬拼不吃亏', low: '正面火力对拼处于劣势，拉开距离周旋才是正解' },
   { key: 'endurance', label: '耐力', high: '你的续航更持久，消耗战对你有利', low: '长时间缠斗对你不利，速战速决为上' },
   { key: 'vitality', label: '体质', high: '你的血量底盘更厚，容错率更高', low: '你的血量底盘偏薄，交战前记得用药把状态拉满' },
-  { key: 'spirit', label: '灵性', high: '你的灵性更胜一筹，技能与暴击更加频繁', low: '敌人的灵性压制了你，技能与暴击频率会吃亏' },
+  { key: 'spirit', label: '感知', high: '你的感知更敏锐，总能抓住要害打出暴击', low: '敌人的感知压制了你，暴击机会与判断会吃亏' },
   { key: 'willpower', label: '意志', high: '你的意志坚韧，更难被敌方节奏带偏', low: '敌人意志顽强，慎防陷入它擅长的持久消耗' },
 ];
 
@@ -1313,6 +1336,8 @@ export function fight(
       `⚔ 敌群清缴完毕：共 ${groupSize} 只全部放倒，此役累计损失 ${lost} 点生命（剩余 ${state.condition.resources.hp.current}/${hpMaxNow}，血量 ${remainPct}%）——废墟暂归死寂。`,
     );
   }
+  // v1.1.7：深4~深7 区域战斗有 5% 概率感染
+  if ((state.phase as string) !== 'dead') maybeContractInfection(state, rng);
 }
 
 /**
@@ -1865,6 +1890,8 @@ export function moveToNode(state: ExtractionRunState, targetId: string, rng: () 
     }
   state.scene = `你穿过废墟间的缝隙，转移到了【${state.zone.name}】（本图危${state.zone.dangerLevel} · 本区深度 ${zoneDepth(state)}）。\n${state.zone.flavor}`;
   plog(state, `📍 转移至【${state.zone.name}】（危${state.zone.dangerLevel} · 深度 ${zoneDepth(state)}）。`);
+  // v1.1.7：深4~深7 区域转移有 5% 概率感染
+  maybeContractInfection(state, rng);
   updateThreat(state);
   maybeRevealExtract(state);
 }
@@ -1926,6 +1953,8 @@ export function advanceBranch(state: ExtractionRunState, rng: () => number = Mat
     ...(bossFloor ? ['⚠ 这里是霸主领地——每一次搜索都可能把它引来！'] : []),
   ].join('\n');
   plog(state, `📍 深入至【${nz.name}】（危${nz.dangerLevel}${bossFloor ? '·霸主区' : ''}）。`);
+  // v1.1.7：深4~深7 区域深入移动有 5% 概率感染
+  maybeContractInfection(state, rng);
 }
 
 /** v1.0.5：突围奔赴最近撤离点（BFS 找最近撤离点，抄近路直奔，抵达即 atExtract） */
@@ -1944,6 +1973,8 @@ export function goToExtract(state: ExtractionRunState, rng: () => number = Math.
   state.atExtract = true;
   state.scene = '🚁 你不再恋战，抄近路冲向撤离信号区……\n救援直升机正在接近。\n【确认撤离】结束本局，背包物资全部入库。\n【继续搜刮】放弃本次机会——贪心者自负风险。';
   plog(state, '🚁 突围成功，已抵达撤离点。');
+  // v1.1.7：深4~深7 区域突围移动有 5% 概率感染
+  maybeContractInfection(state, rng);
   maybeRevealExtract(state);
 }
 
