@@ -6,7 +6,7 @@
  * 实现原则：能复用真实引擎的就复用（医疗/任务/战绩/招募集合），
  * 否则保持轻量占位（拍卖/赌战等需后端支持的项）。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, Fragment } from 'react';
 import { ResetSaveDialog } from '../components/ResetSaveDialog';
 import { attrLabel, tierColor, tierNameFromTier, ALL_ATTR_KEYS, rollTraitCandidates, type SurvivorTrait } from '@shared/engine/survival/chargen';
 import { affixColor, affixLabel } from '@shared/engine/survival/affixes';
@@ -51,7 +51,6 @@ import {
   seedStock,
   buySeeds,
   gardenCropValue,
-  gardenCropProfit,
   emptyGardenPlots,
   createProtagonistGame,
   // v1.1.0：行动点 / 重塑六维 / 市场出售
@@ -222,7 +221,7 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
   return (
     <Section
       title="避难所·菜园"
-      subtitle="6 块地，每块可任选一种作物种植。种植需消耗对应种子（成熟收获后回本并盈利）。种植状态已存档，切走再切回不会丢失。"
+      subtitle="6 块地，每块可任选一种作物种植。种植需消耗对应种子。种植状态已存档，切走再切回不会丢失。"
     >
       <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-300">
         <Pill tone="sky">菜园等级 {gardenLevel}</Pill>
@@ -250,7 +249,6 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
           {GARDEN_CROPS.map((c) => {
             const stock = seedStock(state, c.id);
             const value = gardenCropValue(c);
-            const profit = gardenCropProfit(c);
             return (
               <div
                 key={c.id}
@@ -262,13 +260,7 @@ export const ViewGarden: React.FC<ViewProps> = ({ state, mutate }) => {
                     <span className="ml-2 font-mono text-xs text-sky-300">库存 {stock}</span>
                   </div>
                   <div className="text-[11px] text-zinc-500">
-                    {c.minutes} 分钟 → {productLabel(c)}（市价 {value} 币）· 种子 {c.seedPrice} 币 ·
-                    净赚{' '}
-                    <span className={profit > 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                      {profit > 0 ? '+' : ''}
-                      {profit}
-                    </span>{' '}
-                    币
+                    {c.minutes} 分钟 → {productLabel(c)}（市价 {value} 币）· 种子 {c.seedPrice} 币
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -1161,6 +1153,9 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
   // v1.1.0：出售区 —— 材料按基础价 ×2；装备按稀有度阶级浮动计价
   const [soldMsg, setSoldMsg] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  // v1.1.8：材料「全部」出售二次确认 / 仓库装备按阶一键批量出售二次确认
+  const [pendingSellMat, setPendingSellMat] = useState<{ id: string; qty: number } | null>(null);
+  const [pendingSellTier, setPendingSellTier] = useState<{ tier: number; name: string; ids: string[]; gain: number } | null>(null);
   const equippedIds = useMemo(
     () =>
       new Set(
@@ -1171,6 +1166,28 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
     [state.equipped],
   );
   const sellable = state.gear.filter((g) => !equippedIds.has(g.id));
+  // v1.1.8：仓库装备按阶级升序（锈蚀 → 神话）排列
+  const sortedSellable = useMemo(
+    () => [...sellable].sort((a, b) => (a.tier ?? 0) - (b.tier ?? 0)),
+    [sellable],
+  );
+  // v1.1.8：按阶级聚合仓库装备 id，供「一键出售某阶」使用
+  const sellByTier = useMemo(() => {
+    const map = new Map<number, string[]>();
+    for (const g of sellable) {
+      const t = g.tier ?? 0;
+      if (!map.has(t)) map.set(t, []);
+      map.get(t)!.push(g.id);
+    }
+    return map;
+  }, [sellable]);
+  // v1.1.8：可一键出售的 4 个低阶（锈蚀/改制/精工/军用）
+  const SELL_TIERS = [
+    { tier: 0, name: '锈蚀' },
+    { tier: 1, name: '改制' },
+    { tier: 2, name: '精工' },
+    { tier: 3, name: '军用' },
+  ];
   const selectedTotal = selected.reduce((acc, id) => {
     const g = state.gear.find((x) => x.id === id);
     return acc + (g ? gearSellPrice(g) : 0);
@@ -1202,6 +1219,20 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
     setSoldMsg(`✅ 卖出 ${n} 件装备，+${gain} 废土币。`);
     setBought(null);
     setSelected([]);
+  };
+
+  // v1.1.8：一键出售某一阶级的全部仓库装备（二次确认后执行）
+  const doSellTier = () => {
+    if (!pendingSellTier || pendingSellTier.ids.length === 0) return;
+    const ids = pendingSellTier.ids;
+    const gain = pendingSellTier.gain;
+    const n = ids.length;
+    const name = pendingSellTier.name;
+    mutate((s) => recycleGear(s, ids));
+    setSoldMsg(`✅ 卖出 ${n} 件${name}阶装备，+${gain} 废土币。`);
+    setBought(null);
+    setSelected((prev) => prev.filter((x) => !ids.includes(x)));
+    setPendingSellTier(null);
   };
 
   return (
@@ -1294,39 +1325,70 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
               {state.materials.length === 0 && (
                 <div className="text-xs text-zinc-500">暂无材料可出售。</div>
               )}
-              {state.materials.map((m) => (
-                <div
-                  key={m.id}
-                  className="flex items-center justify-between gap-2 rounded border border-zinc-800 px-2 py-1.5"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm text-zinc-100">{m.name}</div>
-                    <div className="text-[11px] text-zinc-500">
-                      库存 ×{m.quantity} · 单价 {materialSellPrice(m)} 币
+              {state.materials.map((m) => {
+                const isMatPending = pendingSellMat?.id === m.id;
+                const matPendingQty = isMatPending ? pendingSellMat!.qty : 0;
+                const matPendingGain = isMatPending ? materialSellPrice(m) * matPendingQty : 0;
+                return (
+                  <Fragment key={m.id}>
+                    <div
+                      className="flex items-center justify-between gap-2 rounded border border-zinc-800 px-2 py-1.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm text-zinc-100">{m.name}</div>
+                        <div className="text-[11px] text-zinc-500">
+                          库存 ×{m.quantity} · 单价 {materialSellPrice(m)} 币
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          onClick={() => doSellMaterial(m, 1)}
+                          className="rounded bg-stone-600 px-2 py-1 text-xs text-white hover:bg-stone-700"
+                        >
+                          ×1
+                        </button>
+                        <button
+                          onClick={() => doSellMaterial(m, 5)}
+                          className="rounded bg-stone-600 px-2 py-1 text-xs text-white hover:bg-stone-700"
+                        >
+                          ×5
+                        </button>
+                        <button
+                          onClick={() => setPendingSellMat({ id: m.id, qty: Math.max(1, m.quantity) })}
+                          className="rounded bg-stone-700 px-2 py-1 text-xs text-white hover:bg-stone-600"
+                        >
+                          全部
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      onClick={() => doSellMaterial(m, 1)}
-                      className="rounded bg-stone-600 px-2 py-1 text-xs text-white hover:bg-stone-700"
-                    >
-                      ×1
-                    </button>
-                    <button
-                      onClick={() => doSellMaterial(m, 5)}
-                      className="rounded bg-stone-600 px-2 py-1 text-xs text-white hover:bg-stone-700"
-                    >
-                      ×5
-                    </button>
-                    <button
-                      onClick={() => doSellMaterial(m, m.quantity)}
-                      className="rounded bg-stone-700 px-2 py-1 text-xs text-white hover:bg-stone-600"
-                    >
-                      全部
-                    </button>
-                  </div>
-                </div>
-              ))}
+                    {isMatPending && (
+                      <div className="mt-1 flex items-center justify-between rounded border border-amber-700 bg-amber-950/30 px-2 py-1.5">
+                        <span className="text-xs text-amber-300">
+                          确认卖出全部 {m.name}（×{matPendingQty}）？将获得{' '}
+                          <span className="font-semibold">{matPendingGain}</span> 废土币
+                        </span>
+                        <span className="flex shrink-0 gap-1">
+                          <button
+                            onClick={() => {
+                              doSellMaterial(m, matPendingQty);
+                              setPendingSellMat(null);
+                            }}
+                            className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700"
+                          >
+                            确认卖出
+                          </button>
+                          <button
+                            onClick={() => setPendingSellMat(null)}
+                            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+                          >
+                            取消
+                          </button>
+                        </span>
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              })}
             </div>
           </div>
 
@@ -1343,41 +1405,94 @@ export const ViewMarket: React.FC<ViewProps> = ({ state, mutate }) => {
                 仓库没有可出售的装备（已穿戴的需先卸下）。
               </div>
             ) : (
-              <div className="mt-1.5 max-h-56 space-y-1 overflow-y-auto pr-1">
-                {sellable.map((g) => {
-                  const on = selected.includes(g.id);
-                  return (
-                    <button
-                      key={g.id}
-                      onClick={() =>
-                        setSelected((prev) =>
-                          on ? prev.filter((x) => x !== g.id) : [...prev, g.id],
-                        )
-                      }
-                      className={`flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left transition ${
-                        on
-                          ? 'border-amber-600 bg-amber-950/30'
-                          : 'border-zinc-800 hover:border-zinc-600'
-                      }`}
-                    >
-                      <span className="min-w-0">
-                        <span
-                          className="block truncate text-sm"
-                          style={{ color: g.tierColor ?? '#e4e4e7' }}
-                        >
-                          {g.name}
+              <>
+                {/* v1.1.8：按阶级一键出售（二次确认） */}
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {SELL_TIERS.map(({ tier, name }) => {
+                    const ids = sellByTier.get(tier) ?? [];
+                    const gain = ids.reduce((acc, id) => {
+                      const g = state.gear.find((x) => x.id === id);
+                      return acc + (g ? gearSellPrice(g) : 0);
+                    }, 0);
+                    const disabled = ids.length === 0;
+                    const active = pendingSellTier?.tier === tier;
+                    return (
+                      <button
+                        key={tier}
+                        disabled={disabled}
+                        onClick={() => setPendingSellTier({ tier, name, ids, gain })}
+                        title={`一键出售所有${name}阶仓库装备`}
+                        className={`rounded px-2 py-1 text-xs transition ${
+                          active
+                            ? 'bg-amber-700 text-white'
+                            : disabled
+                            ? 'cursor-not-allowed bg-zinc-800 text-zinc-600'
+                            : 'bg-zinc-700 text-zinc-100 hover:bg-zinc-600'
+                        }`}
+                      >
+                        一键出售{name}阶（{ids.length}）
+                      </button>
+                    );
+                  })}
+                </div>
+                {pendingSellTier && (
+                  <div className="mt-2 flex items-center justify-between rounded border border-amber-700 bg-amber-950/30 px-2 py-1.5">
+                    <span className="text-xs text-amber-300">
+                      确认出售全部{pendingSellTier.name}阶装备（{pendingSellTier.ids.length} 件）？将获得{' '}
+                      <span className="font-semibold">{pendingSellTier.gain}</span> 废土币
+                    </span>
+                    <span className="flex shrink-0 gap-1">
+                      <button
+                        onClick={doSellTier}
+                        className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700"
+                      >
+                        确认出售
+                      </button>
+                      <button
+                        onClick={() => setPendingSellTier(null)}
+                        className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+                      >
+                        取消
+                      </button>
+                    </span>
+                  </div>
+                )}
+                <div className="mt-2 max-h-56 space-y-1 overflow-y-auto pr-1">
+                  {sortedSellable.map((g) => {
+                    const on = selected.includes(g.id);
+                    return (
+                      <button
+                        key={g.id}
+                        onClick={() =>
+                          setSelected((prev) =>
+                            on ? prev.filter((x) => x !== g.id) : [...prev, g.id],
+                          )
+                        }
+                        className={`flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left transition ${
+                          on
+                            ? 'border-amber-600 bg-amber-950/30'
+                            : 'border-zinc-800 hover:border-zinc-600'
+                        }`}
+                      >
+                        <span className="min-w-0">
+                          <span
+                            className="block truncate text-sm"
+                            style={{ color: g.tierColor ?? '#e4e4e7' }}
+                          >
+                            {g.name}
+                          </span>
+                          <span className="block text-[11px] text-zinc-500">
+                            {g.rarityName ?? g.rarity} · {g.affixes.length} 词条
+                          </span>
                         </span>
-                        <span className="block text-[11px] text-zinc-500">
-                          {g.rarityName ?? g.rarity} · {g.affixes.length} 词条
+                        <span className="shrink-0 font-mono text-xs text-amber-300">
+                          {gearSellPrice(g)} 币
                         </span>
-                      </span>
-                      <span className="shrink-0 font-mono text-xs text-amber-300">
-                        {gearSellPrice(g)} 币
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
             )}
             <button
               onClick={doSellGear}

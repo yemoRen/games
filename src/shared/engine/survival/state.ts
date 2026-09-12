@@ -99,10 +99,11 @@ export interface GardenCrop {
 export const GARDEN_PLOT_COUNT = 6;
 
 /**
- * 作物表。seedPrice 定价原则：**种子价 ≈ 产物市价的 47%~58%**，
- * 保证「产物价值 − 种子价」恒为正，剩余差额即为等待时间折算的利润。
- *  草药 7/15 · 变异菌 12/25 · 兴奋草 22/40 · 高能作物 33/60
- *  血清藤 38/70 · 纳米菇 70/120 · 口粮 16/30
+ * 作物表。seedPrice 为固定种子成本。
+ * v1.1.8：产物市价（医疗品 costCoins）已上调至 2 倍，但 seedPrice 未同步上调，
+ * 故每季单位利润相应提高；种子价仍恒低于产物价值，种植始终划算。
+ *  草药 7/30 · 变异菌 12/50 · 兴奋草 22/80 · 高能作物 33/120
+ *  血清藤 38/140 · 纳米菇 70/240 · 口粮 16/30（口粮非医疗品，市价 30 不变）
  */
 export const GARDEN_CROPS: GardenCrop[] = [
   { id: 'herb', name: '草药', yields: 'bandage', qty: 1, minutes: 6, icon: '🌿', seedPrice: 7 },
@@ -991,16 +992,16 @@ export interface MedicineSpec {
 }
 
 export const MEDICINES: MedicineSpec[] = [
-  // —— 基础三件套（数值已翻倍）——
-  { id: 'bandage', name: '止血绷带', healPct: 0.12, healFlat: 20, costCoins: 15, description: '立即回复 12% 生命 + 20 点，无伤势治疗。' },
-  { id: 'antibiotic', name: '抗生素', healPct: 0.10, healFlat: 16, treats: ['infection'], costCoins: 25, description: '立即回复 10% 生命 + 16 点，清除感染。' },
-  { id: 'medkit', name: '急救箱', healPct: 0.30, healFlat: 60, treats: ['bleeding', 'shellShock'], costCoins: 60, description: '立即回复 30% 生命 + 60 点，清除失血/震伤。' },
+  // v1.1.8：医疗品单价统一翻倍
+  { id: 'bandage', name: '止血绷带', healPct: 0.12, healFlat: 20, costCoins: 30, description: '立即回复 12% 生命 + 20 点，无伤势治疗。' },
+  { id: 'antibiotic', name: '抗生素', healPct: 0.10, healFlat: 16, treats: ['infection'], costCoins: 50, description: '立即回复 10% 生命 + 16 点，清除感染。' },
+  { id: 'medkit', name: '急救箱', healPct: 0.30, healFlat: 60, treats: ['bleeding', 'shellShock'], costCoins: 120, description: '立即回复 30% 生命 + 60 点，清除失血/震伤。' },
   // —— 新增恢复道具 ——（v1.1.7：肾上腺素改为纯增益补给，不再回血/消疲惫；营养剂仍可消除「疲惫」）
-  { id: 'stim', name: '肾上腺素', healPct: 0, healFlat: 0, costCoins: 40, description: '增益补给，副本时间 10 分钟内六维全属性 +5。' },
-  { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, treats: ['fatigue'], costCoins: 35, description: '立即回复 10% 生命 + 50 点，消除疲惫（厚血兜底）。' },
-  { id: 'serum', name: '血清', healPct: 0.25, healFlat: 50, treats: ['infection', 'bleeding'], costCoins: 70, description: '立即回复 25% 生命 + 50 点，清除感染与失血。' },
-  { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection', 'fatigue'], costCoins: 120, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
-  { id: 'splint', name: '夹板绷带', healPct: 0.12, healFlat: 20, treats: ['fracture'], costCoins: 50, description: '立即回复 12% 生命 + 20 点，专门清除骨折（伤势专用）。' },
+  { id: 'stim', name: '肾上腺素', healPct: 0, healFlat: 0, costCoins: 80, description: '增益补给，副本时间 10 分钟内六维全属性 +5。' },
+  { id: 'nutrient', name: '营养剂', healPct: 0.10, healFlat: 50, treats: ['fatigue'], costCoins: 70, description: '立即回复 10% 生命 + 50 点，消除疲惫（厚血兜底）。' },
+  { id: 'serum', name: '血清', healPct: 0.25, healFlat: 50, treats: ['infection', 'bleeding'], costCoins: 140, description: '立即回复 25% 生命 + 50 点，清除感染与失血。' },
+  { id: 'nanogel', name: '纳米凝胶', healPct: 0.45, healFlat: 80, treats: ['bleeding', 'fracture', 'shellShock', 'infection', 'fatigue'], costCoins: 240, description: '立即回复 45% 生命 + 80 点，清除全部伤势（可把濒死者拉回）。' },
+  { id: 'splint', name: '夹板绷带', healPct: 0.12, healFlat: 20, treats: ['fracture'], costCoins: 100, description: '立即回复 12% 生命 + 20 点，专门清除骨折（伤势专用）。' },
 ];
 
 export function medicineQty(state: SurvivalGameState, id: MedicineSpec['id']): number {
@@ -1135,12 +1136,13 @@ export interface MedCraftRecipe {
 }
 
 export const MED_CRAFT_RECIPES: MedCraftRecipe[] = [
-  { id: 'craft-bandage', name: '自制绷带', medicine: 'bandage', costMaterials: [{ kind: 'chems', qty: 1 }], costCoins: 5 },
-  { id: 'craft-stim', name: '调配肾上腺素', medicine: 'stim', costMaterials: [{ kind: 'chems', qty: 2 }], costCoins: 12 },
-  { id: 'craft-nutrient', name: '调配营养剂', medicine: 'nutrient', costMaterials: [{ kind: 'food', qty: 1 }, { kind: 'chems', qty: 1 }], costCoins: 8 },
-  { id: 'craft-serum', name: '提纯血清', medicine: 'serum', costMaterials: [{ kind: 'chems', qty: 2 }, { kind: 'electronics', qty: 1 }], costCoins: 18 },
-  { id: 'craft-nanogel', name: '合成纳米凝胶', medicine: 'nanogel', costMaterials: [{ kind: 'chems', qty: 3 }, { kind: 'electronics', qty: 1 }], costCoins: 35 },
-  { id: 'craft-splint', name: '夹板绷带', medicine: 'splint', costMaterials: [{ kind: 'metal', qty: 2 }, { kind: 'chems', qty: 1 }], costCoins: 25, sortieNeeds: [{ lootId: 'meds', qty: 1 }, { lootId: 'scrap', qty: 2 }] },
+  // v1.1.8：制作手续费随医疗品单价同步翻倍
+  { id: 'craft-bandage', name: '自制绷带', medicine: 'bandage', costMaterials: [{ kind: 'chems', qty: 1 }], costCoins: 10 },
+  { id: 'craft-stim', name: '调配肾上腺素', medicine: 'stim', costMaterials: [{ kind: 'chems', qty: 2 }], costCoins: 24 },
+  { id: 'craft-nutrient', name: '调配营养剂', medicine: 'nutrient', costMaterials: [{ kind: 'food', qty: 1 }, { kind: 'chems', qty: 1 }], costCoins: 16 },
+  { id: 'craft-serum', name: '提纯血清', medicine: 'serum', costMaterials: [{ kind: 'chems', qty: 2 }, { kind: 'electronics', qty: 1 }], costCoins: 36 },
+  { id: 'craft-nanogel', name: '合成纳米凝胶', medicine: 'nanogel', costMaterials: [{ kind: 'chems', qty: 3 }, { kind: 'electronics', qty: 1 }], costCoins: 70 },
+  { id: 'craft-splint', name: '夹板绷带', medicine: 'splint', costMaterials: [{ kind: 'metal', qty: 2 }], costCoins: 50, sortieNeeds: [{ lootId: 'scrap', qty: 2 }] },
 ];
 
 function countMaterial(state: SurvivalGameState, kind: MaterialKind): number {

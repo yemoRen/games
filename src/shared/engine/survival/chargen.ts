@@ -973,15 +973,15 @@ function rollInitialTraits(rng: RNG, genTier: number, count: number): SurvivorTr
 
 // ===== 升级词条三选一（系统流设定） =====
 
-/** 词条品质抽取权重（升级三选一）：白16/绿12/蓝10/紫10/黄6/橙4/红2 共 60 个；权重随品质递减，白绿最常见、红最稀有 */
+/** 词条品质抽取权重（升级三选一）。注意：下面这串数字只是抽取权重，与词条池内各品质的数量无关（池内构成：白16/绿12/蓝10/紫10/黄6/橙4/红2 共 60 个）。白绿最常见、红最稀有。 */
 const TRAIT_PICK_WEIGHT: Record<string, number> = {
-  white: 2.0,
+  white: 2.8,
   green: 2.0,
   blue: 1.6,
-  purple: 1.2,
-  yellow: 1.0,
-  orange: 0.8,
-  red: 0.6,
+  purple: 1.0,
+  yellow: 0.8,
+  orange: 0.6,
+  red: 0.4,
 };
 
 /**
